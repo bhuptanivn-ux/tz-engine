@@ -105,13 +105,13 @@ There is **no branch spawning and no branch-level dormancy** (original §7a/§8 
 
 ## 11. Summary — the repeating generational engine
 
-There is really **one generational engine**: `BAR → BAR 2 → RED1 → RED2 → next BAR`. TZ GREEN/TZ GREEN 2 (the very start of a cycle) and REAR/REAR 2, REAR RE-ENTER/REAR RE-ENTER 2 (one-time recovery labels applied respectively right after a BAR SL2, and right after a REAR SL) are just special entry points into that same engine. Once RED1→RED2 fires from any "…2" object, the result is always a plain BAR → BAR 2 cycle from then on, except for REAR RE-ENTER's own direct SL→reactivation, which keeps its own label.
+There is really **one generational engine**: `BAR → BAR 2 → RED1 → RED2 → next BAR`. TZ GREEN/TZ GREEN 2 (the very start of a cycle) and REAR/REAR 2, REAR RE-ENTER/REAR RE-ENTER 2 (one-time recovery labels applied respectively right after a BAR SL2, and right after a REAR SL) are just special entry points into that same engine. Once RED1→RED2 fires from any "…2" object, the result is always a plain BAR → BAR 2 cycle from then on, except for REAR RE-ENTER's own direct SL→reactivation, which keeps its own label. (§1–§11 describe this engine as it runs under House of Bull, where the generational label is `BAR`/`BAR 2`; §12 defines House of Bear's mirror, where the same engine's label is `SAR`/`SAR 2` instead — see §12's mapping note.)
 
 ---
 
 ## 12. House of Bull vs. House of Bear
 
-Two full mirror-image structures share the same event vocabulary. Only one house is "active" (live-naming) at a time; the other is tracked in shadow, ready to take over.
+Two full mirror-image structures, mostly sharing the same event vocabulary (the one deliberate exception: House of Bull's generational label is `BAR`/`BAR 2`, House of Bear's is `SAR`/`SAR 2` — see the mapping below). Both houses' engines always run and always log (§13) — "active" means whichever house's own chain currently reaches furthest, not that the other stops being tracked.
 
 **House of Bull** (as built in §1–§11):
 ```
@@ -120,7 +120,7 @@ TZ GREEN → TZ GREEN 2 → RED1 → RED2 → BAR → BAR 2 → RED1 → RED2 �
 
 **House of Bear** (exact directional mirror — up ↔ down):
 ```
-TZ RED → TZ RED 2 → GREEN1 → GREEN2 → BAR → BAR 2 → GREEN1 → GREEN2 → ...
+TZ RED → TZ RED 2 → GREEN1 → GREEN2 → SAR → SAR 2 → GREEN1 → GREEN2 → ...
 ```
 
 **Naming/condition mapping (House of Bear):**
@@ -128,8 +128,8 @@ TZ RED → TZ RED 2 → GREEN1 → GREEN2 → BAR → BAR 2 → GREEN1 → GREEN
 - `TZ RED 2` = same condition shape as `RED2`.
 - `GREEN1` = same condition shape as `TZ GREEN` (upside breakout), now serving as the pullback-within-a-downtrend structure.
 - `GREEN2` = same condition shape as `TZ GREEN 2`.
-- `BAR` / `BAR 2` = same condition shape as `TZ RED` / `TZ RED 2` (i.e., downside breakdown continuation) — **the event names `BAR`, `BAR 2`, `REAR`, `REAR RE-ENTER` are reused verbatim in both houses**, deliberately not renamed per house, to avoid multiplying vocabulary. Only the qualifying direction differs depending on which house is currently active.
-- Every downstream mechanic built for Bull in §4–§10 (BAR SL/no SL2, NEW-BAR-2-vs-RED2-forecloses-it, BAR(N+1) triggers and BAR(n) termination rules, REAR/REAR RE-ENTER as one-time recovery labels) is inherited **exactly, direction-flipped**, with no Bear-specific exceptions.
+- **`SAR` / `SAR 2`** = House of Bear's own name for the generational-engine label that House of Bull calls `BAR` / `BAR 2` — same condition shape as `TZ RED` / `TZ RED 2` (i.e., downside breakdown continuation). **`BAR`/`BAR 2` is Bull-only naming; `SAR`/`SAR 2` is the Bear equivalent** — this is the one deliberate naming difference between the houses. `REAR` and `REAR RE-ENTER` are still reused verbatim in both houses (not renamed).
+- Every downstream mechanic built for Bull in §4–§10 under the name `BAR`/`BAR 2` (BAR SL/no SL2, NEW-BAR-2-vs-RED2-forecloses-it, BAR(N+1) triggers and BAR(n) termination rules) applies **exactly, direction-flipped, to `SAR`/`SAR 2`** in House of Bear — read every `BAR`/`BAR 2`/`BAR SL`/`BAR SL2`/`NEW BAR 2` in §4–§10 as `SAR`/`SAR 2`/`SAR SL`/`SAR SL2`/`NEW SAR 2` when applying those rules under House of Bear. `REAR`/`REAR RE-ENTER` (§9–§10) still form off `SAR 2`'s own SL2 and keep their own names unchanged in both houses; when RED1→RED2 (i.e., GREEN1→GREEN2 under Bear — see below) fires after `REAR 2` or `REAR RE-ENTER 2` under an active House of Bear, the resulting plain fresh cycle is `SAR → SAR 2`, not `BAR → BAR 2`.
 
 ## 13. House-switch mechanic
 
@@ -141,7 +141,7 @@ TZ RED → TZ RED 2 → GREEN1 → GREEN2 → BAR → BAR 2 → GREEN1 → GREEN
 - Every time the *active* house produces a fresh pullback (RED1→RED2 for an active House of Bull; GREEN1→GREEN2 for an active House of Bear), that identical price action *simultaneously* forms a fresh anchor pair for the *non-active* house (`TZ RED`/`TZ RED 2`, or `TZ GREEN`/`TZ GREEN 2`, respectively) — logged under both houses the same day.
 - If the active house's *next* continuation (`BAR`/`BAR 2`) then closes decisively past that fresh non-active anchor's reference (above it for a TZ RED anchor being cleared by an upside BAR; below it for a TZ GREEN anchor being cleared by a downside BAR), the non-active anchor is **terminated** right there.
 - The very next time the active house produces another fresh pullback, the non-active anchor is **reborn** from scratch, and the cycle repeats.
-- The **switch fires** the first time this cycle breaks the other way: the active house's continuation (`BAR`/`BAR 2`) **fails** to clear the live non-active anchor's reference, **and** the active house's *next* pullback (RED1→RED2 / GREEN1→GREEN2) then confirms. At that exact point the non-active house takes over as active — and that confirming pullback is relabeled under the *new* active house's own naming, continuing its chain from wherever it structurally already sits (anchor + "…2" already existed from the last rebirth; the just-completed `BAR`/`BAR 2` of the old active house becomes `GREEN1`/`GREEN2` — or `RED1`/`RED2` — of the newly active house; this newly confirming pullback becomes the newly active house's own `BAR`/`BAR 2`).
+- The **switch fires** the first time this cycle breaks the other way: the active house's continuation (`BAR`/`BAR 2` for Bull, `SAR`/`SAR 2` for Bear) **fails** to clear the live non-active anchor's reference, **and** the active house's *next* pullback (RED1→RED2 / GREEN1→GREEN2) then confirms. At that exact point the non-active house takes over as active — and that confirming pullback is relabeled under the *new* active house's own naming, continuing its chain from wherever it structurally already sits (anchor + "…2" already existed from the last rebirth; the just-completed continuation of the old active house becomes `GREEN1`/`GREEN2` — or `RED1`/`RED2` — of the newly active house; this newly confirming pullback becomes the newly active house's own `BAR`/`BAR 2` if Bull, or `SAR`/`SAR 2` if Bear).
 
 **Worked trace (confirmed), Bull active initially, two rebirth cycles before the switch:**
 ```
@@ -153,7 +153,7 @@ TZ GREEN - TZ GREEN 2 - RED1 - RED2 - BAR                [Bull's own chain, reac
 new RED1 - RED2                                          (simultaneously = fresh TZ RED/TZ RED2 for Bear, reborn)
 BAR - BAR 2                                               (simultaneously = GREEN1/GREEN2 for Bear)
            BAR/BAR 2 does NOT close above TZ RED's ref high -> Bear's TZ RED SURVIVES (cycle 2 does not terminate)
-new RED1 - RED2                                          -> this RED1/RED2 IS Bear's own BAR/BAR2
+new RED1 - RED2                                          -> this RED1/RED2 IS Bear's own SAR/SAR 2
                                                               => SWITCH: House of Bear becomes active here
 ```
 
@@ -166,7 +166,7 @@ new RED1 - RED2                                          -> this RED1/RED2 IS Be
 A **House** column is added alongside the Event column in the report output.
 
 - Every date lists **every** house whose engine produced an event that day — `BULL`, `BEAR`, or `BULL + BEAR` — with the corresponding event(s) listed side by side (e.g., `RED1 + TZ RED`, `BAR SL + GREEN1 SL`, `BAR + TZ RED`).
-- On the exact date a house-switch confirms, the event printed for that date uses the **new** house's naming for that step, not the old house's — e.g., what would have been labeled `RED 2` under Bull's naming instead prints as `BAR 2`, with House = `BEAR` on that row, since that RED2-shaped price action *is* Bear's own BAR 2 step once the switch is confirmed.
+- On the exact date a house-switch confirms, the event printed for that date uses the **new** house's naming for that step, not the old house's — e.g., what would have been labeled `RED 2` under Bull's naming instead prints as `SAR 2`, with House = `BEAR` on that row, since that RED2-shaped price action *is* Bear's own SAR 2 step once the switch is confirmed (and symmetrically, a switch into Bull prints `BAR 2` where Bear's naming would have said `SAR 2`).
 - This is a continuous, permanent feature of the output, not just a start-of-dataset phenomenon — both houses' events keep appearing side-by-side for the life of the dataset, per §13's repeating rebirth/termination cycle, not only before the first switch ever happens.
 
 ## 15. Worked case-study table (from the user, confirmed correct)
