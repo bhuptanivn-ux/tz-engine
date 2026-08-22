@@ -133,36 +133,64 @@ TZ RED → TZ RED 2 → GREEN1 → GREEN2 → BAR → BAR 2 → GREEN1 → GREEN
 
 ## 13. House-switch mechanic
 
-**Shadow tracking:** while House of Bull is active, every RED1→RED2 pullback is *simultaneously* a live candidate `TZ RED`/`TZ RED 2` for a nascent House of Bear — tracked in parallel the whole time, without taking over.
+**Both houses' full engines run continuously and independently off raw price, from day 1, forever — neither is ever dormant, and both are logged every time either fires an event.** "Active" simply means whichever house's own chain reaches further/triggers first; that does not stop the other house's engine from computing and logging.
 
-**Bull → Bear switch activates when, in this order:**
-1. A BAR/BAR 2 continuation (or a later day within it) **fails to close above the reference High of the RED1 that preceded it**, **and**
-2. A **new** RED1 followed by RED2 then occurs.
+**Which house is active initially:** determined purely by whichever chain (TZ GREEN's or TZ RED's own independent anchor search) completes its own sequence through to a `BAR` first. Both can — and typically do — produce events on the very same early dates before this is settled (see the case-study table in §16).
 
-At that point House of Bear becomes the live/active structure. House of Bull is abandoned — it can only return via a **brand-new TZ GREEN** from scratch, never a continuation of the old lineage.
+**The repeating rebirth/termination cycle** (this is the actual mechanism behind the switch, not a one-shot check):
+- Every time the *active* house produces a fresh pullback (RED1→RED2 for an active House of Bull; GREEN1→GREEN2 for an active House of Bear), that identical price action *simultaneously* forms a fresh anchor pair for the *non-active* house (`TZ RED`/`TZ RED 2`, or `TZ GREEN`/`TZ GREEN 2`, respectively) — logged under both houses the same day.
+- If the active house's *next* continuation (`BAR`/`BAR 2`) then closes decisively past that fresh non-active anchor's reference (above it for a TZ RED anchor being cleared by an upside BAR; below it for a TZ GREEN anchor being cleared by a downside BAR), the non-active anchor is **terminated** right there.
+- The very next time the active house produces another fresh pullback, the non-active anchor is **reborn** from scratch, and the cycle repeats.
+- The **switch fires** the first time this cycle breaks the other way: the active house's continuation (`BAR`/`BAR 2`) **fails** to clear the live non-active anchor's reference, **and** the active house's *next* pullback (RED1→RED2 / GREEN1→GREEN2) then confirms. At that exact point the non-active house takes over as active — and that confirming pullback is relabeled under the *new* active house's own naming, continuing its chain from wherever it structurally already sits (anchor + "…2" already existed from the last rebirth; the just-completed `BAR`/`BAR 2` of the old active house becomes `GREEN1`/`GREEN2` — or `RED1`/`RED2` — of the newly active house; this newly confirming pullback becomes the newly active house's own `BAR`/`BAR 2`).
 
-**Bear → Bull switch (exact symmetric mirror):**
-1. A BAR/BAR 2 (downside) continuation fails to close **below the reference Low of the GREEN1 that preceded it**, **and**
-2. A **new** GREEN1 followed by GREEN2 then occurs.
-
-House of Bull becomes live; House of Bear is abandoned, only returning via a **brand-new TZ RED**.
-
-**Worked example (Bull → Bear), confirming the naming carries the switch:**
+**Worked trace (confirmed), Bull active initially, two rebirth cycles before the switch:**
 ```
-TZ GREEN - TZ GREEN 2 - RED1 (≡ TZ RED) - RED2 (≡ TZ RED 2)
-  - BAR (≡ GREEN1) - BAR 2 (≡ GREEN2)
-  - RED1 (≡ Bear's BAR) - RED2 (≡ Bear's BAR 2)
+TZ GREEN - TZ GREEN 2 - RED1 - RED2 - BAR                [Bull's own chain, reaches BAR first -> Bull active]
+              (RED1/RED2 simultaneously = TZ RED/TZ RED2 for Bear)
+           BAR closes above TZ RED's reference high      -> Bear's TZ RED terminated (cycle 1 ends)
+
+... BAR 2 ...
+new RED1 - RED2                                          (simultaneously = fresh TZ RED/TZ RED2 for Bear, reborn)
+BAR - BAR 2                                               (simultaneously = GREEN1/GREEN2 for Bear)
+           BAR/BAR 2 does NOT close above TZ RED's ref high -> Bear's TZ RED SURVIVES (cycle 2 does not terminate)
+new RED1 - RED2                                          -> this RED1/RED2 IS Bear's own BAR/BAR2
+                                                              => SWITCH: House of Bear becomes active here
 ```
-If the BAR/BAR 2 step does not close above the earlier RED1's reference High, and this new RED1→RED2 confirms, House of Bear activates on the RED2 date.
+
+**Bear → Bull switch is the exact symmetric mirror**, using GREEN1/GREEN2 pullbacks, downside BAR/BAR 2 continuations, and TZ GREEN/TZ GREEN 2 as the reborn/terminated non-active anchor.
+
+**After a switch — reclaiming active status is different from mere tracking.** The house that just lost active status does **not** stop being tracked or logged (§13 above already establishes both houses always run). But to become the *active* house again — not just to keep producing shadow-tracked anchor events — that house must complete a **brand-new anchor from scratch** (a fresh `TZ GREEN` for Bull, a fresh `TZ RED` for Bear), not a continuation of its old pre-switch lineage. Its old lineage's remaining structures (BAR SL2/REAR/REAR RE-ENTER chains, etc.) can still fire and still get logged under that house's label — they just don't carry it back to "active" status on their own.
 
 ## 14. Output format — House column
 
-A **House** column is added alongside the Event column in the report output. On the exact date a house-switch confirms, the event printed for that date uses the **new** house's naming for that step, not the old house's — e.g., what would have been labeled `RED 2` under Bull's naming instead prints as `BAR 2`, with House = `BEAR` on that row, since that RED2-shaped price action *is* Bear's own BAR 2 step once the switch is confirmed. Every other row's House value reflects whichever house was live/active on that date.
+A **House** column is added alongside the Event column in the report output.
+
+- Every date lists **every** house whose engine produced an event that day — `BULL`, `BEAR`, or `BULL + BEAR` — with the corresponding event(s) listed side by side (e.g., `RED1 + TZ RED`, `BAR SL + GREEN1 SL`, `BAR + TZ RED`).
+- On the exact date a house-switch confirms, the event printed for that date uses the **new** house's naming for that step, not the old house's — e.g., what would have been labeled `RED 2` under Bull's naming instead prints as `BAR 2`, with House = `BEAR` on that row, since that RED2-shaped price action *is* Bear's own BAR 2 step once the switch is confirmed.
+- This is a continuous, permanent feature of the output, not just a start-of-dataset phenomenon — both houses' events keep appearing side-by-side for the life of the dataset, per §13's repeating rebirth/termination cycle, not only before the first switch ever happens.
+
+## 15. Worked case-study table (from the user, confirmed correct)
+
+```
+DATE      HOUSE OF     EVENT
+01/01     BULL         TZ GREEN
+02/01     BEAR         TZ RED
+03/01     BULL + BEAR  TZ GREEN 2 + TZ RED SL
+05/01     BULL + BEAR  RED 1 + TZ RED
+07/01     BULL + BEAR  RED 2 + TZ RED 2
+09/01     BULL + BEAR  BAR + TZ RED HH + GREEN 1
+11/01     BULL + BEAR  BAR SL + GREEN 1 SL
+12/01     BULL + BEAR  BAR + GREEN 1
+15/01     BULL + BEAR  BAR 2 + GREEN 2
+              (GREEN 2 may not appear this same day, or may appear a day or two later,
+               if BAR 2 closes above TZ RED's HH reference — see §13's rebirth/termination cycle)
+```
+Note: row 03/01 lists `BULL + BEAR` — TZ RED SL is still a House-of-Bear event and must be tagged as such even though Bear has no further live structure that day; a house tag is never dropped just because that house's structure terminated on the same date.
 
 ---
 
-## 15. Open items — pending case-study verification
+## 16. Open items — pending case-study verification
 
-- Full case studies from the user, to be cross-verified against this spec before/during implementation (per the original rule book's own testing discipline, §12: never guess, verify every claim against actual OHLC numbers).
+- Further case studies from the user, to be cross-verified against this spec before/during implementation (per the original rule book's own testing discipline, §12: never guess, verify every claim against actual OHLC numbers).
 - Whether the $0.20 / $0.01 thresholds need to scale for weekly/monthly/yearly candles remains an open question inherited unchanged from the original rule book (§13).
 - Not yet implemented in code (`tz_engine_v9.py` or a new module) — spec-only as of this writing.
