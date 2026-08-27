@@ -2,7 +2,7 @@
 
 **Purpose:** This is a variant rule set for the TZ engine, built on top of the same OHLC state-machine primitives as the original 37-event rule book (`TZ_ENGINE_RULEBOOK_REFERENCE.md`), but with a different structure hierarchy and an added dual-trend ("house") mechanic. Everything not explicitly overridden below inherits from the original rule book: `THRESH = 0.20` (main qualifying threshold), `ANY = 0.01` (minimum move for HH/LL qualification), and the general RED1/RED2 shared mechanic (§3 of the original).
 
-**Status:** Verified against the user's case-study OHLC dataset (01-01-2021 through 24-04-2021) via `bar_rule_simulator.py`, the reference implementation. REAR/REAR RE-ENTER have been removed from this logic entirely (see §9) — only TZ GREEN/TZ RED cycles exist. This revision folds in the two-tier BAR/BAR 2 stop-loss split, ungoverned BAR 2 HH/LL tracking, the outer/inner reference ratchet during shallow-SL recovery, and the pullback-persists-past-parent-SL correction — all confirmed against real dates (see §14).
+**Status:** Verified against the user's case-study OHLC dataset (01-01-2021 through 24-04-2021) via `bar_rule_simulator.py`, the reference implementation. **`BAR SL2` has been removed entirely.** REAR is back, in a new role: it is no longer a distinct pre-existing structure alongside TZ GREEN — it is specifically the label for the generation that recovers directly from a *deep* BAR/SAR SL, off that dead generation's own BAR 2/SAR 2 reference (see §8). This revision folds in the two-tier BAR/BAR 2 stop-loss split, ungoverned BAR 2 HH/LL tracking, the outer/inner reference ratchet during shallow-SL recovery, the pullback-persists-past-parent-SL correction, and the REAR/fresh-TZ-GREEN permanent dual-track that replaces `BAR SL2` — all confirmed against real dates (see §14).
 
 ---
 
@@ -11,11 +11,15 @@
 ```
 TZ GREEN → TZ GREEN 2 → RED1 → RED2 → [ BAR → BAR 2 ] ↻ (repeating engine)
                                             ↓
-                          BAR 2 SL (shallow) → NEW BAR 2 reforms directly
-                          BAR SL (deep)      → BAR SL2 → fresh TZ GREEN (see §9)
+                          BAR 2 SL (shallow) → NEW BAR 2 reforms directly (§7)
+                          BAR SL (deep)      → permanent dual-track race (§8):
+                                                 a) fresh TZ GREEN(N+1) cycle, or
+                                                 b) REAR - REAR 2 - RED1 - RED2 - BAR - BAR 2
+                                               (whichever reaches its own "2" first is active;
+                                                the other goes dormant, not terminated)
 ```
 
-There is **no branch spawning and no branch-level dormancy** (original §7a/§8 removed entirely) — only one TZ GREEN lineage ever exists per cycle; no sibling branches.
+There is **no branch spawning and no branch-level dormancy at the TZ-GREEN-anchor level** (original §7a/§8 removed entirely) — only one TZ GREEN lineage is ever *searching* at a time. Dormancy *does* exist one level down, between a fresh anchor cycle and a REAR recovery racing off a dead generation (§8) — that is a deliberate, permanent, ongoing dual-track, not a one-time branch.
 
 ---
 
@@ -61,7 +65,7 @@ There is **no branch spawning and no branch-level dormancy** (original §7a/§8 
 
 ## 6. BAR SL — two-tier split (post-BAR 2)
 
-Before BAR 2 has formed, BAR has a single, simple SL: Low breaks BAR's own ref_low by ≥ 0.20, Close **at or below** it. This always resets to the full BAR SL2 tracking path (§8) — there is no "shallow" tier until BAR 2 exists.
+Before BAR 2 has formed, BAR has a single, simple SL: Low breaks BAR's own ref_low by ≥ 0.20, Close **at or below** it. This is always a "deep" failure (§8) — there is no "shallow" tier and no REAR option until BAR 2 has formed at least once (REAR needs BAR 2's own reference to reform against; if BAR 2 never existed, that reference never existed either).
 
 **Once BAR 2 has formed**, two independent thresholds are live simultaneously:
 
@@ -70,7 +74,7 @@ Before BAR 2 has formed, BAR has a single, simple SL: Low breaks BAR's own ref_l
 
 Each day, both are checked (deep first):
 
-- **`BAR SL` (deep)**: Low breaks the outer/deep threshold by ≥ 0.20, Close doesn't reclaim it. This is the full-restart failure — recovery is via §8 (BAR SL2 tracking), i.e. a brand-new BAR(N+1) from scratch.
+- **`BAR SL` (deep)**: Low breaks the outer/deep threshold by ≥ 0.20, Close doesn't reclaim it. This is the full-restart failure — recovery is via §8 (the REAR/fresh-TZ-GREEN dual-track race).
 - **`BAR 2 SL` (shallow)**: Low breaks BAR 2's own inner threshold by ≥ 0.20, Close doesn't reclaim it, *and* the deep threshold is not also breached the same day. Recovery is the lighter-weight path in §7 — a NEW BAR 2 reforming directly, without needing a fresh BAR first.
 
 (House of Bear: mirror on the High side — `SAR SL` deep, `SAR 2 SL` shallow, outer/deep threshold = `max(SAR's frozen outer ref_high, SAR 2's current inner ref_high)`.)
@@ -80,7 +84,7 @@ Each day, both are checked (deep first):
 When `BAR 2 SL` (shallow) fires, BAR itself is not restarted — the engine instead awaits a **fresh BAR 2** reforming directly, without an intervening plain BAR:
 
 - **Recovery**: a fresh breakout above BAR 2's own last (pre-SL) reference High (Low ≥ PrevLow, High > that reference + 0.20, Close ≥ that reference) forms a brand-new BAR 2 immediately — it inherits the still-live outer/deep reference as its own frozen `bar_ref_low`.
-- **Escalation**: if instead price breaks the outer/deep threshold (§6) by ≥ 0.20 with Close confirming — whether on the same day the shallow SL fired or on a later day while still awaiting recovery — that converts straight into the full-restart `BAR SL` (deep) path, and §8's SL2 tracking begins.
+- **Escalation**: if instead price breaks the outer/deep threshold (§6) by ≥ 0.20 with Close confirming — whether on the same day the shallow SL fired or on a later day while still awaiting recovery — that converts straight into the full-restart `BAR SL` (deep) path, and §8's dual-track race begins.
 - **Ongoing ratchet while awaiting recovery**: on every day neither of the above fires, **both** references keep extending independently on the adverse side, using the ordinary `ANY` (0.01) threshold:
   - the **outer** reference prints `BAR LL` (bullish) / `BAR HH` (bearish) as it extends,
   - the **inner** reference prints `BAR 2 LL` (bullish) / `BAR 2 HH` (bearish) as it extends.
@@ -90,35 +94,33 @@ When `BAR 2 SL` (shallow) fires, BAR itself is not restarted — the engine inst
 
 (House of Bear mirror: `SAR HH`/`SAR 2 HH` ratchet on the adverse — upside — side while awaiting recovery; convergence then routes any further close above that level straight to `SAR SL`.)
 
-## 8. BAR(N+1) and BAR(n)'s fate — implementation note
+## 8. Deep BAR SL aftermath — the REAR / fresh-TZ-GREEN dual-track race
 
-`gen_pending` (from a fresh RED2) and the SL-recovery path (§7's escalation, or a plain breakout after `BAR SL2` per §9) are the two ways a new BAR generation can start. **In the current, verified implementation, only one BAR "front" is tracked at a time** — the moment a new BAR(N+1) forms, it fully replaces BAR(n) as the tracked generation; BAR(n)'s own further HH/LL/SL are no longer tracked from that point on.
+**`BAR SL2` has been removed. The cycle halts (no further HH/LL/SL tracking) on the dead generation itself the moment a deep `BAR SL` fires** (whether that SL happened before BAR 2 ever formed, or after). Two paths open up, and — unlike anything earlier in this document — **both stay permanently live at once**, not just until one of them wins:
 
-This is a deliberate simplification relative to a richer model the user originally described (BAR(n) continuing to "race" in parallel with BAR(n+1), going dormant rather than terminating, with termination keyed to BAR 2(n+1) validly confirming or BAR(n)'s own reactivation firing, whichever is earlier). That richer multi-generation-racing model has **not been exercised or verified** against the case-study dataset to date — no date in the 01-01-2021–24-04-2021 series has produced two live BAR generations at once. It is flagged here as an **open item** (see §15), not asserted as current behavior.
+- **(a) Fresh TZ GREEN(N+1) cycle**: a wholly new anchor search, unrelated to the dead generation's own reference — the ordinary base-case breakout (Low ≥ PrevLow, High > PrevHigh + 0.20, Close ≥ PrevHigh), exactly like day 1. This is the *only* available path if the dead generation never reached BAR 2 (no reference exists to reform REAR against).
+- **(b) REAR**: only available if the dead generation *had* reached BAR 2. REAR reforms directly above BAR 2's own last reference High (same breakout shape, applied to that frozen reference instead of yesterday's High: Low ≥ PrevLow, High > BAR 2's reference High + 0.20, Close ≥ that reference). REAR gets its own **REAR 2**, with the exact same mechanics as BAR 2 (§5–§7: ungoverned dual HH/LL, two-tier SL, shallow-SL recovery). RED1/RED2 attach to REAR 2 exactly as they would to BAR 2. **Once RED2 fires there, the *next* generation reverts to plain `BAR`/`BAR 2` naming** — REAR is only the label for the one generation immediately recovering from a deep SL (see the hierarchy in §0(b): `REAR - REAR 2 - RED1 - RED2 - BAR - BAR 2`).
+  - **While awaiting REAR**, BAR 2's own reference High keeps ratcheting on ordinary price action (`ANY` = 0.01 threshold), printed as **`INVALID REAR HH`** (House of Bear mirror: **`INVALID REAR LL`**, tracking SAR 2's own reference Low) — even though the generation is dead, this reference stays live so REAR remains reachable against an up-to-date target if it later extends further away.
 
-## 9. BAR SL2(n) — permanent terminal failure, no REAR
+**Permanent dual-track, not a one-time decision**: whichever of (a)/(b) reaches its own "2" stage first (BAR 2(N+1) vs. REAR 2) becomes *active*; the other does **not** terminate — it goes **dormant**, exactly mirroring the House of Bull/Bear split (§12) one level down. A dormant lineage keeps existing and can become active again later if the currently-active one later fails — this is recursive and can repeat indefinitely (see below).
 
-**REAR and REAR RE-ENTER are removed from this logic entirely.** Only TZ GREEN and TZ RED cycles exist.
+**`gen_pending` (a fresh RED2 firing) is a signal shared across both lineages of a house**, not scoped to just one: any lineage that is itself alive and past its own "2" stage — active or dormant — may independently consume it to form its own next generation. It persists, unconsumed, across days until at least one eligible lineage consumes it (so a lineage that only becomes eligible later can still benefit from an earlier RED2); if multiple lineages are simultaneously eligible the same day, they consume it together, same day (matching the "recorded at the backend" case where REAR 2's own RED2 also lets the dormant TZ GREEN(N+1)'s own BAR 2(N+1) form the same day).
 
-- On `BAR SL` (deep) formation, a fresh SL-tracking object starts, initialized from the *SL-triggering candle's own* High/Low (not BAR's original reference).
-- Each subsequent day, in priority order:
-  1. **Reactivation** (a fresh BAR forming via the plain SL-recovery breakout, §4/§8) is checked first — if it fires, the SL object is discarded and a fresh BAR(N+1) takes over; SL2 is not checked that day.
-  2. Otherwise, **`BAR SL2`**: Low breaks the SL object's own ref_low further by ≥ 0.20, Close doesn't reclaim (Close ≤ that ref_low) — permanent terminal failure of that BAR lineage generation.
-  3. Otherwise, ordinary **`BAR SL HH` / `BAR SL LL`** tracking on the SL object (both sides, simple `ANY` threshold, ungoverned).
-- **On `BAR SL2`: the whole cycle resets unconditionally to a fresh TZ GREEN search** — anchor, pullback, gen, and all generation state are cleared. There is no REAR recovery path; a brand-new `TZ GREEN` can only form from here via the ordinary formation breakout, exactly as if starting from scratch.
-- The exact mirror applies to House of Bear: **`SAR SL2`** resets unconditionally to a fresh **TZ RED** search.
+**REAR SL is fully recursive/self-similar to BAR SL**: if REAR's own generation later deep-SLs, the exact same race reopens *on that same lineage* — a further TZ GREEN(N+2) vs. a new REAR reforming off REAR 2's own reference. If REAR's own generation SLs *before* REAR 2 ever formed, that lineage's generation-path dies permanently (no reference exists to reform against, same as any pre-BAR-2 deep SL) — but if that lineage's own anchor (from when it started life as a fresh TZ GREEN cycle) is still alive, the anchor itself is unaffected and keeps ticking its ordinary HH/LL/SL (§1/§2 tracking was never gated on generation state).
 
-## 10. Summary — the repeating generational engine
+**The anchor's own SL remains an unconditional, total termination of its entire lineage** (§1) — including any generation-level state riding on it, such as a still-pending REAR recovery. This can extinguish a REAR opportunity before it ever gets a chance to fire, even though the REAR recovery's own reference (BAR 2's High) is otherwise unrelated to whatever broke the anchor's own Low. Confirmed case: a BAR SL on 22-03-2021 opened a REAR window (target 617.85); the underlying TZ GREEN anchor (born 17-03) then hit its own SL on 25-03-2021 before REAR ever recovered, killing the pending REAR opportunity along with the rest of that lineage.
 
-There is really **one generational engine**: `BAR → BAR 2 → RED1 → RED2 → next BAR`, repeating for as long as each `BAR SL2` recovers via the direct reactivation path (§9). TZ GREEN/TZ GREEN 2 is the very start of a cycle. Post-BAR 2, SL is two-tiered (§6/§7): a shallow breach recovers lightly (a NEW BAR 2 reforms directly); a deep breach — whose threshold can itself get deeper over time as BAR 2's own inner reference ratchets past BAR's frozen outer one — triggers the full-restart path through `BAR SL2` (§9), which resets the whole thing back to a fresh TZ GREEN search. There is no recovery label that continues the old cycle past a deep SL2; the engine starts over from scratch. (§1–§10 describe this engine as it runs under House of Bull, where the generational label is `BAR`/`BAR 2`; §11 defines House of Bear's mirror, where the same engine's label is `SAR`/`SAR 2` instead.)
+## 9. Summary — the repeating generational engine
+
+There is really **one generational engine**: `BAR → BAR 2 → RED1 → RED2 → next BAR`, repeating for as long as recovery succeeds. TZ GREEN/TZ GREEN 2 is the very start of a cycle. Post-BAR 2, SL is two-tiered (§6/§7): a shallow breach recovers lightly (a NEW BAR 2 reforms directly); a deep breach — whose threshold can itself get deeper over time as BAR 2's own inner reference ratchets past BAR's frozen outer one — opens the permanent dual-track race described in §8 (a fresh TZ GREEN cycle vs. REAR reforming off the dead generation's own reference), which is itself fully recursive on the REAR side. There is no terminal "SL2" state anymore — the engine simply keeps racing between fresh-anchor and REAR-recovery attempts, forever, one level below the House of Bull/Bear split. (§1–§9 describe this engine as it runs under House of Bull, where the generational label is `BAR`/`BAR 2`/`REAR`/`REAR 2`; §10 defines House of Bear's mirror, where the same engine's label is `SAR`/`SAR 2`/`REAR`/`REAR 2` instead — REAR's own name does not flip between houses, only the ordinary generational label does.)
 
 ---
 
-## 11. House of Bull vs. House of Bear
+## 10. House of Bull vs. House of Bear
 
-Two full mirror-image structures, mostly sharing the same event vocabulary (the one deliberate exception: House of Bull's generational label is `BAR`/`BAR 2`, House of Bear's is `SAR`/`SAR 2`). **Both houses' engines always run, fully independently off the same raw price series, and always log — "active" means whichever house's own chain currently reaches furthest, not that the other stops being tracked or computed.** There is no cross-coupling in the implementation; the "shadow rebirth"/house-switch behavior described in §12 is an emergent consequence of both engines reading the same OHLC series with mirrored formulas, not a separate mechanism layered on top.
+Two full mirror-image structures, mostly sharing the same event vocabulary (the one deliberate exception: House of Bull's generational label is `BAR`/`BAR 2`, House of Bear's is `SAR`/`SAR 2`). **Both houses' engines always run, fully independently off the same raw price series, and always log — "active" means whichever house's own chain currently reaches furthest, not that the other stops being tracked or computed.** There is no cross-coupling in the implementation; the "shadow rebirth"/house-switch behavior described in §11 is an emergent consequence of both engines reading the same OHLC series with mirrored formulas, not a separate mechanism layered on top.
 
-**House of Bull** (as built in §1–§10):
+**House of Bull** (as built in §1–§9):
 ```
 TZ GREEN → TZ GREEN 2 → RED1 → RED2 → BAR → BAR 2 → RED1 → RED2 → ...
 ```
@@ -134,13 +136,13 @@ TZ RED → TZ RED 2 → GREEN1 → GREEN2 → SAR → SAR 2 → GREEN1 → GREEN
 - `GREEN1` = same condition shape as `TZ GREEN` (upside breakout), now serving as the pullback-within-a-downtrend structure.
 - `GREEN2` = same condition shape as `TZ GREEN 2`.
 - **`SAR` / `SAR 2`** = House of Bear's own name for the generational-engine label that House of Bull calls `BAR` / `BAR 2` — same condition shape as `TZ RED` / `TZ RED 2` (downside breakdown continuation). **`BAR`/`BAR 2` is Bull-only naming; `SAR`/`SAR 2` is the Bear equivalent.**
-- Every downstream mechanic built for Bull in §4–§9 under the name `BAR`/`BAR 2` (the two-tier SL split, the outer/inner ratchet during shallow-SL recovery, `BAR SL2` resetting to a fresh anchor) applies **exactly, direction-flipped, to `SAR`/`SAR 2`** in House of Bear — read every `BAR`/`BAR 2`/`BAR SL`/`BAR 2 SL`/`BAR SL2` in §4–§9 as `SAR`/`SAR 2`/`SAR SL`/`SAR 2 SL`/`SAR SL2` when applying those rules under House of Bear. **`SAR SL2` resets unconditionally to a fresh `TZ RED` search**, mirroring `BAR SL2` → fresh `TZ GREEN`.
+- Every downstream mechanic built for Bull in §4–§8 under the name `BAR`/`BAR 2` (the two-tier SL split, the outer/inner ratchet during shallow-SL recovery, the REAR/fresh-anchor dual-track race after a deep SL) applies **exactly, direction-flipped, to `SAR`/`SAR 2`** in House of Bear — read every `BAR`/`BAR 2`/`BAR SL`/`BAR 2 SL` in §4–§8 as `SAR`/`SAR 2`/`SAR SL`/`SAR 2 SL` when applying those rules under House of Bear. REAR's own name is unchanged in House of Bear (it is not renamed to anything SAR-flavored) — only its ratchet-event naming flips field-literally (`INVALID REAR LL` instead of `INVALID REAR HH`, tracking SAR 2's own reference Low).
 
-## 12. House-switch mechanic
+## 11. House-switch mechanic
 
 **Both houses' full engines run continuously and independently off raw price, from day 1, forever — neither is ever dormant, and both are logged every time either fires an event.** "Active" simply means whichever house's own chain reaches further/triggers first; that does not stop the other house's engine from computing and logging.
 
-**Which house is active initially:** determined purely by whichever chain (TZ GREEN's or TZ RED's own independent anchor search) completes its own sequence through to a `BAR`/`SAR` first. Both can — and typically do — produce events on the very same early dates before this is settled (see the case-study table in §14).
+**Which house is active initially:** determined purely by whichever chain (TZ GREEN's or TZ RED's own independent anchor search) completes its own sequence through to a `BAR`/`SAR` first. Both can — and typically do — produce events on the very same early dates before this is settled (see the case-study table in §13).
 
 **The repeating rebirth/termination cycle** (this is the actual mechanism behind the switch, not a one-shot check):
 - Every time the *active* house produces a fresh pullback (RED1→RED2 for an active House of Bull; GREEN1→GREEN2 for an active House of Bear), that identical price action *simultaneously* forms a fresh anchor pair for the *non-active* house (`TZ RED`/`TZ RED 2`, or `TZ GREEN`/`TZ GREEN 2`, respectively) — logged under both houses the same day.
@@ -164,17 +166,17 @@ new RED1 - RED2                                          -> this RED1/RED2 IS Be
 
 **Bear → Bull switch is the exact symmetric mirror**, using GREEN1/GREEN2 pullbacks, downside BAR/BAR 2 continuations, and TZ GREEN/TZ GREEN 2 as the reborn/terminated non-active anchor.
 
-**After a switch — reclaiming active status is different from mere tracking.** The house that just lost active status does **not** stop being tracked or logged. But to become the *active* house again, that house must complete a **brand-new anchor from scratch** (a fresh `TZ GREEN` for Bull, a fresh `TZ RED` for Bear), not a continuation of its old pre-switch lineage. This is the only way any cycle restarts, whether from a house-switch or from `BAR`/`SAR SL2` (§9) — there is no other recovery path.
+**After a switch — reclaiming active status is different from mere tracking.** The house that just lost active status does **not** stop being tracked or logged. But to become the *active* house again, that house must complete a **brand-new anchor from scratch** (a fresh `TZ GREEN` for Bull, a fresh `TZ RED` for Bear), not a continuation of its old pre-switch lineage — unless it instead wins the §8 dual-track race via REAR, which is the other route back to being active without a brand-new anchor.
 
-## 13. Output format — House column
+## 12. Output format — House column
 
 A **House** column is added alongside the Event column in the report output.
 
 - Every date lists **every** house whose engine produced an event that day — `BULL`, `BEAR`, or `BULL + BEAR` — with the corresponding event(s) listed side by side (e.g., `RED1 + TZ RED`, `BAR 2 SL + TZ RED`, `BAR + GREEN1`).
 - On the exact date a house-switch confirms, the event printed for that date uses the **new** house's naming for that step, not the old house's.
-- This is a continuous, permanent feature of the output — both houses' events keep appearing side-by-side for the life of the dataset, per §12's repeating rebirth/termination cycle, not only before the first switch ever happens.
+- This is a continuous, permanent feature of the output — both houses' events keep appearing side-by-side for the life of the dataset, per §11's repeating rebirth/termination cycle, not only before the first switch ever happens.
 
-## 14. Worked case-study excerpts (from the user, confirmed correct)
+## 13. Worked case-study excerpts (from the user, confirmed correct)
 
 **Early sequencing (01/01–15/01):**
 ```
@@ -191,19 +193,33 @@ DATE      HOUSE OF     EVENT
 ```
 Row 03/01 lists `BULL + BEAR` — TZ RED SL is still a House-of-Bear event and must be tagged as such even though Bear has no further live structure that day; a house tag is never dropped just because that house's structure terminated on the same date.
 
-**BAR/SAR SL2 (permanent terminal failure), and the outer/inner ratchet:**
+**Deep SL aftermath — pre-BAR2 (no REAR possible, fresh TZ GREEN is the only path), and the outer/inner ratchet:**
 ```
 DATE      HOUSE OF     EVENT
-25/02     BULL         BAR SL2                [reset to fresh TZ GREEN search]
-01/03     BULL         TZ GREEN               [new cycle starts, as expected]
+15/02     BULL         BAR SL                 [pre-BAR2 SL: deep by default, no BAR2 reference exists]
+17/02     BULL         TZ GREEN               [only path available: fresh anchor from scratch]
 03/03     BEAR         SAR 2 SL + SAR HH      [shallow SL; outer ref ALSO ratchets same day]
-05/03     BEAR         SAR SL2                [reset to fresh TZ RED search]
 22/03     BEAR         SAR HH: 616            [outer/deep ref ratchets during awaiting-recovery]
 24/03     BEAR         SAR 2 HH: 614          [inner ref ratchets independently, still below outer]
 01/04     BEAR         SAR AND SAR 2 HH       [High 616.05 clears BOTH — outer and inner converge;
                                                 from here, any close past this level = plain SAR SL]
 31/03     BULL + BEAR  GREEN2 fires same day SAR2 SL fires — the already-attached pullback
                         (GREEN1→GREEN2) is NOT cleared by its parent SAR's same-day SL.
+```
+
+**Deep SL after BAR 2 has formed — a REAR window opens, then gets extinguished by the anchor's own SL:**
+```
+DATE      HOUSE OF     EVENT
+19/03     BULL         TZ GREEN 2 + BAR        [BAR forms under the TZ GREEN anchor born 17/03]
+20/03     BULL         BAR 2                   [BAR 2 forms -- REAR reference (617.85) now exists]
+22/03     BULL         BAR SL                  [deep SL -- opens the dual-track race: fresh TZ GREEN(N+1)
+                                                 vs. REAR reforming above 617.85; price never gets there]
+24/03     BULL         TZ GREEN LL             [the ANCHOR itself -- unaffected by the dead generation --
+                                                 keeps ticking its own ordinary tracking]
+25/03     BULL         TZ GREEN SL             [the anchor's OWN SL fires -- total, unconditional --
+                                                 killing the whole lineage, REAR opportunity included,
+                                                 before REAR ever got a chance to reform]
+30/03     BULL         TZ GREEN                [fresh anchor search succeeds -- the only path left]
 ```
 
 **Two-tier SL and shallow recovery (11/04–14/04):**
@@ -215,8 +231,9 @@ DATE      HOUSE OF     EVENT
 14/04     BULL + BEAR  BAR 2 + TZ RED SL       [NEW BAR 2 reforms directly, skipping a plain BAR]
 ```
 
-## 15. Open items — pending case-study verification
+## 14. Open items — pending case-study verification
 
-- **Multi-generation racing (§8)**: the richer BAR(n)/BAR(n+1) coexistence-with-dormancy model originally described (BAR(n) staying "active/racing" until BAR 2(n+1) confirms or its own reactivation fires, whichever is earlier) has not been exercised by any date in the case-study dataset so far. Current implementation always replaces the front generation immediately. Needs a case study where a second BAR forms while the first is still alive to resolve.
+- **REAR has not yet been observed actually firing** in the case-study dataset. All 3 deep SLs so far either preceded BAR 2/SAR 2 ever forming (15/02, 21/02 — no REAR reference exists, so only the fresh-anchor path was ever possible), or opened a genuine REAR window that was then extinguished by the underlying anchor's own SL before REAR could reform (22/03 → 25/03, see §13). The REAR formation/REAR 2/dormancy-and-reactivation mechanics are implemented and internally consistent with everything else in this spec, but remain **unexercised by a real confirmed REAR** — a case study where REAR actually reforms (rather than being cut off first) is needed to fully validate §8.
+- **Two simultaneously-alive lineages (the dormancy race itself) has not yet been observed** for the same reason — since REAR has never actually formed, there has never yet been a moment where a fresh TZ GREEN(N+1) cycle and a live REAR lineage were both alive at once, racing to their own "2" stage. The active/dormant determination and the shared `gen_pending` cross-lineage consumption (§8) are implemented but likewise unexercised by a real date so far.
 - Whether the $0.20 / $0.01 thresholds need to scale for weekly/monthly/yearly candles remains an open question inherited unchanged from the original rule book (§13 there).
 - Reference implementation: `bar_rule_simulator.py` (this repo), run against the full 01-01-2021–24-04-2021 case-study dataset. Not yet merged into `tz_engine_v9.py` as a production rule variant.

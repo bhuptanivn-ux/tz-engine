@@ -1,22 +1,45 @@
 """
-BAR rule simulator v2 -- corrected per user's cross-verification of the
-16-day case study (08/11/12/16-01 corrections):
+BAR rule simulator v3 -- removes BAR SL2 entirely. Per the user's latest
+correction: the cycle no longer has a terminal "SL2" failure state. Instead,
+after a DEEP BAR/SAR SL (post-stage2, breaking the outer min/max threshold;
+or any BAR/SAR SL before stage2 ever formed), TWO permanently co-existing
+recovery paths open up:
 
-  - HH/LL are named by literal field (High=HH, Low=LL) in both houses.
-  - Once a structure's own "...2" stage forms, it permanently governs
-    (silences further display of) whichever side its OWN formation
-    condition is about (High side for TZ GREEN2/BAR2/SAR2's mirror-
-    opposite... concretely: TZ GREEN2/BAR2 govern the High side,
-    TZ RED2/SAR2 govern the Low side). The other side keeps tracking
-    and displaying independently, forever, on ANY new extension.
-  - A pullback (RED1/GREEN1) cannot (re)attach for a generation until
-    THAT generation's own "...2" has already formed.
-  - RED1/GREEN1's own SL ("INVALID RED1/GREEN1") cannot fire once its
-    own RED2/GREEN2 has already consumed it.
-  - The anchor's own SL event is named "TZ GREEN SL" / "TZ RED SL",
-    not "INVALID TZ GREEN/RED". Same convention applied to BAR/SAR SL.
-  - SL is always checked first and returns immediately (no double
-    counting with a child structure's own SL the same day).
+  a) NEW TZ GREEN/TZ RED cycle -- a wholly fresh anchor search, independent
+     of the dead generation's own reference (only possible if no gen was
+     already stage2_formed... no, actually always possible; if the dead gen
+     never reached BAR2, only this path exists).
+  b) REAR -- reforms directly above/below the dead generation's own BAR2/SAR2
+     reference (only possible if that generation HAD reached stage2). Gets
+     its own REAR 2 (identical mechanics to BAR 2: ungoverned dual HH/LL,
+     two-tier SL), then RED1/RED2 attach to REAR 2 exactly like BAR 2. Once
+     RED2 fires there, the NEXT generation reverts to plain BAR/BAR 2 naming
+     -- REAR is only the label for the one generation immediately recovering
+     from a deep SL.
+
+Whichever of (a)/(b) reaches its own stage2 (BAR2(N+1) vs REAR 2) FIRST
+becomes "active"; the other does NOT terminate -- it goes DORMANT (per the
+user: "stay dormant and not terminated"), and this is a PERMANENT ongoing
+dual-track, not a one-time decision -- exactly mirroring the House of
+Bull/Bear split, just one level down. A dormant lineage's own frozen
+reference (BAR2's/REAR2's own High/Low) keeps ratcheting via ordinary price
+action even while dormant (labeled "INVALID REAR HH"/"INVALID REAR LL" while
+literally awaiting a REAR reformation) -- so it's available again with an
+up-to-date reference if the other, currently-active lineage later fails.
+
+gen_pending (from any lineage's RED2) is a per-HOUSE shared signal: ANY
+lineage that is itself alive and past its own stage2 can independently
+consume it to form its own next generation -- this models the user's
+"if REAR 2 IS ALSO BAR 2(N+1), record that at the backend" / "any new green
+can be BAR(N+1) since RED1 and RED2 has also occurred" notes.
+
+REAR SL is fully recursive/self-similar to BAR SL: if REAR's own generation
+later deep-SLs, the exact same race reopens (a further TZ GREEN(N+2) vs a
+new REAR reforming off REAR2's own reference), on the SAME lineage object
+(REAR is just a naming state that toggles on/off within one lineage's life,
+not a separate lineage kind). If REAR's own gen SLs before REAR 2 ever
+formed, that lineage dies permanently (no reference exists to reform
+against) -- this matches the user's explicit worked example.
 """
 
 THRESH = 0.20
@@ -141,32 +164,33 @@ rows = [
 
 
 class Struct:
-    """One ref_high/ref_low-bearing structure: TZ GREEN/TZ RED, or a BAR/SAR lineage."""
     def __init__(self, ref_high, ref_low, name):
         self.ref_high = ref_high
         self.ref_low = ref_low
         self.alive = True
         self.stage2_formed = False
-        self.name = name  # "TZ GREEN" / "TZ RED" / "BAR" / "SAR"
-        # Gen-only, set once stage2 (BAR2/SAR2) forms: the OUTER/deeper reference frozen from
-        # BAR's own life before BAR2 reset ref_high/ref_low to its own fresh inner tracking.
-        self.bar_ref_low = None   # bullish: BAR's own (pre-BAR2) ref_low, frozen at BAR2 formation
-        self.bar_ref_high = None  # bearish mirror: SAR's own (pre-SAR2) ref_high
-        self.deep_sl = None       # set True/False when this gen's SL fires, post-stage2
+        self.name = name
+        self.bar_ref_low = None
+        self.bar_ref_high = None
 
 
-def run_house(rows, bullish, gen_name, debug=False):
+class Lineage:
+    def __init__(self):
+        self.anchor = None          # Struct, only for a lineage that began as a fresh TZ GREEN/TZ RED
+        self.pullback = None        # RED1/GREEN1 tracker
+        self.gen = None             # current BAR/SAR (or REAR while gen_is_rear) Struct
+        self.gen_started = False    # True once this lineage's first gen has ever formed
+        self.bar2_recovery = None   # shallow-SL "NEW BAR2/REAR2 reforms directly" awaiting state
+        self.rear_recovery = None   # deep-SL "REAR reforms directly" awaiting state
+        self.dead = False           # permanently dead -- no recovery reference exists
+        self.gen_is_rear = False    # current/next gen displays as REAR/REAR2 rather than BAR/BAR2
+
+
+def run_house(rows, bullish, gen_name, anchor_name):
     events = [[] for _ in rows]
-    anchor_name = "TZ GREEN" if bullish else "TZ RED"
-    anchor = None
-    pullback = None       # RED1/GREEN1 tracker: dict(ref_high, ref_low, active)
-    gen_pending = False    # bar_pending / sar_pending
-    gen = None             # current BAR/SAR Struct
-    gen_started = False    # True once a BAR/SAR has EVER formed -- enables the SL-recovery
-                            # path (a fresh gen via plain breakout, independent of gen_pending)
-                            # once an earlier generation has existed and died via its own SL.
-    sl_struct = None       # post-SL tracker: its own ref_high/ref_low, checked for SL2 each day
-    bar2_recovery = None   # post-shallow-SL tracker: awaiting a NEW BAR2/SAR2 reforming directly
+    lineages = []
+    gen_pending = False        # shared per-house: any lineage's RED2 sets it; any eligible lineage may consume it
+    awaiting_fresh_anchor = True
 
     def up_break(ph, pl, h, l, c):
         return l >= pl and h > ph + THRESH and c >= ph
@@ -178,9 +202,6 @@ def run_house(rows, bullish, gen_name, debug=False):
         return up_break(ph, pl, h, l, c) if bullish else down_break(ph, pl, h, l, c)
 
     def process_anchor(s, i, h, l, c, label_prefix):
-        """SL check, stage2 check, HH/LL tracking for the anchor (TZ GREEN/TZ RED). Returns True
-        if SL fired. TZ GREEN2/TZ RED2 governs (silences) one side of the anchor's own ongoing
-        tracking once it forms -- see spec SS1/SS2."""
         if bullish:
             sl_hit = (s.ref_low - l) >= THRESH and c <= s.ref_low
         else:
@@ -189,7 +210,6 @@ def run_house(rows, bullish, gen_name, debug=False):
             events[i].append(f"{label_prefix} SL")
             s.alive = False
             return True
-
         if not s.stage2_formed:
             if bullish:
                 stage2 = (h > s.ref_high + THRESH) and (l >= rows[i - 1][3]) and (c >= s.ref_high)
@@ -202,65 +222,52 @@ def run_house(rows, bullish, gen_name, debug=False):
                     s.ref_low = l
                 s.stage2_formed = True
                 events[i].append(f"{label_prefix} 2")
-                return False  # no HH/LL same day as stage2 formation
-
+                return False
         high_governed = s.stage2_formed and bullish
         if not high_governed and h > s.ref_high + ANY:
             s.ref_high = h
             events[i].append(f"{label_prefix} HH")
-
         low_governed = s.stage2_formed and not bullish
         if not low_governed and l < s.ref_low - ANY:
             s.ref_low = l
             events[i].append(f"{label_prefix} LL")
-
         return False
 
-    def process_gen(s, i, h, l, c):
-        """SL check, stage2 (BAR2/SAR2) check, HH/LL tracking for the gen (BAR/SAR). Returns
-        True if SL fired (either tier). Unlike the anchor, BAR2/SAR2 record BOTH HH and LL fully,
-        forever, ungoverned (spec SS5). Post-BAR2, SL is two-tiered: a SHALLOW breach of BAR2's
-        own (inner) reference is "{gen_name} 2 SL" (recovery = a fresh BAR2 reforms directly); a
-        DEEP breach of BAR's own frozen (outer) reference -- which only gets LOWER over time as
-        BAR2's own inner reference ratchets past it -- is "{gen_name} SL" (recovery = a full
-        fresh BAR generation from scratch)."""
+    def process_gen(s, i, h, l, c, label):
+        """Returns 'deep', 'shallow', or None."""
         if not s.stage2_formed:
             if bullish:
                 sl_hit = (s.ref_low - l) >= THRESH and c <= s.ref_low
             else:
                 sl_hit = (h - s.ref_high) >= THRESH and c >= s.ref_high
             if sl_hit:
-                events[i].append(f"{gen_name} SL")
+                events[i].append(f"{label} SL")
                 s.alive = False
-                s.deep_sl = True  # pre-BAR2 SL is always the "deep"/full-restart kind
-                return True
-
+                return "deep"
             if bullish:
                 stage2 = (h > s.ref_high + THRESH) and (l >= rows[i - 1][3]) and (c >= s.ref_high)
             else:
                 stage2 = (l < s.ref_low - THRESH) and (h <= rows[i - 1][2]) and (c <= s.ref_low)
             if stage2:
                 if bullish:
-                    s.bar_ref_low = s.ref_low  # freeze BAR's own outer threshold
+                    s.bar_ref_low = s.ref_low
                     s.ref_high = h
-                    s.ref_low = l              # BAR2's own fresh inner threshold starts here
+                    s.ref_low = l
                 else:
                     s.bar_ref_high = s.ref_high
                     s.ref_low = l
                     s.ref_high = h
                 s.stage2_formed = True
-                events[i].append(f"{gen_name} 2")
-                return False
-
+                events[i].append(f"{label} 2")
+                return None
             if h > s.ref_high + ANY:
                 s.ref_high = h
-                events[i].append(f"{gen_name} HH")
+                events[i].append(f"{label} HH")
             if l < s.ref_low - ANY:
                 s.ref_low = l
-                events[i].append(f"{gen_name} LL")
-            return False
+                events[i].append(f"{label} LL")
+            return None
 
-        # Post-BAR2/SAR2: two-tier SL.
         if bullish:
             deep_threshold = min(s.bar_ref_low, s.ref_low)
             shallow_sl = (s.ref_low - l) >= THRESH and c <= s.ref_low
@@ -271,293 +278,237 @@ def run_house(rows, bullish, gen_name, debug=False):
             deep_sl = (h - deep_threshold) >= THRESH and c >= deep_threshold
 
         if deep_sl:
-            events[i].append(f"{gen_name} SL")
+            events[i].append(f"{label} SL")
             s.alive = False
-            s.deep_sl = True
-            return True
+            return "deep"
         if shallow_sl:
-            events[i].append(f"{gen_name} 2 SL")
+            events[i].append(f"{label} 2 SL")
             s.alive = False
-            s.deep_sl = False
-            return True
+            return "shallow"
 
         if h > s.ref_high + ANY:
             s.ref_high = h
-            events[i].append(f"{gen_name} 2 HH")
+            events[i].append(f"{label} 2 HH")
         if l < s.ref_low - ANY:
             s.ref_low = l
-            events[i].append(f"{gen_name} 2 LL")
-        return False
+            events[i].append(f"{label} 2 LL")
+        return None
+
+    def process_pullback(lin, i, h, l, c, ph, pl):
+        nonlocal gen_pending
+        pullback = lin.pullback
+        if pullback is None or not pullback["active"]:
+            if bullish:
+                attach = h <= ph and (pl - l) >= THRESH and c <= pl
+            else:
+                attach = l >= pl and (h - ph) >= THRESH and c >= ph
+            if attach:
+                lin.pullback = {"ref_high": h, "ref_low": l, "active": True}
+                events[i].append("RED1" if bullish else "GREEN1")
+                return True
+            return False
+
+        pb = pullback
+        if bullish:
+            red2 = l <= pb["ref_low"] and h <= ph and (ph - pl) >= THRESH and c <= pb["ref_low"] + 0.001
+        else:
+            red2 = h >= pb["ref_high"] and l >= pl and (ph - pl) >= THRESH and c >= pb["ref_high"] - 0.001
+        if red2:
+            events[i].append("RED2" if bullish else "GREEN2")
+            pb["active"] = False
+            gen_pending = True
+            return True
+
+        if bullish:
+            invalid = (h - pb["ref_high"]) >= THRESH and c >= pb["ref_high"]
+        else:
+            invalid = (pb["ref_low"] - l) >= THRESH and c <= pb["ref_low"]
+        if invalid:
+            events[i].append("RED1 SL" if bullish else "GREEN1 SL")
+            pb["active"] = False
+            return True
+
+        fired = False
+        if bullish and l < pb["ref_low"]:
+            pb["ref_low"] = l
+            events[i].append("RED1 LL")
+            fired = True
+        elif (not bullish) and h > pb["ref_high"]:
+            pb["ref_high"] = h
+            events[i].append("GREEN1 HH")
+            fired = True
+        if bullish and h > pb["ref_high"]:
+            pb["ref_high"] = h
+            events[i].append("RED1 HH")
+            fired = True
+        elif (not bullish) and l < pb["ref_low"]:
+            pb["ref_low"] = l
+            events[i].append("GREEN1 LL")
+            fired = True
+        return fired
 
     for i in range(1, len(rows)):
         _, o, h, l, c = rows[i]
         _, po, ph, pl, pc = rows[i - 1]
 
-        if debug:
-            print(f"  {rows[i][0]}: anchor={None if anchor is None else (anchor.ref_high, anchor.ref_low, anchor.alive, anchor.stage2_formed)} pullback={pullback} gen_pending={gen_pending} gen={None if gen is None else (gen.ref_high, gen.ref_low, gen.alive, gen.stage2_formed)}")
+        newly_formed = set()
+        consumed_gen_pending_today = False
 
-        if anchor is None or not anchor.alive:
-            if formation_break(ph, pl, h, l, c):
-                anchor = Struct(h, l, anchor_name)
-                pullback = None
-                gen_pending = False
-                gen = None
-                gen_started = False
-                sl_struct = None
-                bar2_recovery = None
-                events[i].append(anchor_name)
-            continue
+        # 0. Fresh anchor search -- always live once triggered by an SL, until it succeeds.
+        if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c):
+            lin = Lineage()
+            lin.anchor = Struct(h, l, anchor_name)
+            lineages.append(lin)
+            awaiting_fresh_anchor = False
+            events[i].append(anchor_name)
+            newly_formed.add(id(lin))
 
-        sl_fired = process_anchor(anchor, i, h, l, c, anchor_name)
-        if sl_fired:
-            anchor = None
-            pullback = None
-            gen_pending = False
-            gen = None
-            gen_started = False
-            sl_struct = None
-            bar2_recovery = None
-            continue
-
-        def process_pullback():
-            """Returns True if it consumed the day's event slot (attach/RED2/invalid all do)."""
-            nonlocal pullback, gen_pending
-            if pullback is None or not pullback["active"]:
-                if bullish:
-                    attach = h <= ph and (pl - l) >= THRESH and c <= pl
-                else:
-                    attach = l >= pl and (h - ph) >= THRESH and c >= ph
-                if attach:
-                    pullback = {"ref_high": h, "ref_low": l, "active": True}
-                    events[i].append("RED1" if bullish else "GREEN1")
-                    return True
-                return False
-
-            pb = pullback
-            if bullish:
-                red2 = l <= pb["ref_low"] and h <= ph and (ph - pl) >= THRESH and c <= pb["ref_low"] + 0.001
-            else:
-                red2 = h >= pb["ref_high"] and l >= pl and (ph - pl) >= THRESH and c >= pb["ref_high"] - 0.001
-            if red2:
-                events[i].append("RED2" if bullish else "GREEN2")
-                pb["active"] = False
-                gen_pending = True
-                return True
-
-            if bullish:
-                invalid = (h - pb["ref_high"]) >= THRESH and c >= pb["ref_high"]
-            else:
-                invalid = (pb["ref_low"] - l) >= THRESH and c <= pb["ref_low"]
-            if invalid:
-                events[i].append("RED1 SL" if bullish else "GREEN1 SL")
-                pb["active"] = False
-                return True
-
-            fired = False
-            # "Deepening" side (further into the pullback, not yet confirming RED2/GREEN2):
-            # Low deepens for RED1 (a down-pullback); High deepens for GREEN1 (an up-pullback).
-            if bullish and l < pb["ref_low"]:
-                pb["ref_low"] = l
-                events[i].append("RED1 LL")
-                fired = True
-            elif (not bullish) and h > pb["ref_high"]:
-                pb["ref_high"] = h
-                events[i].append("GREEN1 HH")
-                fired = True
-            # "Weak extension" side (per original rulebook §3: tracked even though it's the
-            # opposite side from the pullback's own direction): High for RED1, Low for GREEN1.
-            if bullish and h > pb["ref_high"]:
-                pb["ref_high"] = h
-                events[i].append("RED1 HH")
-                fired = True
-            elif (not bullish) and l < pb["ref_low"]:
-                pb["ref_low"] = l
-                events[i].append("GREEN1 LL")
-                fired = True
-            return fired
-
-        # Awaiting a "NEW BAR 2" reforming directly (the shallow-SL recovery path): each day,
-        # check first for the recovery itself (clearing BAR2's own frozen reference high/low),
-        # then for escalation into the deep/full-restart path if price breaks the frozen deep
-        # threshold too (per user: the deep breach "whether earlier or same day" still applies).
-        if bar2_recovery is not None:
-            ref = bar2_recovery["ref"]
-            deep_threshold = bar2_recovery["deep_threshold"]
-            if bullish:
-                recovers = l >= pl and h > ref + THRESH and c >= ref
-                escalates = (deep_threshold - l) >= THRESH and c <= deep_threshold
-            else:
-                recovers = h <= ph and l < ref - THRESH and c <= ref
-                escalates = (h - deep_threshold) >= THRESH and c >= deep_threshold
-            if recovers:
-                gen = Struct(h, l, gen_name)
-                gen.stage2_formed = True
-                if bullish:
-                    gen.bar_ref_low = bar2_recovery["outer"]
-                else:
-                    gen.bar_ref_high = bar2_recovery["outer"]
-                bar2_recovery = None
-                events[i].append(f"{gen_name} 2")
+        for lin in lineages:
+            if lin.dead or id(lin) in newly_formed:
                 continue
-            if escalates:
-                sl_struct = Struct(h, l, f"{gen_name} SL")
-                bar2_recovery = None
-                events[i].append(f"{gen_name} SL")
-                continue
-            # else: still awaiting recovery. Both the outer ("{gen_name} HH"/"LL") and inner
-            # ("{gen_name} 2 HH"/"LL") thresholds keep ratcheting on the adverse side (High for
-            # bearish, Low for bullish) independently, using the ordinary ANY threshold -- this
-            # is what "{gen_name} HH is continuously evaluated for {gen_name} SL" means: once
-            # the two converge to the same value, any further close past it is a plain
-            # "{gen_name} SL" (deep), since there's no more shallow/deep distinction.
-            inner_adverse = bar2_recovery["inner_adverse"]
-            if bullish:
-                if bar2_recovery["outer"] - l >= ANY:
-                    bar2_recovery["outer"] = l
-                    events[i].append(f"{gen_name} LL")
-                if inner_adverse - l >= ANY:
-                    bar2_recovery["inner_adverse"] = l
-                    events[i].append(f"{gen_name} 2 LL")
-            else:
-                if h - bar2_recovery["outer"] >= ANY:
-                    bar2_recovery["outer"] = h
-                    events[i].append(f"{gen_name} HH")
-                if h - inner_adverse >= ANY:
-                    bar2_recovery["inner_adverse"] = h
-                    events[i].append(f"{gen_name} 2 HH")
-            bar2_recovery["deep_threshold"] = (
-                min(bar2_recovery["outer"], bar2_recovery["inner_adverse"]) if bullish
-                else max(bar2_recovery["outer"], bar2_recovery["inner_adverse"])
-            )
 
-        # Process the current gen's own SL every day it exists and is alive (its own SL always
-        # applies regardless of gen_pending, per the original book's "SL always checked").
-        gen_sl_fired_today = False
-        if gen is not None and gen.alive:
-            outer_before = gen.bar_ref_low if bullish else gen.bar_ref_high
-            gen_sl = process_gen(gen, i, h, l, c)
-            if gen_sl:
-                if gen.deep_sl:
-                    sl_struct = Struct(h, l, f"{gen_name} SL")  # full-restart path, as before
+            # --- Anchor-level processing (before/independent of any gen) ---
+            if lin.anchor is not None and lin.anchor.alive:
+                sl_fired = process_anchor(lin.anchor, i, h, l, c, anchor_name)
+                if sl_fired:
+                    lin.dead = True
+                    awaiting_fresh_anchor = True
+                    continue
+
+            # --- Shallow-SL recovery window: NEW BAR2/REAR2 reforms directly ---
+            if lin.bar2_recovery is not None:
+                rec = lin.bar2_recovery
+                ref = rec["ref"]
+                if bullish:
+                    recovers = l >= pl and h > ref + THRESH and c >= ref
                 else:
-                    # Shallow: await a NEW BAR 2 reforming directly above BAR2's own last high
-                    # (bullish) / below BAR2's own last low (bearish); track the deep threshold
-                    # too, in case price escalates into the full-restart path instead.
-                    inner_adverse = gen.ref_low if bullish else gen.ref_high
-                    # The outer threshold can ALSO ratchet on the very same day the shallow SL
-                    # fires (it's continuously evaluated, independent of the SL confirming) --
-                    # e.g. High clears the outer reference by ANY but Close doesn't hold above it
-                    # (so no deep SL confirms), yet the outer reference still extends and shows.
+                    recovers = h <= ph and l < ref - THRESH and c <= ref
+                if recovers:
+                    new_gen = Struct(h, l, gen_name)
+                    new_gen.stage2_formed = True
+                    if bullish:
+                        new_gen.bar_ref_low = rec["outer"]
+                    else:
+                        new_gen.bar_ref_high = rec["outer"]
+                    lin.gen = new_gen
+                    lin.bar2_recovery = None
+                    events[i].append(f"{'REAR' if lin.gen_is_rear else gen_name} 2")
+                    continue
+                else:
+                    outer_label = "REAR" if lin.gen_is_rear else gen_name
+                    inner_label = f"{'REAR' if lin.gen_is_rear else gen_name} 2"
+                    inner_adverse = rec["inner_adverse"]
+                    if bullish:
+                        if rec["outer"] - l >= ANY:
+                            rec["outer"] = l
+                            events[i].append(f"{outer_label} LL")
+                        if inner_adverse - l >= ANY:
+                            rec["inner_adverse"] = l
+                            events[i].append(f"{inner_label} LL")
+                    else:
+                        if h - rec["outer"] >= ANY:
+                            rec["outer"] = h
+                            events[i].append(f"{outer_label} HH")
+                        if h - inner_adverse >= ANY:
+                            rec["inner_adverse"] = h
+                            events[i].append(f"{inner_label} HH")
+
+            # --- Deep-SL recovery window: REAR reforms directly ---
+            if lin.rear_recovery is not None:
+                rec = lin.rear_recovery
+                ref = rec["ref"]
+                if bullish:
+                    recovers = l >= pl and h > ref + THRESH and c >= ref
+                else:
+                    recovers = h <= ph and l < ref - THRESH and c <= ref
+                if recovers:
+                    new_gen = Struct(h, l, "REAR")
+                    lin.gen = new_gen
+                    lin.gen_started = True
+                    lin.gen_is_rear = True
+                    lin.rear_recovery = None
+                    events[i].append("REAR")
+                    continue
+                else:
+                    if bullish:
+                        if h - ref >= ANY:
+                            rec["ref"] = h
+                            events[i].append("INVALID REAR HH")
+                    else:
+                        if ref - l >= ANY:
+                            rec["ref"] = l
+                            events[i].append("INVALID REAR LL")
+
+            # --- gen's own SL/stage2/HH-LL ---
+            if lin.gen is not None and lin.gen.alive:
+                label = "REAR" if lin.gen_is_rear else gen_name
+                gen_sl_kind = process_gen(lin.gen, i, h, l, c, label)
+                if gen_sl_kind == "deep":
+                    if lin.gen.stage2_formed:
+                        ref_val = lin.gen.ref_high if bullish else lin.gen.ref_low
+                        lin.rear_recovery = {"ref": ref_val}
+                    # else: no stage2 reference ever existed, so no REAR is possible for this
+                    # gen-path -- but the lineage itself (and its own anchor, if still alive)
+                    # is NOT killed; the anchor keeps ticking its own HH/LL/SL exactly as
+                    # before. gen_started is already True, so this lineage's front is
+                    # permanently None from here on (no anchor-fallback per the "active BAR
+                    # required" rule) -- it simply never forms another gen on its own.
+                    awaiting_fresh_anchor = True
+                    lin.gen = None
+                elif gen_sl_kind == "shallow":
+                    label = "REAR" if lin.gen_is_rear else gen_name
+                    inner_adverse = lin.gen.ref_low if bullish else lin.gen.ref_high
+                    outer_before = lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high
                     outer_now = outer_before
                     if bullish:
                         if outer_before - l >= ANY:
                             outer_now = l
-                            events[i].append(f"{gen_name} LL")
+                            events[i].append(f"{label} LL")
                     else:
                         if h - outer_before >= ANY:
                             outer_now = h
-                            events[i].append(f"{gen_name} HH")
-                    if bullish:
-                        deep_threshold = min(outer_now, inner_adverse)
-                    else:
-                        deep_threshold = max(outer_now, inner_adverse)
-                    bar2_recovery = {
-                        "ref": gen.ref_high if bullish else gen.ref_low,  # favorable side (recovery)
-                        "inner_adverse": inner_adverse,  # adverse side, inner ("{gen_name} 2 LL/HH")
-                        "deep_threshold": deep_threshold,
-                        "outer": outer_now,  # adverse side, outer ("{gen_name} LL/HH")
+                            events[i].append(f"{label} HH")
+                    lin.bar2_recovery = {
+                        "ref": lin.gen.ref_high if bullish else lin.gen.ref_low,
+                        "inner_adverse": inner_adverse,
+                        "outer": outer_now,
                     }
-                gen = None
-                # NOTE: an already-active pullback (RED1/GREEN1 already attached) is NOT cleared
-                # here -- it continues resolving toward RED2/GREEN2 (or its own SL) independent
-                # of whether its parent BAR/SAR is still alive. Only a fresh (not-yet-attached)
-                # pullback is blocked from attaching without an active parent -- see the gating
-                # below. This matches the user's correction: GREEN1/GREEN2 keep being looked for
-                # "as long as SAR is active" for ATTACH, but an already-attached one continues
-                # regardless once formed.
-                # BAR/SAR SL does not kill the anchor or reset gen_pending here. Note: full
-                # multi-generation racing (an old BAR(n) continuing after BAR(n+1) forms, per
-                # the spec's SS8) is NOT modeled -- this simulator tracks only one "current
-                # front" generation at a time. Out of scope for this dataset so far.
-                gen_sl_fired_today = True
+                    lin.gen = None
 
-        # Post-SL tracking: SL2 check (permanent terminal), gated by reactivation NOT already
-        # firing this same day (checked first, below, via trigger_b -- reactivation always wins).
-        # Skipped on the same day gen's own SL just fired (that SL/recovery-setup IS today's
-        # event for this sub-structure; SL2 only applies on later days).
-        if sl_struct is not None and gen is None and not gen_sl_fired_today:
-            if bullish:
-                sl2 = (sl_struct.ref_low - l) >= THRESH and c <= sl_struct.ref_low
-            else:
-                sl2 = (h - sl_struct.ref_high) >= THRESH and c >= sl_struct.ref_high
-            reactivates_today = gen_started and formation_break(ph, pl, h, l, c)
-            if sl2 and not reactivates_today:
-                events[i].append(f"{gen_name} SL2")
-                # No REAR/REAR RE-ENTER in this logic -- SL2 always resets straight to a fresh
-                # TZ GREEN/TZ RED anchor search, unconditionally.
-                anchor = None
-                pullback = None
-                gen_pending = False
-                gen = None
-                gen_started = False
-                sl_struct = None
-                bar2_recovery = None
-                continue
-            if not reactivates_today:
-                # Ordinary SL-HH/SL-LL tracking (both sides, simple ANY threshold -- no "...2"
-                # object exists at this level to govern/silence either side).
-                if h > sl_struct.ref_high + ANY:
-                    sl_struct.ref_high = h
-                    events[i].append(f"{gen_name} SL HH")
-                if l < sl_struct.ref_low - ANY:
-                    sl_struct.ref_low = l
-                    events[i].append(f"{gen_name} SL LL")
+            # --- pullback attach/continue ---
+            front = None
+            if lin.gen is not None and lin.gen.alive:
+                front = lin.gen
+            elif not lin.gen_started and lin.anchor is not None and lin.anchor.alive:
+                front = lin.anchor
 
-        # Pullback (RED1/GREEN1) attaches/continues off whichever structure is currently the
-        # "front" of the chain -- gated uniformly on that structure's own "...2" having formed,
-        # AND on gen_pending being False. Per the original rule book: once a BAR/SAR SL has
-        # fired, RED1/RED2 (GREEN1/GREEN2) formation is NOT possible -- an ACTIVE BAR/SAR is
-        # required. The anchor only serves as "front" before any BAR/SAR has EVER existed
-        # (gen_started == False); once a generation has existed, only a live, alive gen can be
-        # "front" -- there is no falling back to the anchor after a BAR/SAR SL.
-        if gen is not None and gen.alive:
-            front = gen
-        elif not gen_started:
-            front = anchor
-        else:
-            front = None  # BAR/SAR SL'd, no active generation -- pullback formation blocked.
+            if lin.pullback is not None and lin.pullback["active"]:
+                process_pullback(lin, i, h, l, c, ph, pl)
+            elif front is not None and front.stage2_formed and not gen_pending:
+                process_pullback(lin, i, h, l, c, ph, pl)
 
-        if pullback is not None and pullback["active"]:
-            # Already-attached pullback: continues resolving toward RED2/GREEN2 (or its own SL)
-            # regardless of whether its parent gen is still alive.
-            process_pullback()
-        elif front is not None and front.stage2_formed and not gen_pending:
-            # Fresh attach still requires an active front (per the "active BAR required" rule).
-            process_pullback()
+            # --- fresh gen formation off the shared gen_pending signal ---
+            if gen_pending and front is not None and front.stage2_formed:
+                if formation_break(ph, pl, h, l, c):
+                    new_gen = Struct(h, l, gen_name)
+                    lin.gen = new_gen
+                    lin.gen_started = True
+                    lin.gen_is_rear = False
+                    events[i].append(gen_name)
+                    consumed_gen_pending_today = True
 
-        # BAR/SAR formation -- forms a NEW generation (replacing `gen` as the front), via a
-        # plain breakout check. Two independent triggers, per spec SS8:
-        # (A) gen_pending (RED2/GREEN2 fired): allowed even while an old gen is still technically
-        #     "alive" as long as ITS OWN stage2 already formed (its pullback-gating role is done;
-        #     BAR(N+1) can coexist with a still-racing BAR(n), per SS8).
-        # (B) gen_started (a prior generation existed and later died via its own SL): the direct
-        #     recovery path, independent of gen_pending/RED1-RED2 -- only once gen is truly dead.
-        trigger_a = gen_pending and (gen is None or not gen.alive or gen.stage2_formed)
-        trigger_b = gen_started and (gen is None or not gen.alive)
-        if trigger_a or trigger_b:
-            if formation_break(ph, pl, h, l, c):
-                gen = Struct(h, l, gen_name)
-                gen_pending = False
-                gen_started = True
-                sl_struct = None
-                bar2_recovery = None
-                events[i].append(gen_name)
+        # gen_pending is a persistent, shared-per-house signal: it stays available across
+        # days (any lineage that becomes eligible later can still consume it) until at least
+        # one lineage actually consumes it -- all lineages eligible on the SAME day consume it
+        # simultaneously (per the user's "recorded at the backend" note) before this clears.
+        if consumed_gen_pending_today:
+            gen_pending = False
 
     return events
 
 
-bull_events = run_house(rows, True, "BAR")
-bear_events = run_house(rows, False, "SAR")
+bull_events = run_house(rows, True, "BAR", "TZ GREEN")
+bear_events = run_house(rows, False, "SAR", "TZ RED")
 
 print(f"{'DATE':12}{'OPEN':8}{'HIGH':8}{'LOW':8}{'CLOSE':8}{'HOUSE':14}EVENT")
 for i, (d, o, h, l, c) in enumerate(rows):
