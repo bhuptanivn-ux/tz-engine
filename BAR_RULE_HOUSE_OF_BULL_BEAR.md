@@ -2,7 +2,7 @@
 
 **Purpose:** This is a variant rule set for the TZ engine, built on top of the same OHLC state-machine primitives as the original 37-event rule book (`TZ_ENGINE_RULEBOOK_REFERENCE.md`), but with a different structure hierarchy and an added dual-trend ("house") mechanic. Everything not explicitly overridden below inherits from the original rule book: `THRESH = 0.20` (main qualifying threshold), `ANY = 0.01` (minimum move for HH/LL qualification), and the general RED1/RED2 shared mechanic (§3 of the original).
 
-**Status:** Verified against the user's case-study OHLC dataset (01-01-2021 through 24-04-2021) via `bar_rule_simulator.py`, the reference implementation. **`BAR SL2` has been removed entirely.** REAR is back, in a new role: it is no longer a distinct pre-existing structure alongside TZ GREEN — it is specifically the label for the generation that recovers directly from a *deep* BAR/SAR SL, off that dead generation's own BAR 2/SAR 2 reference (see §8). This revision folds in the two-tier BAR/BAR 2 stop-loss split, ungoverned BAR 2 HH/LL tracking, the outer/inner reference ratchet during shallow-SL recovery, the pullback-persists-past-parent-SL correction, and the REAR/fresh-TZ-GREEN permanent dual-track that replaces `BAR SL2` — all confirmed against real dates (see §14).
+**Status:** Verified against the user's case-study OHLC datasets (01-01-2021 through 24-04-2021, and 01-01-2022 through 27-01-2022) via `bar_rule_simulator.py`, the reference implementation. **`BAR SL2` has been removed entirely.** REAR is back, in a new role: it is no longer a distinct pre-existing structure alongside TZ GREEN — it is specifically the label for the generation that recovers directly from a *deep* BAR/SAR SL, off that dead generation's own BAR 2/SAR 2 reference (see §8), and the REAR ladder itself now extends to a full REAR RE ENTER rung. This revision folds in the two-tier BAR/BAR 2 stop-loss split (now also mirrored exactly at the TZ GREEN/TZ GREEN 2 anchor level — see §1/§2), ungoverned BAR 2 HH/LL tracking, the outer/inner reference ratchet during shallow-SL recovery (including a fixed gap where escalation to a deep SL was never actually checked while awaiting a shallow recovery), the pullback-persists-past-parent-SL correction, and the REAR/fresh-TZ-GREEN permanent dual-track that replaces `BAR SL2` — all confirmed against real dates (see §14).
 
 ---
 
@@ -23,22 +23,24 @@ There is **no branch spawning and no branch-level dormancy at the TZ-GREEN-ancho
 
 ---
 
-## 1. TZ GREEN(n) — unchanged from the original rule book
+## 1. TZ GREEN(n) — mirrors BAR/BAR 2's exact two-tier mechanic
 
 - Formation: Low ≥ PrevLow, High > PrevHigh by ≥ 0.20, Close ≥ PrevHigh.
-- HH: any higher High ≥ 0.01 above the reference qualifies. **Before TZ GREEN 2 forms only** — once it forms, ongoing tracking switches entirely to TZ GREEN 2's own labels (see §2).
-- LL: any lower Low ≥ 0.01 below the reference qualifies. Same "before TZ GREEN 2 forms only" scoping.
-- SL ("TZ GREEN SL"): Low breaks ref_low by ≥ 0.20, Close **at or below** ref_low (`<=`, not strict `<`) → terminates the entire cycle permanently. Checked first every candle, returns immediately. Once TZ GREEN 2 has formed, this SL is relabeled `TZ GREEN 2 SL` (see §2) — it is still the anchor's one and only SL threshold, just renamed.
+- **Pre-TZ-GREEN-2**: a single, simple SL — Low breaks ref_low by ≥ 0.20, Close **at or below** it (`<=`, not strict `<`). Ordinary ungoverned HH/LL tracking, both sides, `ANY` = 0.01 threshold.
+- **The anchor is now structurally identical to BAR/BAR 2** (§4–§7) — not a simplified, single-SL version of it. TZ GREEN 2's formation freezes TZ GREEN's own reference Low as the *outer* threshold and starts TZ GREEN 2's own fresh *inner* reference Low, exactly like BAR 2 freezing BAR's own reference. This replaces an earlier version of this spec that gave TZ GREEN 2 only a single relabeled SL with no outer/inner split — confirmed wrong via exact numbers (see §14).
 - RED(n) itself does not exist in this chain (see §3) — replaced by RED1/RED2 attaching directly after TZ GREEN 2.
 
-## 2. TZ GREEN 2(n) — new
+## 2. TZ GREEN 2(n) — full mirror of BAR 2, including the two-tier SL and shallow-SL recovery
 
-- Formation: current-day High > TZ GREEN's reference High by ≥ 0.20, current-day Low ≥ PrevLow, current-day Close ≥ TZ GREEN's reference High.
-- No HH/LL tracked on the formation day itself.
-- **Own distinctly-labeled tracking, ungoverned (like BAR 2, not like the old TZ GREEN behavior)**: once TZ GREEN 2 forms, ongoing tracking is relabeled `TZ GREEN 2 HH`/`TZ GREEN 2 LL` — **both sides print on every new extension, forever**, with no side silenced. This replaces an earlier version of this spec where one side (High for bullish) was permanently silenced once TZ GREEN 2 formed; that governance rule no longer applies anywhere in this chain from TZ GREEN 2 onward. (House of Bear mirror: `TZ RED 2 HH`/`TZ RED 2 LL`, also ungoverned.)
-- **SL**: still just one threshold — the same one TZ GREEN always had (§1) — relabeled `TZ GREEN 2 SL` once TZ GREEN 2 has formed. No two-tier (outer/inner) split like BAR 2 has, and no separate "TZ GREEN 2 RE ENTER" recovery mechanic — a single simple SL, just renamed.
+- Formation: current-day High > TZ GREEN's reference High by ≥ 0.20, current-day Low ≥ PrevLow, current-day Close ≥ TZ GREEN's reference High. Freezes TZ GREEN's own reference Low as the outer threshold; TZ GREEN 2 starts its own fresh inner reference Low/High from the formation candle's own Low/High.
+- **Ungoverned dual HH/LL, exactly like BAR 2**: once TZ GREEN 2 forms, both `TZ GREEN 2 HH` and `TZ GREEN 2 LL` print on every new extension, forever, with no side silenced.
+- **Two-tier SL, exactly like BAR/BAR 2 (§6)**:
+  - `TZ GREEN 2 SL` (shallow): Low breaks TZ GREEN 2's own inner threshold by ≥ 0.20, Close doesn't reclaim, *and* the deep threshold isn't also breached the same day. Recovery: a fresh **TZ GREEN 2** reforms directly above the dead one's own last reference High, without needing a fresh plain TZ GREEN first — identical mechanics to §7's `NEW BAR 2 reforms directly` (same outer/inner ratchet during the awaiting window, same escalation check if the deep threshold is also breached while awaiting).
+  - `TZ GREEN SL` (deep): Low breaks `min(TZ GREEN's frozen outer ref_low, TZ GREEN 2's current inner ref_low)` by ≥ 0.20, Close doesn't reclaim. **Unlike the gen's own deep SL, this is a total, unconditional termination — "complete lineage dies."** There is no REAR-equivalent recovery for the anchor: a fresh `TZ GREEN(N+1)` can only form from here via the ordinary ground-up formation breakout.
+  - **Same-day priority, confirmed explicitly**: if both the shallow and deep thresholds are breached the same day, `TZ GREEN SL` (deep) is what gets recorded — never `TZ GREEN 2 SL` alongside it. This is the same "deep checked first, deep wins" convention as BAR/BAR 2, and the reason it matters: any future recovery-lineage logic (REAR, or anything downstream) needs to see the deep SL specifically, not a shallow one, to know the anchor is fully gone.
 - **Gates RED1**: RED1 cannot attach until TZ GREEN 2 has formed.
-- **No soft/close-based invalidation**: a Close below TZ GREEN 2's reference during RED1/RED2 formation does not end the cycle. The cycle stays active regardless of whether RED1/RED2 has fired. Only the anchor's own SL (§1, labeled `TZ GREEN 2 SL` from here on) can terminate everything.
+- **No soft/close-based invalidation**: a Close below TZ GREEN 2's reference during RED1/RED2 formation does not end the cycle. Only the anchor's own deep SL can terminate everything.
+- **Retirement once BAR 2 takes over**: the moment this lineage's *generation* (BAR, or any rung of the REAR ladder) reaches its own "2" stage for the first time, the anchor's own SL/stage2/HH-LL tracking — deep, shallow, and the shallow-SL recovery window alike — stops being checked or printed **permanently**, even if that generation later dies. From that point, `TZ GREEN 2 HH`/`LL` would only ever coincide exactly with `BAR 2 HH`/`LL` (they track from the same underlying reference), so recording both is pure redundancy. This retirement takes effect the *same day* the generation's own "2" forms — gen-level processing runs before anchor-level processing each day specifically so a same-day `BAR 2` formation suppresses that day's would-be redundant `TZ GREEN 2 HH`, not just future days'.
 
 ## 3. RED1(n) / RED2(n)
 
@@ -216,20 +218,28 @@ DATE      HOUSE OF     EVENT
                         (GREEN1→GREEN2) is NOT cleared by its parent SAR's same-day SL.
 ```
 
-**Deep SL after BAR 2 has formed — a REAR window opens, then gets extinguished by the anchor's own SL:**
+**TZ GREEN's own two-tier SL, shallow-SL recovery, and retirement once BAR 2 takes over (01/2022 case study, confirmed exact numbers):**
 ```
 DATE      HOUSE OF     EVENT
-19/03     BULL         TZ GREEN 2 + BAR        [BAR forms under the TZ GREEN anchor born 17/03]
-20/03     BULL         BAR 2                   [BAR 2 forms -- REAR reference (617.85) now exists]
-22/03     BULL         BAR SL                  [deep SL -- opens the dual-track race: fresh TZ GREEN(N+1)
-                                                 vs. REAR reforming above 617.85; price never gets there]
-24/03     BULL         TZ GREEN LL             [the ANCHOR itself -- unaffected by the dead generation --
-                                                 keeps ticking its own ordinary tracking]
-25/03     BULL         TZ GREEN SL             [the anchor's OWN SL fires -- total, unconditional --
-                                                 killing the whole lineage, REAR opportunity included,
-                                                 before REAR ever got a chance to reform]
-30/03     BULL         TZ GREEN                [fresh anchor search succeeds -- the only path left]
+06/01     BEAR         TZ RED 2 SL             [shallow: inner ref_high 297.05 breached; outer (299.85,
+                                                 frozen from TZ RED's own formation) untouched]
+08/01     BEAR         TZ RED 2                [shallow-SL recovery: a fresh TZ RED 2 reforms directly,
+                                                 NOT a mere LL update on the dead one]
+09/01     BEAR         TZ RED 2 HH + TZ RED 2 LL  [new TZ RED 2's own ungoverned dual tracking]
+10/01     BEAR         TZ RED 2 SL             [shallow again, on the recovered TZ RED 2]
+11/01     BEAR         TZ RED SL               [escalation: outer threshold (299.85) also breached while
+                                                 awaiting shallow recovery -- deep wins, COMPLETE LINEAGE
+                                                 DIES, no REAR-equivalent recovery for the anchor]
+23/01     BULL + BEAR  TZ GREEN 2 HH + BAR + TZ RED SL  [BAR forms same day a SEPARATE, later TZ RED
+                                                 lineage's own deep SL fires -- outer and inner coincide
+                                                 exactly (308) on this one, so deep wins per the same
+                                                 same-day-priority rule]
+24/01     BULL         BAR 2                   [BAR 2 forms -- TZ GREEN 2's own HH would be the SAME
+                                                 number (311) from here on, so it is retired THIS SAME
+                                                 day, not the next -- no redundant "TZ GREEN 2 HH" prints
+                                                 alongside "BAR 2"]
 ```
+(House of Bear mirror: read `TZ RED`/`TZ RED 2` for `TZ GREEN`/`TZ GREEN 2` and `SAR`/`SAR 2` for `BAR`/`BAR 2` throughout — the same dataset produces the Bull-side mirror at the corresponding dates.)
 
 **Two-tier SL and shallow recovery (11/04–14/04):**
 ```
@@ -242,7 +252,8 @@ DATE      HOUSE OF     EVENT
 
 ## 14. Open items — pending case-study verification
 
-- **REAR has not yet been observed actually firing** in the case-study dataset. All 3 deep SLs so far either preceded BAR 2/SAR 2 ever forming (15/02, 21/02 — no REAR reference exists, so only the fresh-anchor path was ever possible), or opened a genuine REAR window that was then extinguished by the underlying anchor's own SL before REAR could reform (22/03 → 25/03, see §13). The REAR formation/REAR 2/dormancy-and-reactivation mechanics are implemented and internally consistent with everything else in this spec, but remain **unexercised by a real confirmed REAR** — a case study where REAR actually reforms (rather than being cut off first) is needed to fully validate §8.
-- **Two simultaneously-alive lineages (the dormancy race itself) has not yet been observed** for the same reason — since REAR has never actually formed, there has never yet been a moment where a fresh TZ GREEN(N+1) cycle and a live REAR lineage were both alive at once, racing to their own "2" stage. The active/dormant determination and the shared `gen_pending` cross-lineage consumption (§8) are implemented but likewise unexercised by a real date so far.
+- **REAR itself now confirmed firing** in the 2021 case-study dataset (a direct consequence of today's anchor two-tier rework changing the trajectory from 19/03 onward): House of Bear's SAR deep-SLs on 03/04-2021 (`SAR SL`), opening a REAR window that successfully reforms as `REAR` on 04/04-2021, reaching its own `REAR 2` on 05/04-2021. This validates the base REAR/REAR 2 mechanics of §8 against a real date for the first time.
+- **`REAR RE ENTER` (the second rung of the ladder) has not yet been observed firing** — no date in either case-study dataset has produced a deep SL on a `REAR`/`REAR 2` structure itself (only on plain `BAR`/`SAR` or the anchor). Needs a case study where REAR's own generation deep-SLs to fully validate that escalation step.
+- **Two simultaneously-alive lineages (the dormancy race itself) has not yet been observed** — REAR's confirmed appearance (04/04-05/04) resolved into RED2/SAR 2 normally rather than lingering alongside a competing fresh TZ RED(N+1) cycle long enough to test which side reaches its own "2" first. The active/dormant determination and the shared `gen_pending` cross-lineage consumption (§8) are implemented but still unexercised by a real date.
 - Whether the $0.20 / $0.01 thresholds need to scale for weekly/monthly/yearly candles remains an open question inherited unchanged from the original rule book (§13 there).
-- Reference implementation: `bar_rule_simulator.py` (this repo), run against the full 01-01-2021–24-04-2021 case-study dataset. Not yet merged into `tz_engine_v9.py` as a production rule variant.
+- Reference implementation: `bar_rule_simulator.py` (this repo), run against both case-study datasets (01-01-2021–24-04-2021, 01-01-2022–27-01-2022). Not yet merged into `tz_engine_v9.py` as a production rule variant.

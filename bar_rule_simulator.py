@@ -193,6 +193,16 @@ class Lineage:
         # gets retired the moment the next fresh anchor successfully forms, matching the
         # single-lineage-at-a-time behavior everywhere except that one deliberate race.
         self.orphaned_anchor = False
+        # Once TRUE (permanently), the anchor's own SL/stage2/HH-LL tracking and any pending
+        # anchor-level shallow-SL recovery are no longer checked/printed at all -- BAR 2 (or
+        # REAR 2/REAR RE ENTER 2) has "taken over" and the anchor's own tracking would only
+        # ever coincide with the gen's from here on. Set the first time this lineage's gen
+        # reaches its own "2" stage, whether via the ordinary path or a ladder recovery.
+        self.anchor_retired = False
+        # Anchor-level mirror of bar2_recovery: after a SHALLOW anchor SL, awaits a fresh
+        # TZ GREEN 2/TZ RED 2 reforming directly above the dead one's own reference -- same
+        # mechanics as BAR 2's shallow-SL recovery, one level up.
+        self.anchor_recovery = None
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -217,43 +227,11 @@ def run_house(rows, bullish, gen_name, anchor_name):
         """The label a deep-SL recovery escalates TO. None -> REAR -> REAR RE ENTER (terminal)."""
         return "REAR" if lin.recovery_label is None else "REAR RE ENTER"
 
-    def process_anchor(s, i, h, l, c, label_prefix):
-        """TZ GREEN/TZ RED. Once TZ GREEN 2/TZ RED 2 forms, it gets its own distinctly-labeled
-        SL and ongoing HH/LL tracking (ungoverned, both sides, same as BAR 2) -- it is no
-        longer folded into the plain TZ GREEN/TZ RED label with one side silenced."""
-        sl_label = f"{label_prefix} 2 SL" if s.stage2_formed else f"{label_prefix} SL"
-        if bullish:
-            sl_hit = (s.ref_low - l) >= THRESH and c <= s.ref_low
-        else:
-            sl_hit = (h - s.ref_high) >= THRESH and c >= s.ref_high
-        if sl_hit:
-            events[i].append(sl_label)
-            s.alive = False
-            return True
-        if not s.stage2_formed:
-            if bullish:
-                stage2 = (h > s.ref_high + THRESH) and (l >= rows[i - 1][3]) and (c >= s.ref_high)
-            else:
-                stage2 = (l < s.ref_low - THRESH) and (h <= rows[i - 1][2]) and (c <= s.ref_low)
-            if stage2:
-                if bullish:
-                    s.ref_high = h
-                else:
-                    s.ref_low = l
-                s.stage2_formed = True
-                events[i].append(f"{label_prefix} 2")
-                return False
-        tracking_label = f"{label_prefix} 2" if s.stage2_formed else label_prefix
-        if h > s.ref_high + ANY:
-            s.ref_high = h
-            events[i].append(f"{tracking_label} HH")
-        if l < s.ref_low - ANY:
-            s.ref_low = l
-            events[i].append(f"{tracking_label} LL")
-        return False
-
     def process_gen(s, i, h, l, c, label):
-        """Returns 'deep', 'shallow', or None."""
+        """Two-tier deep/shallow SL, ungoverned dual HH/LL tracking. Used for BOTH the
+        anchor (TZ GREEN/TZ RED, once TZ GREEN 2/TZ RED 2 mirrors BAR 2's exact mechanics)
+        and the gen (BAR/SAR/REAR/REAR RE ENTER) -- structurally identical either way.
+        Returns 'deep', 'shallow', or None."""
         if not s.stage2_formed:
             if bullish:
                 sl_hit = (s.ref_low - l) >= THRESH and c <= s.ref_low
@@ -392,18 +370,27 @@ def run_house(rows, bullish, gen_name, anchor_name):
             if lin.dead or id(lin) in newly_formed:
                 continue
 
-            # --- Anchor-level processing (before/independent of any gen) ---
-            if lin.anchor is not None and lin.anchor.alive:
-                sl_fired = process_anchor(lin.anchor, i, h, l, c, anchor_name)
-                if sl_fired:
-                    lin.dead = True
-                    awaiting_fresh_anchor = True
-                    continue
-
             # --- Shallow-SL recovery window: NEW BAR2/REAR2 reforms directly ---
             if lin.bar2_recovery is not None:
                 rec = lin.bar2_recovery
                 ref = rec["ref"]
+                # Escalation (checked first, deep-before-shallow convention): if the outer/
+                # deep threshold is ALSO breached while awaiting the lighter shallow recovery,
+                # that converts straight into the full-restart deep-SL path instead.
+                deep_threshold = (
+                    min(rec["outer"], rec["inner_adverse"]) if bullish
+                    else max(rec["outer"], rec["inner_adverse"])
+                )
+                if bullish:
+                    escalates = (deep_threshold - l) >= THRESH and c <= deep_threshold
+                else:
+                    escalates = (h - deep_threshold) >= THRESH and c >= deep_threshold
+                if escalates:
+                    events[i].append(f"{current_label(lin)} SL")
+                    lin.rear_recovery = {"ref": rec["inner_adverse"], "target_label": escalated_label(lin)}
+                    lin.bar2_recovery = None
+                    awaiting_fresh_anchor = True
+                    continue
                 if bullish:
                     recovers = l >= pl and h > ref + THRESH and c >= ref
                 else:
@@ -482,6 +469,8 @@ def run_house(rows, bullish, gen_name, anchor_name):
             if lin.gen is not None and lin.gen.alive:
                 label = current_label(lin)
                 gen_sl_kind = process_gen(lin.gen, i, h, l, c, label)
+                if lin.gen.stage2_formed:
+                    lin.anchor_retired = True
                 if gen_sl_kind == "deep":
                     if lin.gen.stage2_formed:
                         ref_val = lin.gen.ref_high if bullish else lin.gen.ref_low
@@ -517,6 +506,99 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         "outer": outer_now,
                     }
                     lin.gen = None
+
+            # --- Anchor-level shallow-SL recovery window: NEW TZ GREEN2/TZ RED2 reforms
+            # directly -- exact mirror of the gen-level bar2_recovery mechanic, one level up.
+            # Runs AFTER gen processing above, so that if BAR 2 forms/deep-SLs THIS SAME day
+            # and retires the anchor, that retirement is already in effect before any of the
+            # anchor's own (now-redundant) tracking would otherwise fire today.
+            if not lin.anchor_retired and lin.anchor_recovery is not None:
+                rec = lin.anchor_recovery
+                ref = rec["ref"]
+                # Escalation (checked first, deep-before-shallow): if the outer/deep threshold
+                # is ALSO breached while awaiting the lighter shallow recovery, the whole
+                # lineage dies -- the anchor's own deep SL never has a recovery of its own.
+                deep_threshold = (
+                    min(rec["outer"], rec["inner_adverse"]) if bullish
+                    else max(rec["outer"], rec["inner_adverse"])
+                )
+                if bullish:
+                    escalates = (deep_threshold - l) >= THRESH and c <= deep_threshold
+                else:
+                    escalates = (h - deep_threshold) >= THRESH and c >= deep_threshold
+                if escalates:
+                    events[i].append(f"{anchor_name} SL")
+                    lin.dead = True
+                    lin.anchor_recovery = None
+                    awaiting_fresh_anchor = True
+                    # The anchor's own death is a complete, total reset ("complete lineage
+                    # dies") -- unlike a gen's deep SL (which deliberately opens the shared
+                    # REAR-ladder race), a stale gen_pending from this fully-dead lineage must
+                    # not carry forward into whatever fresh anchor forms next.
+                    gen_pending = False
+                    continue
+                if bullish:
+                    recovers = l >= pl and h > ref + THRESH and c >= ref
+                else:
+                    recovers = h <= ph and l < ref - THRESH and c <= ref
+                if recovers:
+                    new_anchor = Struct(h, l, anchor_name)
+                    new_anchor.stage2_formed = True
+                    if bullish:
+                        new_anchor.bar_ref_low = rec["outer"]
+                    else:
+                        new_anchor.bar_ref_high = rec["outer"]
+                    lin.anchor = new_anchor
+                    lin.anchor_recovery = None
+                    events[i].append(f"{anchor_name} 2")
+                    continue
+                else:
+                    inner_adverse = rec["inner_adverse"]
+                    if bullish:
+                        if rec["outer"] - l >= ANY:
+                            rec["outer"] = l
+                            events[i].append(f"{anchor_name} LL")
+                        if inner_adverse - l >= ANY:
+                            rec["inner_adverse"] = l
+                            events[i].append(f"{anchor_name} 2 LL")
+                    else:
+                        if h - rec["outer"] >= ANY:
+                            rec["outer"] = h
+                            events[i].append(f"{anchor_name} HH")
+                        if h - inner_adverse >= ANY:
+                            rec["inner_adverse"] = h
+                            events[i].append(f"{anchor_name} 2 HH")
+
+            # --- Anchor-level processing: two-tier deep/shallow SL, ungoverned dual HH/LL,
+            # exactly mirroring the gen (BAR/BAR 2). Stops being checked at all, permanently,
+            # once this lineage's gen has ever reached its own "2" stage (anchor_retired) --
+            # from that point BAR 2/REAR 2/REAR RE ENTER 2 "has taken over" and the anchor's
+            # own tracking would only ever coincide with the gen's.
+            if not lin.anchor_retired and lin.anchor is not None and lin.anchor.alive:
+                anchor_sl_kind = process_gen(lin.anchor, i, h, l, c, anchor_name)
+                if anchor_sl_kind == "deep":
+                    lin.dead = True
+                    awaiting_fresh_anchor = True
+                    gen_pending = False  # complete lineage death -- see the matching note above
+                    continue
+                elif anchor_sl_kind == "shallow":
+                    inner_adverse = lin.anchor.ref_low if bullish else lin.anchor.ref_high
+                    outer_before = lin.anchor.bar_ref_low if bullish else lin.anchor.bar_ref_high
+                    outer_now = outer_before
+                    if bullish:
+                        if outer_before - l >= ANY:
+                            outer_now = l
+                            events[i].append(f"{anchor_name} LL")
+                    else:
+                        if h - outer_before >= ANY:
+                            outer_now = h
+                            events[i].append(f"{anchor_name} HH")
+                    lin.anchor_recovery = {
+                        "ref": lin.anchor.ref_high if bullish else lin.anchor.ref_low,
+                        "inner_adverse": inner_adverse,
+                        "outer": outer_now,
+                    }
+                    lin.anchor = None
 
             # --- pullback attach/continue ---
             front = None
