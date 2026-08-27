@@ -187,6 +187,12 @@ class Lineage:
         # where "REAR RE ENTER" is terminal (further deep SLs stay "REAR RE ENTER" forever).
         # Reset to None whenever a fresh gen forms off the ordinary gen_pending/RED2 path.
         self.recovery_label = None
+        # True once this lineage's gen has died pre-"2" (no REAR/ladder recovery possible) but
+        # its own anchor is still alive and ticking. Such a lineage is NOT a permanent dual-track
+        # competitor (that only applies to the REAR-vs-fresh-anchor race at the gen level) -- it
+        # gets retired the moment the next fresh anchor successfully forms, matching the
+        # single-lineage-at-a-time behavior everywhere except that one deliberate race.
+        self.orphaned_anchor = False
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -212,12 +218,16 @@ def run_house(rows, bullish, gen_name, anchor_name):
         return "REAR" if lin.recovery_label is None else "REAR RE ENTER"
 
     def process_anchor(s, i, h, l, c, label_prefix):
+        """TZ GREEN/TZ RED. Once TZ GREEN 2/TZ RED 2 forms, it gets its own distinctly-labeled
+        SL and ongoing HH/LL tracking (ungoverned, both sides, same as BAR 2) -- it is no
+        longer folded into the plain TZ GREEN/TZ RED label with one side silenced."""
+        sl_label = f"{label_prefix} 2 SL" if s.stage2_formed else f"{label_prefix} SL"
         if bullish:
             sl_hit = (s.ref_low - l) >= THRESH and c <= s.ref_low
         else:
             sl_hit = (h - s.ref_high) >= THRESH and c >= s.ref_high
         if sl_hit:
-            events[i].append(f"{label_prefix} SL")
+            events[i].append(sl_label)
             s.alive = False
             return True
         if not s.stage2_formed:
@@ -233,14 +243,13 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 s.stage2_formed = True
                 events[i].append(f"{label_prefix} 2")
                 return False
-        high_governed = s.stage2_formed and bullish
-        if not high_governed and h > s.ref_high + ANY:
+        tracking_label = f"{label_prefix} 2" if s.stage2_formed else label_prefix
+        if h > s.ref_high + ANY:
             s.ref_high = h
-            events[i].append(f"{label_prefix} HH")
-        low_governed = s.stage2_formed and not bullish
-        if not low_governed and l < s.ref_low - ANY:
+            events[i].append(f"{tracking_label} HH")
+        if l < s.ref_low - ANY:
             s.ref_low = l
-            events[i].append(f"{label_prefix} LL")
+            events[i].append(f"{tracking_label} LL")
         return False
 
     def process_gen(s, i, h, l, c, label):
@@ -366,6 +375,12 @@ def run_house(rows, bullish, gen_name, anchor_name):
 
         # 0. Fresh anchor search -- always live once triggered by an SL, until it succeeds.
         if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c):
+            # Retire any orphaned-anchor lineage(s) -- a gen that died pre-"2" (no REAR/ladder
+            # recovery possible) is not a permanent dual-track competitor; only the REAR-vs-
+            # fresh-anchor race at the gen level is. This new anchor replaces it outright.
+            for old in lineages:
+                if old.orphaned_anchor:
+                    old.dead = True
             lin = Lineage()
             lin.anchor = Struct(h, l, anchor_name)
             lineages.append(lin)
@@ -471,12 +486,16 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     if lin.gen.stage2_formed:
                         ref_val = lin.gen.ref_high if bullish else lin.gen.ref_low
                         lin.rear_recovery = {"ref": ref_val, "target_label": escalated_label(lin)}
-                    # else: no stage2 reference ever existed, so no recovery is possible for
-                    # this gen-path -- but the lineage itself (and its own anchor, if still
-                    # alive) is NOT killed; the anchor keeps ticking its own HH/LL/SL exactly
-                    # as before. gen_started is already True, so this lineage's front is
-                    # permanently None from here on (no anchor-fallback per the "active BAR
-                    # required" rule) -- it simply never forms another gen on its own.
+                    else:
+                        # No stage2 reference ever existed, so no recovery is possible for this
+                        # gen-path -- the lineage's own anchor (if still alive) is NOT killed
+                        # immediately; it keeps ticking its own HH/LL/SL exactly as before, up
+                        # until the next fresh anchor successfully forms, at which point it is
+                        # retired (see the orphaned_anchor check at the top of the day loop).
+                        # gen_started is already True, so this lineage's front is permanently
+                        # None from here on (no anchor-fallback per "active BAR required") --
+                        # it simply never forms another gen on its own.
+                        lin.orphaned_anchor = True
                     awaiting_fresh_anchor = True
                     lin.gen = None
                 elif gen_sl_kind == "shallow":

@@ -26,18 +26,19 @@ There is **no branch spawning and no branch-level dormancy at the TZ-GREEN-ancho
 ## 1. TZ GREEN(n) — unchanged from the original rule book
 
 - Formation: Low ≥ PrevLow, High > PrevHigh by ≥ 0.20, Close ≥ PrevHigh.
-- HH: any higher High ≥ 0.01 above the reference qualifies (governed once TZ GREEN 2 forms — see §2).
-- LL: any lower Low ≥ 0.01 below the reference qualifies.
-- SL ("TZ GREEN SL"): Low breaks ref_low by ≥ 0.20, Close **at or below** ref_low (`<=`, not strict `<`) → terminates the entire cycle permanently. Checked first every candle, returns immediately.
+- HH: any higher High ≥ 0.01 above the reference qualifies. **Before TZ GREEN 2 forms only** — once it forms, ongoing tracking switches entirely to TZ GREEN 2's own labels (see §2).
+- LL: any lower Low ≥ 0.01 below the reference qualifies. Same "before TZ GREEN 2 forms only" scoping.
+- SL ("TZ GREEN SL"): Low breaks ref_low by ≥ 0.20, Close **at or below** ref_low (`<=`, not strict `<`) → terminates the entire cycle permanently. Checked first every candle, returns immediately. Once TZ GREEN 2 has formed, this SL is relabeled `TZ GREEN 2 SL` (see §2) — it is still the anchor's one and only SL threshold, just renamed.
 - RED(n) itself does not exist in this chain (see §3) — replaced by RED1/RED2 attaching directly after TZ GREEN 2.
 
 ## 2. TZ GREEN 2(n) — new
 
 - Formation: current-day High > TZ GREEN's reference High by ≥ 0.20, current-day Low ≥ PrevLow, current-day Close ≥ TZ GREEN's reference High.
 - No HH/LL tracked on the formation day itself.
-- **Governance**: once TZ GREEN 2 forms, it permanently silences further display of the **High** side of the anchor's own ongoing tracking (`TZ GREEN HH` no longer prints) — the **Low** side (`TZ GREEN LL`) keeps tracking and printing independently, forever, on any new extension. (House of Bear mirrors this: TZ RED 2 silences the **Low** side; the **High** side, `TZ RED LL`, keeps tracking.)
+- **Own distinctly-labeled tracking, ungoverned (like BAR 2, not like the old TZ GREEN behavior)**: once TZ GREEN 2 forms, ongoing tracking is relabeled `TZ GREEN 2 HH`/`TZ GREEN 2 LL` — **both sides print on every new extension, forever**, with no side silenced. This replaces an earlier version of this spec where one side (High for bullish) was permanently silenced once TZ GREEN 2 formed; that governance rule no longer applies anywhere in this chain from TZ GREEN 2 onward. (House of Bear mirror: `TZ RED 2 HH`/`TZ RED 2 LL`, also ungoverned.)
+- **SL**: still just one threshold — the same one TZ GREEN always had (§1) — relabeled `TZ GREEN 2 SL` once TZ GREEN 2 has formed. No two-tier (outer/inner) split like BAR 2 has, and no separate "TZ GREEN 2 RE ENTER" recovery mechanic — a single simple SL, just renamed.
 - **Gates RED1**: RED1 cannot attach until TZ GREEN 2 has formed.
-- **No soft/close-based invalidation**: a Close below TZ GREEN 2's reference during RED1/RED2 formation does not end the cycle. The cycle stays active regardless of whether RED1/RED2 has fired. Only TZ GREEN's own SL (§1) can terminate everything.
+- **No soft/close-based invalidation**: a Close below TZ GREEN 2's reference during RED1/RED2 formation does not end the cycle. The cycle stays active regardless of whether RED1/RED2 has fired. Only the anchor's own SL (§1, labeled `TZ GREEN 2 SL` from here on) can terminate everything.
 
 ## 3. RED1(n) / RED2(n)
 
@@ -109,6 +110,8 @@ When `BAR 2 SL` (shallow) fires, BAR itself is not restarted — the engine inst
   - **While awaiting a rung's recovery**, that rung's own reference High keeps ratcheting on ordinary price action (`ANY` = 0.01 threshold, no Low/Close requirement) — even though the generation is dead, this reference stays live so the recovery remains reachable against an up-to-date target. The ratchet is printed as **`INVALID {X} HH`** (House of Bear mirror: **`INVALID {X} LL`**), where `X` is the name the recovery *will* be if it confirms: `INVALID REAR HH` while awaiting a `BAR`/`BAR 2` deep-SL recovery, `INVALID REAR RE ENTER HH` while awaiting a `REAR`/`REAR 2` **or** `REAR RE ENTER`/`REAR RE ENTER 2` deep-SL recovery (both land on the same rung, so they share the same ratchet name).
 
 **Permanent dual-track, not a one-time decision**: whichever of (a)/(b) reaches its own "2" stage first becomes *active*; the other does **not** terminate — it goes **dormant**, exactly mirroring the House of Bull/Bear split (§11) one level down. A dormant lineage keeps existing and can become active again later if the currently-active one later fails — this is recursive and can repeat indefinitely.
+
+**This permanent dual-track is scoped specifically to path (b), the ladder recovery — it does not apply to a bare pre-"2" deep SL.** When a generation dies before its own "2" stage ever formed (no ladder recovery possible, path (a) is the *only* option), its lineage's own anchor is not killed immediately — it keeps ticking its ordinary HH/LL/SL for as long as it takes the fresh anchor search to succeed — but that lineage is **not** kept alive as a permanent competitor once the new anchor forms: it is retired at that point. Only a lineage that reached the ladder (REAR/REAR RE ENTER, path (b)) persists indefinitely alongside a fresh TZ GREEN(N+1) cycle.
 
 **`gen_pending` (a fresh RED2 firing) is a signal shared across both lineages of a house**, not scoped to just one: any lineage that is itself alive and past its own "2" stage — active or dormant — may independently consume it to form its own next generation. It persists, unconsumed, across days until at least one eligible lineage consumes it (so a lineage that only becomes eligible later can still benefit from an earlier RED2); if multiple lineages are simultaneously eligible the same day, they consume it together, same day (matching the "recorded at the backend" case where a rung's own RED2 also lets the dormant TZ GREEN(N+1)'s own BAR 2(N+1) form the same day).
 
