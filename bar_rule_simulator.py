@@ -203,6 +203,13 @@ class Lineage:
         # TZ GREEN 2/TZ RED 2 reforming directly above the dead one's own reference -- same
         # mechanics as BAR 2's shallow-SL recovery, one level up.
         self.anchor_recovery = None
+        # True when a gen's shallow SL fired while gen_pending was ALREADY set (RED2 already
+        # fired for this generation before the SL) -- per the original rule: "if RED2 occurs
+        # but BAR 2 SL is pending, NEW BAR will start" -- a full fresh BAR/gen forms directly
+        # off the already-set gen_pending instead of the lighter "NEW BAR 2 reforms directly"
+        # path. Lets the fresh-gen-formation trigger fire even though gen_started blocks the
+        # ordinary anchor-fallback ("active BAR required").
+        self.gen_fresh_pending = False
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -488,24 +495,32 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     awaiting_fresh_anchor = True
                     lin.gen = None
                 elif gen_sl_kind == "shallow":
-                    label = current_label(lin)
-                    inner_adverse = lin.gen.ref_low if bullish else lin.gen.ref_high
-                    outer_before = lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high
-                    outer_now = outer_before
-                    if bullish:
-                        if outer_before - l >= ANY:
-                            outer_now = l
-                            events[i].append(f"{label} LL")
+                    if gen_pending:
+                        # RED2 already fired for this generation before the shallow SL --
+                        # per the original rule, that forecloses the lightweight "NEW BAR 2
+                        # reforms directly" path entirely: a full fresh BAR/gen starts
+                        # instead, directly off the already-set gen_pending.
+                        lin.gen_fresh_pending = True
+                        lin.gen = None
                     else:
-                        if h - outer_before >= ANY:
-                            outer_now = h
-                            events[i].append(f"{label} HH")
-                    lin.bar2_recovery = {
-                        "ref": lin.gen.ref_high if bullish else lin.gen.ref_low,
-                        "inner_adverse": inner_adverse,
-                        "outer": outer_now,
-                    }
-                    lin.gen = None
+                        label = current_label(lin)
+                        inner_adverse = lin.gen.ref_low if bullish else lin.gen.ref_high
+                        outer_before = lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high
+                        outer_now = outer_before
+                        if bullish:
+                            if outer_before - l >= ANY:
+                                outer_now = l
+                                events[i].append(f"{label} LL")
+                        else:
+                            if h - outer_before >= ANY:
+                                outer_now = h
+                                events[i].append(f"{label} HH")
+                        lin.bar2_recovery = {
+                            "ref": lin.gen.ref_high if bullish else lin.gen.ref_low,
+                            "inner_adverse": inner_adverse,
+                            "outer": outer_now,
+                        }
+                        lin.gen = None
 
             # --- Anchor-level shallow-SL recovery window: NEW TZ GREEN2/TZ RED2 reforms
             # directly -- exact mirror of the gen-level bar2_recovery mechanic, one level up.
@@ -607,18 +622,30 @@ def run_house(rows, bullish, gen_name, anchor_name):
             elif not lin.gen_started and lin.anchor is not None and lin.anchor.alive:
                 front = lin.anchor
 
+            # Fresh-attach eligibility for RED1/GREEN1 is looser than "front is a currently-
+            # alive Struct": once the anchor has ever reached its own "2" stage, only a DEEP
+            # SL (complete lineage death, which kills the whole lineage via lin.dead -- this
+            # code wouldn't even run that day) revokes eligibility. A shallow anchor SL --
+            # awaiting its own "NEW TZ GREEN2/TZ RED2 reforms directly" recovery -- does NOT:
+            # TZ GREEN 2/TZ RED 2 "already occurred" and hasn't been through a deep SL, so a
+            # fresh pullback can still attach even while that recovery is pending.
+            front_ok_for_attach = (front is not None and front.stage2_formed) or (
+                not lin.gen_started and lin.anchor_recovery is not None
+            )
+
             if lin.pullback is not None and lin.pullback["active"]:
                 process_pullback(lin, i, h, l, c, ph, pl)
-            elif front is not None and front.stage2_formed and not gen_pending:
+            elif front_ok_for_attach and not gen_pending:
                 process_pullback(lin, i, h, l, c, ph, pl)
 
             # --- fresh gen formation off the shared gen_pending signal ---
-            if gen_pending and front is not None and front.stage2_formed:
+            if gen_pending and ((front is not None and front.stage2_formed) or lin.gen_fresh_pending):
                 if formation_break(ph, pl, h, l, c):
                     new_gen = Struct(h, l, gen_name)
                     lin.gen = new_gen
                     lin.gen_started = True
                     lin.recovery_label = None
+                    lin.gen_fresh_pending = False
                     events[i].append(gen_name)
                     consumed_gen_pending_today = True
 
