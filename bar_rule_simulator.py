@@ -178,12 +178,15 @@ class Lineage:
     def __init__(self):
         self.anchor = None          # Struct, only for a lineage that began as a fresh TZ GREEN/TZ RED
         self.pullback = None        # RED1/GREEN1 tracker
-        self.gen = None             # current BAR/SAR (or REAR while gen_is_rear) Struct
+        self.gen = None             # current BAR/SAR/REAR/REAR RE ENTER Struct
         self.gen_started = False    # True once this lineage's first gen has ever formed
-        self.bar2_recovery = None   # shallow-SL "NEW BAR2/REAR2 reforms directly" awaiting state
-        self.rear_recovery = None   # deep-SL "REAR reforms directly" awaiting state
+        self.bar2_recovery = None   # shallow-SL "NEW X2 reforms directly" awaiting state
+        self.rear_recovery = None   # deep-SL "escalate to next recovery level" awaiting state
         self.dead = False           # permanently dead -- no recovery reference exists
-        self.gen_is_rear = False    # current/next gen displays as REAR/REAR2 rather than BAR/BAR2
+        # Ladder of deep-SL recovery labels: None (plain BAR/SAR) -> "REAR" -> "REAR RE ENTER",
+        # where "REAR RE ENTER" is terminal (further deep SLs stay "REAR RE ENTER" forever).
+        # Reset to None whenever a fresh gen forms off the ordinary gen_pending/RED2 path.
+        self.recovery_label = None
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -200,6 +203,13 @@ def run_house(rows, bullish, gen_name, anchor_name):
 
     def formation_break(ph, pl, h, l, c):
         return up_break(ph, pl, h, l, c) if bullish else down_break(ph, pl, h, l, c)
+
+    def current_label(lin):
+        return lin.recovery_label or gen_name
+
+    def escalated_label(lin):
+        """The label a deep-SL recovery escalates TO. None -> REAR -> REAR RE ENTER (terminal)."""
+        return "REAR" if lin.recovery_label is None else "REAR RE ENTER"
 
     def process_anchor(s, i, h, l, c, label_prefix):
         if bullish:
@@ -392,71 +402,85 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         new_gen.bar_ref_high = rec["outer"]
                     lin.gen = new_gen
                     lin.bar2_recovery = None
-                    events[i].append(f"{'REAR' if lin.gen_is_rear else gen_name} 2")
+                    events[i].append(f"{current_label(lin)} 2")
                     continue
                 else:
-                    outer_label = "REAR" if lin.gen_is_rear else gen_name
-                    inner_label = f"{'REAR' if lin.gen_is_rear else gen_name} 2"
+                    base = current_label(lin)
+                    inner_label = f"{base} 2"
                     inner_adverse = rec["inner_adverse"]
+                    # Favorable-side (recovery-target) reference: an attempt at reforming the
+                    # "2" that ticks the reference further out without yet fully qualifying
+                    # (Low/Close conditions not checked here -- same simple ANY-threshold
+                    # ratchet as the deep-SL "INVALID {X} HH/LL" below).
+                    if bullish:
+                        if h - ref >= ANY:
+                            rec["ref"] = h
+                            events[i].append(f"INVALID {base} HH")
+                    else:
+                        if ref - l >= ANY:
+                            rec["ref"] = l
+                            events[i].append(f"INVALID {base} LL")
+                    # Adverse-side outer/inner references, unchanged mechanic.
                     if bullish:
                         if rec["outer"] - l >= ANY:
                             rec["outer"] = l
-                            events[i].append(f"{outer_label} LL")
+                            events[i].append(f"{base} LL")
                         if inner_adverse - l >= ANY:
                             rec["inner_adverse"] = l
                             events[i].append(f"{inner_label} LL")
                     else:
                         if h - rec["outer"] >= ANY:
                             rec["outer"] = h
-                            events[i].append(f"{outer_label} HH")
+                            events[i].append(f"{base} HH")
                         if h - inner_adverse >= ANY:
                             rec["inner_adverse"] = h
                             events[i].append(f"{inner_label} HH")
 
-            # --- Deep-SL recovery window: REAR reforms directly ---
+            # --- Deep-SL recovery window: escalate to the next recovery level directly ---
             if lin.rear_recovery is not None:
                 rec = lin.rear_recovery
+                target = rec["target_label"]
                 ref = rec["ref"]
                 if bullish:
                     recovers = l >= pl and h > ref + THRESH and c >= ref
                 else:
                     recovers = h <= ph and l < ref - THRESH and c <= ref
                 if recovers:
-                    new_gen = Struct(h, l, "REAR")
+                    new_gen = Struct(h, l, target)
                     lin.gen = new_gen
                     lin.gen_started = True
-                    lin.gen_is_rear = True
+                    lin.recovery_label = target
                     lin.rear_recovery = None
-                    events[i].append("REAR")
+                    events[i].append(target)
                     continue
                 else:
                     if bullish:
                         if h - ref >= ANY:
                             rec["ref"] = h
-                            events[i].append("INVALID REAR HH")
+                            events[i].append(f"INVALID {target} HH")
                     else:
                         if ref - l >= ANY:
                             rec["ref"] = l
-                            events[i].append("INVALID REAR LL")
+                            events[i].append(f"INVALID {target} LL")
 
             # --- gen's own SL/stage2/HH-LL ---
             if lin.gen is not None and lin.gen.alive:
-                label = "REAR" if lin.gen_is_rear else gen_name
+                label = current_label(lin)
                 gen_sl_kind = process_gen(lin.gen, i, h, l, c, label)
                 if gen_sl_kind == "deep":
                     if lin.gen.stage2_formed:
                         ref_val = lin.gen.ref_high if bullish else lin.gen.ref_low
-                        lin.rear_recovery = {"ref": ref_val}
-                    # else: no stage2 reference ever existed, so no REAR is possible for this
-                    # gen-path -- but the lineage itself (and its own anchor, if still alive)
-                    # is NOT killed; the anchor keeps ticking its own HH/LL/SL exactly as
-                    # before. gen_started is already True, so this lineage's front is
+                        lin.rear_recovery = {"ref": ref_val, "target_label": escalated_label(lin)}
+                    # else: no stage2 reference ever existed, so no recovery is possible for
+                    # this gen-path -- but the lineage itself (and its own anchor, if still
+                    # alive) is NOT killed; the anchor keeps ticking its own HH/LL/SL exactly
+                    # as before. gen_started is already True, so this lineage's front is
                     # permanently None from here on (no anchor-fallback per the "active BAR
                     # required" rule) -- it simply never forms another gen on its own.
                     awaiting_fresh_anchor = True
                     lin.gen = None
                 elif gen_sl_kind == "shallow":
-                    label = "REAR" if lin.gen_is_rear else gen_name
+                    label = current_label(lin)
                     inner_adverse = lin.gen.ref_low if bullish else lin.gen.ref_high
                     outer_before = lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high
                     outer_now = outer_before
@@ -493,7 +517,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     new_gen = Struct(h, l, gen_name)
                     lin.gen = new_gen
                     lin.gen_started = True
-                    lin.gen_is_rear = False
+                    lin.recovery_label = None
                     events[i].append(gen_name)
                     consumed_gen_pending_today = True
 
