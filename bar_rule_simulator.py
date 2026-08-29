@@ -378,6 +378,15 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 continue
 
             # --- Shallow-SL recovery window: NEW BAR2/REAR2 reforms directly ---
+            if lin.bar2_recovery is not None and gen_pending:
+                # RED2/GREEN2 has fired (on an earlier day, or later the same day the shallow
+                # SL originally fired) while this lighter recovery was still pending -- per the
+                # original rule, that forecloses it entirely, every day it might otherwise
+                # still apply, not just the instant the shallow SL fires. Abandon the recovery
+                # and let the ordinary fresh-gen-formation trigger (gen_fresh_pending) take
+                # over instead.
+                lin.bar2_recovery = None
+                lin.gen_fresh_pending = True
             if lin.bar2_recovery is not None:
                 rec = lin.bar2_recovery
                 ref = rec["ref"]
@@ -527,6 +536,13 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # Runs AFTER gen processing above, so that if BAR 2 forms/deep-SLs THIS SAME day
             # and retires the anchor, that retirement is already in effect before any of the
             # anchor's own (now-redundant) tracking would otherwise fire today.
+            if not lin.anchor_retired and lin.anchor_recovery is not None and gen_pending:
+                # Same foreclosure rule as bar2_recovery above, one level up: RED1/GREEN1 has
+                # already resolved to RED2/GREEN2 against this anchor -- awaiting a lightweight
+                # "NEW TZ GREEN 2/TZ RED 2 reforms directly" no longer applies. Abandon it and
+                # go straight for a full fresh BAR/SAR via gen_fresh_pending instead.
+                lin.anchor_recovery = None
+                lin.gen_fresh_pending = True
             if not lin.anchor_retired and lin.anchor_recovery is not None:
                 rec = lin.anchor_recovery
                 ref = rec["ref"]
