@@ -203,12 +203,13 @@ class Lineage:
         # single-lineage-at-a-time behavior everywhere except that one deliberate race.
         self.orphaned_anchor = False
         # Once TRUE (permanently), the anchor's own SL/stage2/HH-LL tracking is no longer
-        # checked/printed at all -- either BAR 2 (or REAR 2/REAR RE ENTER 2) has "taken over"
-        # (set the first time this lineage's gen reaches its own "2" stage), or the anchor has
-        # already served its one-time gating role by letting a RED1/GREEN1 pullback attach
-        # against it (set the moment that first attach succeeds) -- per the user's correction,
-        # a shallow anchor SL has no recovery of its own and nothing downstream depends on the
-        # anchor's own High/Low/reference past that point, so its own tracking is redundant.
+        # checked/printed at all -- set the first time this lineage's gen reaches its own "2"
+        # stage, at which point BAR 2 (or REAR 2/REAR RE ENTER 2) has its own separate
+        # deep-SL reference and the anchor's own (now stale) one would be a redundant,
+        # unrelated failure mode. NOTE: a RED1/GREEN1 pullback attaching against the anchor
+        # does NOT retire it -- confirmed by the user (11-01-2022): the anchor's own DEEP SL
+        # must keep being checked, and still fully terminates the lineage (pullback included),
+        # for as long as gen_started is False. Only the anchor's SHALLOW SL is a no-op (§2).
         self.anchor_retired = False
         # True when a gen's shallow SL fired while gen_pending was ALREADY set (RED2 already
         # fired for this generation before the SL) -- per the original rule: "if RED2 occurs
@@ -556,15 +557,19 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # --- Anchor-level processing: two-tier deep/shallow SL, ungoverned dual HH/LL,
             # exactly mirroring the gen (BAR/BAR 2) EXCEPT for the shallow tier's consequence.
             # Per the user's explicit correction: a shallow anchor SL ("TZ GREEN 2 SL"/"TZ RED 2
-            # SL") does NOT stop or restart anything -- RED1/RED2/BAR/BAR 2/REAR BUY/etc. (or
-            # their Bear mirrors) are never dependent on the anchor's own High/Low/reference
-            # once it has served its one-time gating role (letting the first RED1/GREEN1
-            # attach). So it is logged (`terminal_on_shallow=False` below keeps the Struct
-            # alive and untouched -- no recovery window, no reforming "TZ GREEN 2"/"TZ RED 2").
-            # Only the anchor's DEEP SL still matters -- that remains unconditional, total
-            # lineage death, unchanged. Separately, tracking stops being checked/printed
-            # altogether, permanently, once this lineage's gen has ever reached its own "2"
-            # stage (anchor_retired) -- from that point BAR 2/REAR 2/etc. "has taken over".
+            # SL") does NOT stop or restart anything -- it is logged (`terminal_on_shallow=False`
+            # below keeps the Struct alive and untouched -- no recovery window, no reforming
+            # "TZ GREEN 2"/"TZ RED 2"). The anchor's DEEP SL is the ONLY anchor-level SL that
+            # matters, and it must keep being checked for as long as this lineage's gen hasn't
+            # taken over -- confirmed by the user against 11-01-2022: even with a GREEN1/GREEN2
+            # pullback already attached and resolving, the anchor's own deep SL (`TZ RED SL`)
+            # still fires that day and kills the ENTIRE lineage, pullback included, before that
+            # day's GREEN2 gets a chance to matter (the `continue` below skips this lineage's
+            # pullback processing for the day the deep SL fires, exactly like every other
+            # complete-lineage-death path in this file). A pullback attaching does NOT retire
+            # the anchor -- only the gen reaching its own "2" stage does (anchor_retired, below):
+            # from that point BAR 2/REAR 2/etc. has its own separate deep-SL reference and the
+            # anchor's own (now long-stale) one would be a redundant, unrelated failure mode.
             if not lin.anchor_retired and lin.anchor is not None and lin.anchor.alive:
                 anchor_sl_kind = process_gen(lin.anchor, i, h, l, c, anchor_name, terminal_on_shallow=False)
                 if anchor_sl_kind == "deep":
@@ -587,18 +592,10 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # never affects this either.
             front_ok_for_attach = front is not None and front.stage2_formed
 
-            was_active_pullback = lin.pullback is not None and lin.pullback["active"]
-            if was_active_pullback:
+            if lin.pullback is not None and lin.pullback["active"]:
                 process_pullback(lin, i, h, l, c, ph, pl)
             elif front_ok_for_attach and not gen_pending:
-                attached = process_pullback(lin, i, h, l, c, ph, pl)
-                # The moment a lineage's FIRST pullback (RED1/GREEN1) attaches against the
-                # anchor as front, the anchor's own further tracking becomes permanently
-                # irrelevant -- retire it now (§3/user correction), not just once the gen
-                # reaches its own "2" stage. This still lets today's already-computed anchor
-                # event above print; retirement takes effect from tomorrow.
-                if attached and front is lin.anchor:
-                    lin.anchor_retired = True
+                process_pullback(lin, i, h, l, c, ph, pl)
 
             # --- fresh gen formation off the shared gen_pending signal ---
             if gen_pending and ((front is not None and front.stage2_formed) or lin.gen_fresh_pending):
