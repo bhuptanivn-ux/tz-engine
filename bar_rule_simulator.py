@@ -9,23 +9,31 @@ recovery paths open up:
      of the dead generation's own reference (only possible if no gen was
      already stage2_formed... no, actually always possible; if the dead gen
      never reached BAR2, only this path exists).
-  b) REAR -- reforms directly above/below the dead generation's own BAR2/SAR2
-     reference (only possible if that generation HAD reached stage2). Gets
-     its own REAR 2 (identical mechanics to BAR 2: ungoverned dual HH/LL,
-     two-tier SL), then RED1/RED2 attach to REAR 2 exactly like BAR 2. Once
-     RED2 fires there, the NEXT generation reverts to plain BAR/BAR 2 naming
-     -- REAR is only the label for the one generation immediately recovering
-     from a deep SL.
+  b) REAR BUY/SELL -- reforms directly above/below the dead generation's own
+     BAR2/SAR2 reference (only possible if that generation HAD reached
+     stage2). House-specific name: House of Bull uses REAR BUY, House of
+     Bear uses REAR SELL -- same mechanism either way. Gets its own REAR
+     BUY 2/REAR SELL 2 (identical mechanics to BAR 2: ungoverned dual HH/LL,
+     two-tier SL), then RED1/RED2 (or GREEN1/GREEN2) attach to it exactly
+     like BAR 2. Once RED2/GREEN2 fires there, the NEXT generation reverts
+     to plain BAR/BAR 2 (or SAR/SAR 2) naming -- REAR BUY/SELL is only the
+     label for the one generation immediately recovering from a deep SL.
 
-Whichever of (a)/(b) reaches its own stage2 (BAR2(N+1) vs REAR 2) FIRST
+Whichever of (a)/(b) reaches its own stage2 (BAR2(N+1) vs REAR BUY 2) FIRST
 becomes "active"; the other does NOT terminate -- it goes DORMANT (per the
 user: "stay dormant and not terminated"), and this is a PERMANENT ongoing
 dual-track, not a one-time decision -- exactly mirroring the House of
 Bull/Bear split, just one level down. A dormant lineage's own frozen
-reference (BAR2's/REAR2's own High/Low) keeps ratcheting via ordinary price
-action even while dormant (labeled "INVALID REAR HH"/"INVALID REAR LL" while
-literally awaiting a REAR reformation) -- so it's available again with an
-up-to-date reference if the other, currently-active lineage later fails.
+reference (BAR2's/REAR BUY 2's own High/Low) keeps ratcheting via ordinary
+price action even while dormant (labeled "INVALID REAR BUY HH"/"INVALID
+REAR BUY LL" while literally awaiting a REAR BUY reformation) -- so it's
+available again with an up-to-date reference if the other, currently-active
+lineage later fails. Confirmed for real against the 2022 case-study dataset
+(27-02 through 06-03-2022): a fresh TZ GREEN and a REAR BUY lineage stay
+alive at once, each independently firing its own RED1/RED2 on the same
+days -- disambiguated in the printed output as "RED1 (REAR BUY)"/"RED1
+(TZ GREEN)" (see pullback_track/pullback_buffer below) since the plain
+event name alone would otherwise look like a duplicate.
 
 gen_pending (from any lineage's RED2) is a per-HOUSE shared signal: ANY
 lineage that is itself alive and past its own stage2 can independently
@@ -33,13 +41,14 @@ consume it to form its own next generation -- this models the user's
 "if REAR 2 IS ALSO BAR 2(N+1), record that at the backend" / "any new green
 can be BAR(N+1) since RED1 and RED2 has also occurred" notes.
 
-REAR SL is fully recursive/self-similar to BAR SL: if REAR's own generation
-later deep-SLs, the exact same race reopens (a further TZ GREEN(N+2) vs a
-new REAR reforming off REAR2's own reference), on the SAME lineage object
-(REAR is just a naming state that toggles on/off within one lineage's life,
-not a separate lineage kind). If REAR's own gen SLs before REAR 2 ever
-formed, that lineage dies permanently (no reference exists to reform
-against) -- this matches the user's explicit worked example.
+REAR BUY/SELL SL is fully recursive/self-similar to BAR SL: if REAR
+BUY/SELL's own generation later deep-SLs, the exact same race reopens (a
+further TZ GREEN(N+2) vs a new REAR BUY reforming off REAR BUY 2's own
+reference), on the SAME lineage object (REAR BUY/SELL is just a naming
+state that toggles on/off within one lineage's life, not a separate
+lineage kind). If REAR BUY/SELL's own gen SLs before its own 2 ever formed,
+that lineage dies permanently (no reference exists to reform against) --
+this matches the user's explicit worked example.
 """
 
 THRESH = 0.20
@@ -214,6 +223,7 @@ class Lineage:
 
 def run_house(rows, bullish, gen_name, anchor_name):
     events = [[] for _ in rows]
+    pullback_buffer = [[] for _ in rows]
     lineages = []
     gen_pending = False        # shared per-house: any lineage's RED2 sets it; any eligible lineage may consume it
     awaiting_fresh_anchor = True
@@ -231,8 +241,11 @@ def run_house(rows, bullish, gen_name, anchor_name):
         return lin.recovery_label or gen_name
 
     def escalated_label(lin):
-        """The label a deep-SL recovery escalates TO. None -> REAR -> REAR RE ENTER (terminal)."""
-        return "REAR" if lin.recovery_label is None else "REAR RE ENTER"
+        """The label a deep-SL recovery escalates TO. None -> REAR BUY/SELL -> REAR BUY/SELL
+        RE ENTER (terminal). House-specific: House of Bull uses REAR BUY, House of Bear uses
+        REAR SELL -- same mechanism, side-specific name."""
+        rear = "REAR BUY" if bullish else "REAR SELL"
+        return rear if lin.recovery_label is None else f"{rear} RE ENTER"
 
     def process_gen(s, i, h, l, c, label):
         """Two-tier deep/shallow SL, ungoverned dual HH/LL tracking. Used for BOTH the
@@ -298,6 +311,13 @@ def run_house(rows, bullish, gen_name, anchor_name):
             events[i].append(f"{label} 2 LL")
         return None
 
+    def pullback_track(lin):
+        """Which structure this lineage's pullback is currently attached to -- used only to
+        disambiguate output on a day where 2+ DISTINCT lineages each independently fire a
+        pullback event (the permanent BAR/SAR-vs-REAR BUY/SELL dual-track): the lineage's own
+        current gen label once a gen has started, else its anchor name."""
+        return current_label(lin) if lin.gen_started else anchor_name
+
     def process_pullback(lin, i, h, l, c, ph, pl):
         nonlocal gen_pending
         pullback = lin.pullback
@@ -308,7 +328,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 attach = l >= pl and (h - ph) >= THRESH and c >= ph
             if attach:
                 lin.pullback = {"ref_high": h, "ref_low": l, "active": True}
-                events[i].append("RED1" if bullish else "GREEN1")
+                pullback_buffer[i].append((lin, "RED1" if bullish else "GREEN1"))
                 return True
             return False
 
@@ -318,7 +338,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         else:
             red2 = h >= pb["ref_high"] and l >= pl and (ph - pl) >= THRESH and c >= pb["ref_high"] - 0.001
         if red2:
-            events[i].append("RED2" if bullish else "GREEN2")
+            pullback_buffer[i].append((lin, "RED2" if bullish else "GREEN2"))
             pb["active"] = False
             gen_pending = True
             return True
@@ -328,26 +348,26 @@ def run_house(rows, bullish, gen_name, anchor_name):
         else:
             invalid = (pb["ref_low"] - l) >= THRESH and c <= pb["ref_low"]
         if invalid:
-            events[i].append("RED1 SL" if bullish else "GREEN1 SL")
+            pullback_buffer[i].append((lin, "RED1 SL" if bullish else "GREEN1 SL"))
             pb["active"] = False
             return True
 
         fired = False
         if bullish and l < pb["ref_low"]:
             pb["ref_low"] = l
-            events[i].append("RED1 LL")
+            pullback_buffer[i].append((lin, "RED1 LL"))
             fired = True
         elif (not bullish) and h > pb["ref_high"]:
             pb["ref_high"] = h
-            events[i].append("GREEN1 HH")
+            pullback_buffer[i].append((lin, "GREEN1 HH"))
             fired = True
         if bullish and h > pb["ref_high"]:
             pb["ref_high"] = h
-            events[i].append("RED1 HH")
+            pullback_buffer[i].append((lin, "RED1 HH"))
             fired = True
         elif (not bullish) and l < pb["ref_low"]:
             pb["ref_low"] = l
-            events[i].append("GREEN1 LL")
+            pullback_buffer[i].append((lin, "GREEN1 LL"))
             fired = True
         return fired
 
@@ -671,6 +691,17 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # simultaneously (per the user's "recorded at the backend" note) before this clears.
         if consumed_gen_pending_today:
             gen_pending = False
+
+        # Flush this day's pullback events: only tag with the owning lineage's current track
+        # when 2+ DISTINCT lineages actually fired a pullback event the same day (the
+        # permanent BAR/SAR-vs-REAR BUY/SELL dual-track producing e.g. two independent RED1
+        # attaches at once) -- otherwise the plain, untagged name is unambiguous as-is.
+        distinct_lins = {id(lin) for lin, _ in pullback_buffer[i]}
+        for lin, text in pullback_buffer[i]:
+            if len(distinct_lins) > 1:
+                events[i].append(f"{text} ({pullback_track(lin)})")
+            else:
+                events[i].append(text)
 
     return events
 
