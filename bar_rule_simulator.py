@@ -226,6 +226,13 @@ class Lineage:
         # path. Lets the fresh-gen-formation trigger fire even though gen_started blocks the
         # ordinary anchor-fallback ("active BAR required").
         self.gen_fresh_pending = False
+        # The fresh-anchor lineage that THIS lineage's own dying gen most recently spawned as
+        # its paired dual-track counterpart (via the gated re-arming below), if any -- used
+        # to tell "this lineage's own further ladder failures" apart from "a totally
+        # unrelated, independent history" when deciding whether the house-wide fresh-anchor
+        # search needs reopening again. None until this lineage's gen has deep-SL'd (or
+        # bar2_recovery-escalated) at least once.
+        self.competitor = None
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -234,6 +241,10 @@ def run_house(rows, bullish, gen_name, anchor_name):
     lineages = []
     gen_pending = False        # shared per-house: any lineage's RED2 sets it; any eligible lineage may consume it
     awaiting_fresh_anchor = True
+    # Set (to the dying lineage) at the moment a gen-deep-SL/bar2_recovery-escalation reopens
+    # awaiting_fresh_anchor via the gated paths below; consumed the moment the resulting fresh
+    # anchor actually forms, pairing the two as dual-track counterparts (see Lineage.competitor).
+    pending_competitor_source = None
 
     def up_break(ph, pl, h, l, c):
         return l >= pl and h > ph + THRESH and c >= ph
@@ -249,6 +260,21 @@ def run_house(rows, bullish, gen_name, anchor_name):
         if bullish:
             return l >= pl and h > ref + THRESH and c >= ref
         return h <= ph and l < ref - THRESH and c <= ref
+
+    def would_deep_sl(s, h, l, c):
+        """Side-effect-free peek at whether s (a gen or anchor Struct) would deep-SL today,
+        mirroring process_gen's own deep_sl condition exactly. Used to check the ANCHOR's own
+        deep-SL condition BEFORE processing its lineage's gen for the day (see the gen-skip
+        below), without mutating anything or printing."""
+        if not s.stage2_formed:
+            if bullish:
+                return (s.ref_low - l) >= THRESH and c <= s.ref_low
+            return (h - s.ref_high) >= THRESH and c >= s.ref_high
+        if bullish:
+            deep_threshold = min(s.bar_ref_low, s.ref_low)
+            return (deep_threshold - l) >= THRESH and c <= deep_threshold
+        deep_threshold = max(s.bar_ref_high, s.ref_high)
+        return (h - deep_threshold) >= THRESH and c >= deep_threshold
 
     def current_label(lin):
         return lin.recovery_label or gen_name
@@ -458,6 +484,9 @@ def run_house(rows, bullish, gen_name, anchor_name):
             awaiting_fresh_anchor = False
             events[i].append(anchor_name)
             newly_formed.add(id(lin))
+            if pending_competitor_source is not None:
+                pending_competitor_source.competitor = lin
+                pending_competitor_source = None
 
         for lin in lineages:
             if lin.dead or id(lin) in newly_formed:
@@ -515,7 +544,32 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         "source_2": f"{current_label(lin)} 2",
                     }
                     lin.bar2_recovery = None
-                    awaiting_fresh_anchor = True
+                    # Only reopen the house-wide fresh-anchor search if THIS lineage doesn't
+                    # already have a live paired competitor from an EARLIER round of its own
+                    # recovery race -- confirmed by the user (03-05-2022): once a fresh anchor
+                    # already exists from an earlier failure of this SAME dying lineage's own
+                    # ladder, a further failure of that ladder must not spawn a SECOND,
+                    # redundant competing fresh anchor while the first one is still alive
+                    # ("SAR has already occurred for GREEN2. New TZ RED cannot co-occur.
+                    # Basics"). This is scoped to THIS lineage's own paired competitor, not
+                    # "any other lineage in the house" -- an unrelated, long-dormant lineage
+                    # elsewhere (e.g. one quietly waiting on its own never-reached rear_recovery
+                    # target) must not block a completely separate lineage's legitimate first
+                    # race. The anchor's own deep SL (below) stays unconditional -- that is
+                    # total, unconditional lineage death, not a partial one, so it always needs
+                    # a fresh search regardless of pairing.
+                    if lin.competitor is None or lin.competitor.dead:
+                        awaiting_fresh_anchor = True
+                        pending_competitor_source = lin
+                    # This is a state TRANSITION for the gen (shallow SL escalating into the
+                    # deeper ladder recovery), not a total lineage death -- only the ANCHOR's
+                    # own deep SL is that (see the unconditional `continue` there). An ALREADY-
+                    # ACTIVE pullback must still get to resolve/ratchet today regardless,
+                    # exactly like it already does across an ordinary gen deep SL (confirmed
+                    # 01-03-2022, GREEN2 alongside SAR SL) -- this mirrors that same rule at
+                    # this transition point too.
+                    if lin.pullback is not None and lin.pullback["active"]:
+                        process_pullback(lin, i, h, l, c, ph, pl)
                     continue
                 if bullish:
                     recovers = l >= pl and h > ref + THRESH and c >= ref
@@ -531,6 +585,10 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     lin.gen = new_gen
                     lin.bar2_recovery = None
                     events[i].append(f"{current_label(lin)} 2")
+                    # Same rationale as above -- reforming the gen today isn't a total death,
+                    # so an already-active pullback still gets to resolve/ratchet today too.
+                    if lin.pullback is not None and lin.pullback["active"]:
+                        process_pullback(lin, i, h, l, c, ph, pl)
                     continue
                 else:
                     base = current_label(lin)
@@ -577,6 +635,11 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     lin.recovery_label = target
                     lin.rear_recovery = None
                     events[i].append(target)
+                    # Same rationale as the bar2_recovery transitions above -- reforming the
+                    # gen today (REAR BUY/SELL or a RE ENTER rung) isn't a total lineage death,
+                    # so an already-active pullback still gets to resolve/ratchet today too.
+                    if lin.pullback is not None and lin.pullback["active"]:
+                        process_pullback(lin, i, h, l, c, ph, pl)
                     continue
                 else:
                     # Ratchet is named after the SOURCE reference being tracked (the dead
@@ -593,8 +656,20 @@ def run_house(rows, bullish, gen_name, anchor_name):
                             rec["ref"] = l
                             events[i].append(f"INVALID {source_2} LL")
 
+            # Peek (side-effect-free) whether this lineage's ANCHOR would ALSO deep-SL today,
+            # BEFORE processing its gen. The anchor's deep SL is total, unconditional lineage
+            # death (see the anchor-level processing block below); if it's also happening
+            # today, the gen's own SL that same day is redundant -- confirmed by the user
+            # (04-05-2022): "since TZ RED SL occurred, why need to record its descendant SAR
+            # SL?" -- so the gen isn't even processed today, and only the anchor's own "TZ RED
+            # SL" prints.
+            anchor_dying_today = (
+                not lin.anchor_retired and lin.anchor is not None and lin.anchor.alive
+                and would_deep_sl(lin.anchor, h, l, c)
+            )
+
             # --- gen's own SL/stage2/HH-LL ---
-            if lin.gen is not None and lin.gen.alive:
+            if lin.gen is not None and lin.gen.alive and not anchor_dying_today:
                 label = current_label(lin)
                 gen_sl_kind = process_gen(lin.gen, i, h, l, c, label)
                 if lin.gen.stage2_formed:
@@ -636,7 +711,12 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         # None from here on (no anchor-fallback per "active BAR required") --
                         # it simply never forms another gen on its own.
                         lin.orphaned_anchor = True
-                    awaiting_fresh_anchor = True
+                    # Same gating (by this lineage's own paired competitor, not any other
+                    # lineage) as the bar2_recovery-escalation site above -- see that comment
+                    # for the full rationale (03-05-2022).
+                    if lin.competitor is None or lin.competitor.dead:
+                        awaiting_fresh_anchor = True
+                        pending_competitor_source = lin
                     lin.gen = None
                 elif gen_sl_kind == "shallow":
                     if gen_pending:
@@ -697,12 +777,21 @@ def run_house(rows, bullish, gen_name, anchor_name):
             elif not lin.gen_started and lin.anchor is not None and lin.anchor.alive:
                 front = lin.anchor
 
-            # Fresh-attach eligibility for RED1/GREEN1: once the anchor has ever reached its
-            # own "2" stage, only a DEEP SL (complete lineage death, via lin.dead -- this code
-            # wouldn't even run that day) revokes eligibility. A shallow anchor SL no longer
-            # touches `alive` at all (see process_gen's terminal_on_shallow=False above), so it
-            # never affects this either.
-            front_ok_for_attach = front is not None and front.stage2_formed
+            # Fresh-attach eligibility for RED1/GREEN1 uses the SAME pre-today snapshot as
+            # fresh-gen-formation (front_stage2_before_today), not today's post-SL live state --
+            # confirmed by the user (22-04-2022/23-04-2022): a fresh RED1 attach is a raw,
+            # same-day price-action pattern (today's H/L/C vs. yesterday's H/L) unrelated to
+            # whatever today's gen SL does to the Struct object; a gen's own SL already dying
+            # today must not retroactively block a fresh attach that the day's own price action
+            # otherwise supports -- exactly mirroring how an ALREADY-active pullback is allowed
+            # to keep resolving (e.g. GREEN2) on the very day its front's gen deep-SLs (already
+            # confirmed 01-03-2022). `attach_front` falls back to yesterday's front object
+            # (whose `.formed_day` the precedence-tiebreak grouping needs) when today's own
+            # front is now None because its gen just died today.
+            attach_front = front if front is not None else front_before_today
+            front_ok_for_attach = attach_front is not None and (
+                front_stage2_before_today or (front is not None and front.stage2_formed)
+            )
 
             if lin.pullback is not None and lin.pullback["active"]:
                 process_pullback(lin, i, h, l, c, ph, pl)
@@ -710,7 +799,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 # Deferred, not attached immediately -- see the precedence resolution after
                 # this loop: if another lineage's front was born the exact same day as this
                 # one's, only the OLDER lineage gets to attach a fresh RED1/GREEN1 today.
-                fresh_attach_candidates.append((lin, front))
+                fresh_attach_candidates.append((lin, attach_front))
 
             # --- fresh gen formation off the shared gen_pending signal ---
             if gen_pending and (front_stage2_before_today or lin.gen_fresh_pending):
