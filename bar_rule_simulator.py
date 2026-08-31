@@ -233,6 +233,13 @@ class Lineage:
         # search needs reopening again. None until this lineage's gen has deep-SL'd (or
         # bar2_recovery-escalated) at least once.
         self.competitor = None
+        # Which gen_pending "episode" (see run_house's gen_pending_episode counter) this
+        # lineage most recently declined a fresh-gen-formation off of, because an OLDER
+        # lineage's own rear_recovery resolved the exact same day (see the older-lineage-
+        # precedence gating below). None until a decline has happened; compared against the
+        # CURRENT episode counter so a later, genuinely NEW gen_pending (a fresh RED2/GREEN2)
+        # re-opens eligibility rather than leaving this lineage permanently blocked.
+        self.declined_gen_pending_episode = None
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -240,6 +247,11 @@ def run_house(rows, bullish, gen_name, anchor_name):
     pullback_buffer = [[] for _ in rows]
     lineages = []
     gen_pending = False        # shared per-house: any lineage's RED2 sets it; any eligible lineage may consume it
+    # Bumped every time gen_pending newly turns True (a fresh RED2/GREEN2) -- lets a lineage's
+    # declined-due-to-collision state (Lineage.declined_gen_pending_episode) tell "the same
+    # still-pending signal I already declined" apart from "a genuinely new one," so a forfeited
+    # opportunity stays forfeited only for its own episode, not forever.
+    gen_pending_episode = 0
     awaiting_fresh_anchor = True
     # Set (to the dying lineage) at the moment a gen-deep-SL/bar2_recovery-escalation reopens
     # awaiting_fresh_anchor via the gated paths below; consumed the moment the resulting fresh
@@ -393,7 +405,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         return current_label(lin) if lin.gen_started else anchor_name
 
     def process_pullback(lin, i, h, l, c, ph, pl):
-        nonlocal gen_pending
+        nonlocal gen_pending, gen_pending_episode
         pullback = lin.pullback
         if pullback is None or not pullback["active"]:
             if bullish:
@@ -415,6 +427,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
             pullback_buffer[i].append((lin, "RED2" if bullish else "GREEN2"))
             pb["active"] = False
             gen_pending = True
+            gen_pending_episode += 1
             return True
 
         if bullish:
@@ -469,6 +482,16 @@ def run_house(rows, bullish, gen_name, anchor_name):
             lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
             for lin in lineages
         )
+        # Snapshot, BEFORE any lineage is processed today, which lineages' rear_recovery would
+        # resolve today -- used below to gate a DIFFERENT, younger lineage's fresh-gen-formation
+        # off gen_pending on the same older-lineage-precedence principle (see there). Must be
+        # captured here, not re-checked per-lineage later in the loop below, since an older
+        # lineage's own rear_recovery gets resolved and cleared to None during ITS OWN turn in
+        # that same loop, before a younger lineage processed afterward would get to see it.
+        resolving_rear_recovery_created_days = [
+            lin.created_day for lin in lineages
+            if lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
+        ]
         if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and blocked_by_older_recovery:
             awaiting_fresh_anchor = False
         elif awaiting_fresh_anchor and formation_break(ph, pl, h, l, c):
@@ -802,15 +825,37 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 fresh_attach_candidates.append((lin, attach_front))
 
             # --- fresh gen formation off the shared gen_pending signal ---
-            if gen_pending and (front_stage2_before_today or lin.gen_fresh_pending):
+            if (
+                gen_pending
+                and (front_stage2_before_today or lin.gen_fresh_pending)
+                and lin.declined_gen_pending_episode != gen_pending_episode
+            ):
                 if formation_break(ph, pl, h, l, c):
-                    new_gen = Struct(h, l, gen_name, formed_day=i)
-                    lin.gen = new_gen
-                    lin.gen_started = True
-                    lin.recovery_label = None
-                    lin.gen_fresh_pending = False
-                    events[i].append(gen_name)
-                    consumed_gen_pending_today = True
+                    # Older-lineage precedence, same principle as the top-level fresh-anchor-
+                    # vs-older-recovery gate (§8): if an OLDER lineage's own rear_recovery is
+                    # ALSO resolving this exact day, this lineage's fresh gen would have "the
+                    # same future impact" from here (own "2" -> SL -> RED1/GREEN1 -> reform,
+                    # under whatever name) as the older lineage's own reform -- confirmed by
+                    # the user against 02-03-2022 ("REAR BUY + BAR" -- only REAR BUY should
+                    # print; the older lineage is proper). Forfeited outright for THIS gen_
+                    # pending episode, not merely deferred -- `declined_gen_pending_episode`
+                    # stops this lineage from re-trying off the SAME still-pending signal on a
+                    # later day, but a genuinely NEW gen_pending (a fresh RED2/GREEN2, which
+                    # bumps gen_pending_episode) reopens eligibility.
+                    blocked_by_older_recovery_here = any(
+                        cd is not None and lin.created_day is not None and cd < lin.created_day
+                        for cd in resolving_rear_recovery_created_days
+                    )
+                    if blocked_by_older_recovery_here:
+                        lin.declined_gen_pending_episode = gen_pending_episode
+                    else:
+                        new_gen = Struct(h, l, gen_name, formed_day=i)
+                        lin.gen = new_gen
+                        lin.gen_started = True
+                        lin.recovery_label = None
+                        lin.gen_fresh_pending = False
+                        events[i].append(gen_name)
+                        consumed_gen_pending_today = True
 
         # Fresh RED1/GREEN1 attach precedence: the attach formula itself is a raw price-
         # action check (doesn't reference any lineage-specific reference), so every eligible
