@@ -173,7 +173,7 @@ rows = [
 
 
 class Struct:
-    def __init__(self, ref_high, ref_low, name):
+    def __init__(self, ref_high, ref_low, name, formed_day=None):
         self.ref_high = ref_high
         self.ref_low = ref_low
         self.alive = True
@@ -181,10 +181,18 @@ class Struct:
         self.name = name
         self.bar_ref_low = None
         self.bar_ref_high = None
+        # Day index this Struct was created -- used only to tell whether two DISTINCT
+        # lineages' current fronts came into being on the exact same day (see
+        # Lineage.created_day and the pullback-attach precedence rule below).
+        self.formed_day = formed_day
 
 
 class Lineage:
-    def __init__(self):
+    def __init__(self, created_day=None):
+        # Day index this Lineage object was created -- used only to break ties when 2+
+        # lineages' current fronts came into being the same day and both independently
+        # qualify for a fresh RED1/GREEN1 attach (see the precedence rule below).
+        self.created_day = created_day
         self.anchor = None          # Struct, only for a lineage that began as a fresh TZ GREEN/TZ RED
         self.pullback = None        # RED1/GREEN1 tracker
         self.gen = None             # current BAR/SAR/REAR/REAR RE ENTER Struct
@@ -411,6 +419,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
 
         newly_formed = set()
         consumed_gen_pending_today = False
+        fresh_attach_candidates = []
 
         # 0. Fresh anchor search -- always live once triggered by an SL, until it succeeds.
         if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c):
@@ -420,8 +429,8 @@ def run_house(rows, bullish, gen_name, anchor_name):
             for old in lineages:
                 if old.orphaned_anchor:
                     old.dead = True
-            lin = Lineage()
-            lin.anchor = Struct(h, l, anchor_name)
+            lin = Lineage(created_day=i)
+            lin.anchor = Struct(h, l, anchor_name, formed_day=i)
             lineages.append(lin)
             awaiting_fresh_anchor = False
             events[i].append(anchor_name)
@@ -490,7 +499,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 else:
                     recovers = h <= ph and l < ref - THRESH and c <= ref
                 if recovers:
-                    new_gen = Struct(h, l, gen_name)
+                    new_gen = Struct(h, l, gen_name, formed_day=i)
                     new_gen.stage2_formed = True
                     if bullish:
                         new_gen.bar_ref_low = rec["outer"]
@@ -542,7 +551,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 else:
                     recovers = h <= ph and l < ref - THRESH and c <= ref
                 if recovers:
-                    new_gen = Struct(h, l, target)
+                    new_gen = Struct(h, l, target, formed_day=i)
                     lin.gen = new_gen
                     lin.gen_started = True
                     lin.recovery_label = target
@@ -571,24 +580,30 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 if lin.gen.stage2_formed:
                     lin.anchor_retired = True
                 if gen_sl_kind == "deep":
-                    # Escalation requires EITHER this gen reached its own "2" (the ordinary
-                    # rule -- BAR/SAR's very first promotion onto the ladder needs BAR 2/SAR 2's
-                    # own reference to reform against), OR this gen was already a ladder rung
-                    # (REAR BUY/SELL or their RE ENTER) -- confirmed by the user against
-                    # 06-03-2022/10-03-2022: once a lineage is already on the ladder, a further
-                    # rung dying BEFORE reaching its own "2" still escalates one more step,
-                    # using that rung's own plain (pre-"2") reference -- REAR BUY (formed
-                    # 02-03-2022, High 315 on 03-03) died pre-its-own-"2" on 06-03-2022, and
-                    # REAR BUY RE ENTER correctly reforms on 10-03-2022 (High 318 > 315+0.20,
-                    # Low 313.5 >= PrevLow, Close 317.5 >= 315). Only the FIRST promotion onto
-                    # the ladder (plain BAR/SAR with no ladder history yet) still requires its
-                    # own "2" -- confirmed unaffected by 15-02-2021 (plain BAR dies pre-its-own-
-                    # "2", no REAR possible, only a fresh TZ GREEN cycle).
+                    # A recovery window opens EITHER because this gen reached its own "2" (the
+                    # ordinary rule -- BAR/SAR's very first promotion onto the ladder needs BAR
+                    # 2/SAR 2's own reference to reform against), OR because this gen was
+                    # already a ladder rung (REAR BUY/SELL or their RE ENTER) -- confirmed by
+                    # the user against 06-03-2022/10-03-2022: once a lineage is already on the
+                    # ladder, a further rung dying BEFORE reaching its own "2" still gets a
+                    # recovery window, using that rung's own plain (pre-"2") reference. Only
+                    # the FIRST promotion onto the ladder (plain BAR/SAR with no ladder history
+                    # yet) still requires its own "2" -- confirmed unaffected by 15-02-2021
+                    # (plain BAR dies pre-its-own-"2", no REAR possible, only a fresh TZ GREEN).
+                    #
+                    # The recovery's NAME only escalates one rung up the ladder if this gen
+                    # actually reached its own "2" before dying; a rung dying pre-its-own-"2"
+                    # reforms under the SAME label it already had, no escalation -- confirmed
+                    # by the user, correcting an intermediate version of this fix: REAR BUY
+                    # (formed 02-03-2022) died pre-its-own-"2" on 06-03-2022, and the recovery
+                    # reforming above its own High (315) on 10-03-2022 is labeled plain
+                    # "REAR BUY" again, NOT "REAR BUY RE ENTER" ("since REAR BUY 2 never
+                    # formed" -- RE ENTER is reserved for escalating OFF an actual "2").
                     if lin.gen.stage2_formed or lin.recovery_label is not None:
                         ref_val = lin.gen.ref_high if bullish else lin.gen.ref_low
                         lin.rear_recovery = {
                             "ref": ref_val,
-                            "target_label": escalated_label(lin),
+                            "target_label": escalated_label(lin) if lin.gen.stage2_formed else label,
                             "source_2": f"{label} 2" if lin.gen.stage2_formed else label,
                         }
                     else:
@@ -672,18 +687,40 @@ def run_house(rows, bullish, gen_name, anchor_name):
             if lin.pullback is not None and lin.pullback["active"]:
                 process_pullback(lin, i, h, l, c, ph, pl)
             elif front_ok_for_attach and not gen_pending:
-                process_pullback(lin, i, h, l, c, ph, pl)
+                # Deferred, not attached immediately -- see the precedence resolution after
+                # this loop: if another lineage's front was born the exact same day as this
+                # one's, only the OLDER lineage gets to attach a fresh RED1/GREEN1 today.
+                fresh_attach_candidates.append((lin, front))
 
             # --- fresh gen formation off the shared gen_pending signal ---
             if gen_pending and (front_stage2_before_today or lin.gen_fresh_pending):
                 if formation_break(ph, pl, h, l, c):
-                    new_gen = Struct(h, l, gen_name)
+                    new_gen = Struct(h, l, gen_name, formed_day=i)
                     lin.gen = new_gen
                     lin.gen_started = True
                     lin.recovery_label = None
                     lin.gen_fresh_pending = False
                     events[i].append(gen_name)
                     consumed_gen_pending_today = True
+
+        # Fresh RED1/GREEN1 attach precedence: the attach formula itself is a raw price-
+        # action check (doesn't reference any lineage-specific reference), so every eligible
+        # lineage would independently "notice" the same breakout candle. When 2+ eligible
+        # lineages' CURRENT fronts were born the exact same day, only the OLDER lineage (by
+        # created_day) actually attaches -- confirmed by the user against the 10-03-2022 dual
+        # formation (TZ GREEN and REAR BUY RE ENTER both born that day): "it will attach to
+        # REAR BUY [the older lineage]." When fronts were born on DIFFERENT days (even if
+        # both lineages are simultaneously eligible), both attach independently and get the
+        # dual-tag treatment instead -- confirmed against 04-03-2022, unaffected by this.
+        by_front_day = {}
+        for lin, front in fresh_attach_candidates:
+            by_front_day.setdefault(front.formed_day, []).append(lin)
+        for day, same_day_lins in by_front_day.items():
+            if len(same_day_lins) > 1:
+                winner = min(same_day_lins, key=lambda l: (l.created_day if l.created_day is not None else -1))
+                process_pullback(winner, i, h, l, c, ph, pl)
+            else:
+                process_pullback(same_day_lins[0], i, h, l, c, ph, pl)
 
         # gen_pending is a persistent, shared-per-house signal: it stays available across
         # days (any lineage that becomes eligible later can still consume it) until at least
