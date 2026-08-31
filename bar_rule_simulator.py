@@ -244,6 +244,12 @@ def run_house(rows, bullish, gen_name, anchor_name):
     def formation_break(ph, pl, h, l, c):
         return up_break(ph, pl, h, l, c) if bullish else down_break(ph, pl, h, l, c)
 
+    def rear_recovery_would_resolve(rec, h, l, c, ph, pl):
+        ref = rec["ref"]
+        if bullish:
+            return l >= pl and h > ref + THRESH and c >= ref
+        return h <= ph and l < ref - THRESH and c <= ref
+
     def current_label(lin):
         return lin.recovery_label or gen_name
 
@@ -422,7 +428,18 @@ def run_house(rows, bullish, gen_name, anchor_name):
         fresh_attach_candidates = []
 
         # 0. Fresh anchor search -- always live once triggered by an SL, until it succeeds.
-        if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c):
+        # Suppressed on a day where an EXISTING lineage's own pending REAR BUY/SELL (or RE
+        # ENTER) recovery would ALSO resolve today -- confirmed by the user against
+        # 10-03-2022: when the fresh-anchor breakout and an older lineage's ladder recovery
+        # coincide on the identical day, only the older lineage's event is recorded at all;
+        # the fresh anchor does not form ("why to consider TZ GREEN? No need"). The fresh
+        # anchor search simply keeps waiting (awaiting_fresh_anchor stays True) for a later
+        # day that does not collide with an older lineage's own same-day recovery.
+        blocked_by_older_recovery = any(
+            lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
+            for lin in lineages
+        )
+        if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and not blocked_by_older_recovery:
             # Retire any orphaned-anchor lineage(s) -- a gen that died pre-"2" (no REAR/ladder
             # recovery possible) is not a permanent dual-track competitor; only the REAR-vs-
             # fresh-anchor race at the gen level is. This new anchor replaces it outright.
@@ -546,10 +563,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 rec = lin.rear_recovery
                 target = rec["target_label"]
                 ref = rec["ref"]
-                if bullish:
-                    recovers = l >= pl and h > ref + THRESH and c >= ref
-                else:
-                    recovers = h <= ph and l < ref - THRESH and c <= ref
+                recovers = rear_recovery_would_resolve(rec, h, l, c, ph, pl)
                 if recovers:
                     new_gen = Struct(h, l, target, formed_day=i)
                     lin.gen = new_gen
