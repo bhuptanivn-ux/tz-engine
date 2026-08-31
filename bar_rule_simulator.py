@@ -321,27 +321,20 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 events[i].append(f"{label} 2 LL")
             return None
 
-        # Anchor (TZ GREEN 2/TZ RED 2): governed -- only the FAVORABLE-side inner reference
-        # keeps ratcheting (HH for bullish, LL for bearish); the adverse-inner side is
-        # silenced. The shallow SL is a logged non-terminal event (terminal_on_shallow=False
-        # for anchor calls), not an early return, so the OUTER's own continuous ratchet below
-        # still runs on a shallow-SL day. The OUTER (frozen at gen level) instead keeps
-        # ratcheting here on the ADVERSE side for as long as the anchor is tracked -- this
-        # feeds both the deep-SL threshold and the bare BAR/SAR-style support/resistance
-        # reference -- confirmed by the user against 14-02-2022 ("TZ RED HH" needed for the
-        # deep-SL threshold) and 15-02-2022 ("TZ RED 2 HH" -- the adverse-inner side -- not
-        # required).
-        if shallow_sl:
-            events[i].append(f"{label} 2 SL")
-        else:
-            if bullish:
-                if h > s.ref_high + ANY:
-                    s.ref_high = h
-                    events[i].append(f"{label} 2 HH")
-            else:
-                if l < s.ref_low - ANY:
-                    s.ref_low = l
-                    events[i].append(f"{label} 2 LL")
+        # Anchor (TZ GREEN 2/TZ RED 2): NONE of its own "2"-suffixed HH/LL/SL ever print, full
+        # stop -- confirmed by the user: "once TZ RED 2 occurs, TZ RED 2 SL/LL/HH does not
+        # matter... no need to record TZ RED 2 HH/LL/SL." (An earlier version of this fix still
+        # printed the favorable-inner side -- e.g. TZ RED 2 LL -- which was still wrong; even
+        # that has zero consequence and must not be recorded.) The inner reference (s.ref_high/
+        # ref_low) is therefore left exactly as it was set at "2" formation, forever -- it is
+        # only ever read below via deep_threshold, and the OUTER's own continuous adverse-side
+        # ratchet (next) independently catches up to and then exceeds any stale inner value
+        # once price extends far enough, so deep_threshold stays correct without needing the
+        # inner side to keep moving. shallow_sl itself is still computed above (it's cheap and
+        # shares the deep_threshold's inputs) but deliberately never printed or acted on --
+        # confirmed by the user (10-01-2022): a repeat "TZ RED 2 SL" would be doubly wrong,
+        # since it cannot even repeat without an interceding re-entry, and there is no such
+        # re-entry concept for the anchor at all.
         if bullish:
             if s.bar_ref_low - l >= ANY:
                 s.bar_ref_low = l
@@ -350,7 +343,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
             if h - s.bar_ref_high >= ANY:
                 s.bar_ref_high = h
                 events[i].append(f"{label} HH")
-        return "shallow" if shallow_sl else None
+        return None
 
     def pullback_track(lin):
         """Which structure this lineage's pullback is currently attached to -- used only to
