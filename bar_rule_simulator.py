@@ -534,11 +534,16 @@ def run_house(rows, bullish, gen_name, anchor_name):
             if lin.bar2_recovery is not None and gen_pending:
                 # RED2/GREEN2 has fired (on an earlier day, or later the same day the shallow
                 # SL originally fired) while this lighter recovery was still pending -- per the
-                # original rule, that forecloses it entirely, every day it might otherwise
-                # still apply, not just the instant the shallow SL fires. Abandon the recovery
-                # and let the ordinary fresh-gen-formation trigger (gen_fresh_pending) take
-                # over instead.
-                lin.bar2_recovery = None
+                # original rule, that forecloses the LIGHTER "NEW BAR2 reforms directly" outcome
+                # specifically; a full fresh BAR/gen forms instead once formation_break allows
+                # it (gen_fresh_pending, checked below). This does NOT abandon bar2_recovery
+                # itself, though -- the deep/outer threshold it tracks is a real, independent
+                # price fact (whether BAR's own outer reference is ALSO breached) that must keep
+                # being checked regardless of which reform path eventually applies -- confirmed
+                # by the user against 24-04-2022: the deep threshold (329) was breached that
+                # day and `BAR SL` was wrongly missing because an earlier version of this fix
+                # nulled bar2_recovery outright the moment gen_pending fired, silently
+                # discarding the escalation check below along with it.
                 lin.gen_fresh_pending = True
             if lin.bar2_recovery is not None:
                 rec = lin.bar2_recovery
@@ -556,6 +561,13 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     escalates = (h - deep_threshold) >= THRESH and c >= deep_threshold
                 if escalates:
                     events[i].append(f"{current_label(lin)} SL")
+                    # Escalating into the heavier ladder recovery supersedes the lighter
+                    # "ordinary fresh restart off gen_pending" path entirely -- clear
+                    # gen_fresh_pending so the "fresh gen formation" trigger further below
+                    # can't ALSO independently fire for this SAME lineage while its
+                    # rear_recovery is still pending (which would leave both a freshly-formed
+                    # gen AND a dangling rear_recovery on the same lineage at once).
+                    lin.gen_fresh_pending = False
                     # Recovery target is the dead "X 2"'s own FAVORABLE-side reference
                     # (rec["ref"], already tracked/ratcheted by the "INVALID {base} HH/LL"
                     # code above -- e.g. BAR 2's own High) -- confirmed by the user against
@@ -599,19 +611,31 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 else:
                     recovers = h <= ph and l < ref - THRESH and c <= ref
                 if recovers:
-                    new_gen = Struct(h, l, gen_name, formed_day=i)
-                    new_gen.stage2_formed = True
-                    if bullish:
-                        new_gen.bar_ref_low = rec["outer"]
+                    if lin.gen_fresh_pending:
+                        # RED2/GREEN2 already fired before this recovery -- per the rule above,
+                        # the lighter "NEW BAR2 reforms directly" reform is foreclosed even
+                        # though price DID recover past the shallow reference; simply drop the
+                        # now-resolved recovery and let the ordinary fresh-gen-formation trigger
+                        # (below, off its own formation_break condition) decide when the actual
+                        # fresh BAR/gen forms, on this day or a later one.
+                        lin.bar2_recovery = None
+                        if lin.pullback is not None and lin.pullback["active"]:
+                            process_pullback(lin, i, h, l, c, ph, pl)
                     else:
-                        new_gen.bar_ref_high = rec["outer"]
-                    lin.gen = new_gen
-                    lin.bar2_recovery = None
-                    events[i].append(f"{current_label(lin)} 2")
-                    # Same rationale as above -- reforming the gen today isn't a total death,
-                    # so an already-active pullback still gets to resolve/ratchet today too.
-                    if lin.pullback is not None and lin.pullback["active"]:
-                        process_pullback(lin, i, h, l, c, ph, pl)
+                        new_gen = Struct(h, l, gen_name, formed_day=i)
+                        new_gen.stage2_formed = True
+                        if bullish:
+                            new_gen.bar_ref_low = rec["outer"]
+                        else:
+                            new_gen.bar_ref_high = rec["outer"]
+                        lin.gen = new_gen
+                        lin.bar2_recovery = None
+                        events[i].append(f"{current_label(lin)} 2")
+                        # Same rationale as above -- reforming the gen today isn't a total
+                        # death, so an already-active pullback still gets to resolve/ratchet
+                        # today too.
+                        if lin.pullback is not None and lin.pullback["active"]:
+                            process_pullback(lin, i, h, l, c, ph, pl)
                     continue
                 else:
                     base = current_label(lin)
@@ -691,6 +715,12 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 and would_deep_sl(lin.anchor, h, l, c)
             )
 
+            # Whether THIS lineage's gen deep-SL'd today -- used below to block a FRESH
+            # RED1/GREEN1 attach from starting the same day (see the fresh-attach eligibility
+            # comment further down). An ALREADY-active pullback is unaffected by this flag; it
+            # keeps resolving/ratcheting through a deep SL regardless (confirmed 01-03-2022).
+            gen_deep_sl_today = False
+
             # --- gen's own SL/stage2/HH-LL ---
             if lin.gen is not None and lin.gen.alive and not anchor_dying_today:
                 label = current_label(lin)
@@ -698,6 +728,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 if lin.gen.stage2_formed:
                     lin.anchor_retired = True
                 if gen_sl_kind == "deep":
+                    gen_deep_sl_today = True
                     # A recovery window opens EITHER because this gen reached its own "2" (the
                     # ordinary rule -- BAR/SAR's very first promotion onto the ladder needs BAR
                     # 2/SAR 2's own reference to reform against), OR because this gen was
@@ -804,15 +835,23 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # fresh-gen-formation (front_stage2_before_today), not today's post-SL live state --
             # confirmed by the user (22-04-2022/23-04-2022): a fresh RED1 attach is a raw,
             # same-day price-action pattern (today's H/L/C vs. yesterday's H/L) unrelated to
-            # whatever today's gen SL does to the Struct object; a gen's own SL already dying
-            # today must not retroactively block a fresh attach that the day's own price action
-            # otherwise supports -- exactly mirroring how an ALREADY-active pullback is allowed
-            # to keep resolving (e.g. GREEN2) on the very day its front's gen deep-SLs (already
-            # confirmed 01-03-2022). `attach_front` falls back to yesterday's front object
+            # whatever today's gen SL does to the Struct object; a gen's own SHALLOW SL already
+            # dying today must not retroactively block a fresh attach that the day's own price
+            # action otherwise supports. `attach_front` falls back to yesterday's front object
             # (whose `.formed_day` the precedence-tiebreak grouping needs) when today's own
             # front is now None because its gen just died today.
+            #
+            # This does NOT extend to a DEEP SL day, though -- confirmed by the user against
+            # 25-04-2022 ("SAR SL occurred, then why GREEN1? Deep SL then what is the point of
+            # GREEN1?"): a deep SL is total generation failure (opening the REAR-ladder/fresh-
+            # anchor dual-track, §8), and a BRAND-NEW pullback has no live front left worth
+            # starting to track against that same day -- unlike an ALREADY-active pullback,
+            # which keeps resolving/ratcheting through a deep SL regardless because it has its
+            # own independent standing from before the death (confirmed 01-03-2022, GREEN2
+            # alongside SAR SL -- see `gen_deep_sl_today`, which only gates the FRESH-attach
+            # branch below, not the already-active continuation branch).
             attach_front = front if front is not None else front_before_today
-            front_ok_for_attach = attach_front is not None and (
+            front_ok_for_attach = attach_front is not None and not gen_deep_sl_today and (
                 front_stage2_before_today or (front is not None and front.stage2_formed)
             )
 
