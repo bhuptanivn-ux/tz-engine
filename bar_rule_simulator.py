@@ -428,18 +428,24 @@ def run_house(rows, bullish, gen_name, anchor_name):
         fresh_attach_candidates = []
 
         # 0. Fresh anchor search -- always live once triggered by an SL, until it succeeds.
-        # Suppressed on a day where an EXISTING lineage's own pending REAR BUY/SELL (or RE
-        # ENTER) recovery would ALSO resolve today -- confirmed by the user against
-        # 10-03-2022: when the fresh-anchor breakout and an older lineage's ladder recovery
-        # coincide on the identical day, only the older lineage's event is recorded at all;
-        # the fresh anchor does not form ("why to consider TZ GREEN? No need"). The fresh
-        # anchor search simply keeps waiting (awaiting_fresh_anchor stays True) for a later
-        # day that does not collide with an older lineage's own same-day recovery.
+        # Forfeited outright -- not merely deferred -- on a day where this exact breakout
+        # ALSO coincides with an EXISTING lineage's own pending REAR BUY/SELL (or RE ENTER)
+        # recovery resolving. Confirmed by the user against 10-03-2022/11-03-2022: an
+        # intermediate version of this fix let the fresh anchor keep waiting and form on the
+        # very next non-colliding day (11-03-2022) -- rejected: "You cannot adjust to further
+        # dates just because it was not shown during earlier dates... does not mean it can be
+        # carried forward to next dates just like that." The reasoning given: once the older
+        # lineage's own future descendants (RED1/RED2/BAR/...) would follow identical rules,
+        # a parallel TZ GREEN adds nothing worth recording, so the opportunity is simply
+        # consumed/forfeited, not rescheduled -- awaiting_fresh_anchor is cleared here without
+        # ever forming an anchor. A later, NEW deep SL still reopens the search as usual.
         blocked_by_older_recovery = any(
             lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
             for lin in lineages
         )
-        if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and not blocked_by_older_recovery:
+        if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and blocked_by_older_recovery:
+            awaiting_fresh_anchor = False
+        elif awaiting_fresh_anchor and formation_break(ph, pl, h, l, c):
             # Retire any orphaned-anchor lineage(s) -- a gen that died pre-"2" (no REAR/ladder
             # recovery possible) is not a permanent dual-track competitor; only the REAR-vs-
             # fresh-anchor race at the gen level is. This new anchor replaces it outright.
