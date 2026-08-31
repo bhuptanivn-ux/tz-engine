@@ -571,12 +571,25 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 if lin.gen.stage2_formed:
                     lin.anchor_retired = True
                 if gen_sl_kind == "deep":
-                    if lin.gen.stage2_formed:
+                    # Escalation requires EITHER this gen reached its own "2" (the ordinary
+                    # rule -- BAR/SAR's very first promotion onto the ladder needs BAR 2/SAR 2's
+                    # own reference to reform against), OR this gen was already a ladder rung
+                    # (REAR BUY/SELL or their RE ENTER) -- confirmed by the user against
+                    # 06-03-2022/10-03-2022: once a lineage is already on the ladder, a further
+                    # rung dying BEFORE reaching its own "2" still escalates one more step,
+                    # using that rung's own plain (pre-"2") reference -- REAR BUY (formed
+                    # 02-03-2022, High 315 on 03-03) died pre-its-own-"2" on 06-03-2022, and
+                    # REAR BUY RE ENTER correctly reforms on 10-03-2022 (High 318 > 315+0.20,
+                    # Low 313.5 >= PrevLow, Close 317.5 >= 315). Only the FIRST promotion onto
+                    # the ladder (plain BAR/SAR with no ladder history yet) still requires its
+                    # own "2" -- confirmed unaffected by 15-02-2021 (plain BAR dies pre-its-own-
+                    # "2", no REAR possible, only a fresh TZ GREEN cycle).
+                    if lin.gen.stage2_formed or lin.recovery_label is not None:
                         ref_val = lin.gen.ref_high if bullish else lin.gen.ref_low
                         lin.rear_recovery = {
                             "ref": ref_val,
                             "target_label": escalated_label(lin),
-                            "source_2": f"{label} 2",
+                            "source_2": f"{label} 2" if lin.gen.stage2_formed else label,
                         }
                     else:
                         # No stage2 reference ever existed, so no recovery is possible for this
