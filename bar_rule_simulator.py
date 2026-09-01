@@ -306,6 +306,20 @@ def run_house(rows, bullish, gen_name, anchor_name):
             return l >= pl and h > ref + THRESH and c >= ref
         return h <= ph and l < ref - THRESH and c <= ref
 
+    def recovery_would_resolve(rec, h, l, c, ph, pl):
+        """Dispatches to the right resolution test for a lineage's rear_recovery -- the ordinary
+        single-threshold breach against the dead gen's own favorable-side reference, UNLESS this
+        is a `direct_reform` entry (a PLAIN gen, recovery_label None, that died before ever
+        reaching its own "2" -- see the gen-deep-SL handling below), which instead uses the
+        SAME formation_break() breakout that would otherwise form a brand-new TZ GREEN/TZ RED
+        anchor. Confirmed by the user: "IMMEDIATELY ANY DAY WHICH IS FULFILLING TZ RED CONDITIONS
+        WILL BE A SAR... NOT NECESSARY WAIT FOR SAR REF HIGH" -- a plain gen's own direct reform
+        is not gated on any specific reference of its own at all, unlike every other recovery
+        window in this file."""
+        if rec.get("direct_reform"):
+            return formation_break(ph, pl, h, l, c)
+        return rear_recovery_would_resolve(rec, h, l, c, ph, pl)
+
     def would_deep_sl(s, h, l, c):
         """Side-effect-free peek at whether s (a gen or anchor Struct) would deep-SL today,
         mirroring process_gen's own deep_sl condition exactly. Used to check the ANCHOR's own
@@ -571,7 +585,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # consumed/forfeited, not rescheduled -- awaiting_fresh_anchor is cleared here without
         # ever forming an anchor. A later, NEW deep SL still reopens the search as usual.
         blocked_by_older_recovery = any(
-            lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
+            lin.rear_recovery is not None and recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
             for lin in lineages
         )
         # A fresh TZ GREEN/TZ RED anchor cannot form on a day where ANY (non-dead) lineage is
@@ -594,7 +608,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # that same loop, before a younger lineage processed afterward would get to see it.
         resolving_rear_recovery_created_days = [
             lin.created_day for lin in lineages
-            if lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
+            if lin.rear_recovery is not None and recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
         ]
         if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and (blocked_by_older_recovery or blocked_by_gen_fresh_pending):
             awaiting_fresh_anchor = False
@@ -825,13 +839,17 @@ def run_house(rows, bullish, gen_name, anchor_name):
             if lin.rear_recovery is not None:
                 rec = lin.rear_recovery
                 target = rec["target_label"]
-                ref = rec["ref"]
-                recovers = rear_recovery_would_resolve(rec, h, l, c, ph, pl)
+                recovers = recovery_would_resolve(rec, h, l, c, ph, pl)
                 if recovers:
                     new_gen = Struct(h, l, target, formed_day=i)
                     lin.gen = new_gen
                     lin.gen_started = True
-                    lin.recovery_label = target
+                    # A direct_reform entry reforms as the PLAIN gen name -- recovery_label stays
+                    # None (not "SAR"/"BAR" as a literal string), exactly matching a lineage's
+                    # very first-ever promotion, so a LATER escalation still correctly treats
+                    # this as the first rung (escalated_label -> "REAR BUY/SELL", not "RE ENTER")
+                    # rather than as already-on-the-ladder history.
+                    lin.recovery_label = None if rec.get("direct_reform") else target
                     lin.rear_recovery = None
                     events[i].append(target)
                     # Same rationale as the bar2_recovery transitions above -- reforming the
@@ -840,11 +858,16 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     if lin.pullback is not None and lin.pullback["active"]:
                         process_pullback(lin, i, h, l, c, ph, pl)
                     continue
-                else:
+                elif not rec.get("direct_reform"):
                     # Ratchet is named after the SOURCE reference being tracked (the dead
                     # "X 2"'s own High/Low, e.g. "INVALID BAR 2 HH") not the escalation's
                     # target label -- confirmed by the user: "record INVALID as INVALID
-                    # BAR 2 HH not INVALID REAR BUY HH".
+                    # BAR 2 HH not INVALID REAR BUY HH". A direct_reform entry has no reference
+                    # of its own to ratchet at all (its resolution is a raw formation_break()
+                    # breakout, not a threshold breach against a stored value) -- confirmed by
+                    # the user ("not necessary wait for SAR ref high"), so this ratchet is
+                    # skipped entirely for it.
+                    ref = rec["ref"]
                     source_2 = rec["source_2"]
                     if bullish:
                         if h - ref >= ANY:
@@ -885,15 +908,11 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 if gen_sl_kind == "deep":
                     gen_deep_sl_today = True
                     # A recovery window opens EITHER because this gen reached its own "2" (the
-                    # ordinary rule -- BAR/SAR's very first promotion onto the ladder needs BAR
-                    # 2/SAR 2's own reference to reform against), OR because this gen was
-                    # already a ladder rung (REAR BUY/SELL or their RE ENTER) -- confirmed by
-                    # the user against 06-03-2022/10-03-2022: once a lineage is already on the
-                    # ladder, a further rung dying BEFORE reaching its own "2" still gets a
-                    # recovery window, using that rung's own plain (pre-"2") reference. Only
-                    # the FIRST promotion onto the ladder (plain BAR/SAR with no ladder history
-                    # yet) still requires its own "2" -- confirmed unaffected by 15-02-2021
-                    # (plain BAR dies pre-its-own-"2", no REAR possible, only a fresh TZ GREEN).
+                    # ordinary rule), OR because this gen was already a ladder rung (REAR
+                    # BUY/SELL or their RE ENTER) -- confirmed by the user against 06-03-2022/
+                    # 10-03-2022: once a lineage is already on the ladder, a further rung dying
+                    # BEFORE reaching its own "2" still gets a recovery window, using that
+                    # rung's own plain (pre-"2") reference.
                     #
                     # The recovery's NAME only escalates one rung up the ladder if this gen
                     # actually reached its own "2" before dying; a rung dying pre-its-own-"2"
@@ -911,15 +930,27 @@ def run_house(rows, bullish, gen_name, anchor_name):
                             "source_2": f"{label} 2" if lin.gen.stage2_formed else label,
                         }
                     else:
-                        # No stage2 reference ever existed, so no recovery is possible for this
-                        # gen-path -- the lineage's own anchor (if still alive) is NOT killed
-                        # immediately; it keeps ticking its own HH/LL/SL exactly as before, up
-                        # until the next fresh anchor successfully forms, at which point it is
-                        # retired (see the orphaned_anchor check at the top of the day loop).
-                        # gen_started is already True, so this lineage's front is permanently
-                        # None from here on (no anchor-fallback per "active BAR required") --
-                        # it simply never forms another gen on its own.
-                        lin.orphaned_anchor = True
+                        # A PLAIN gen (first rung, no ladder history yet -- recovery_label is
+                        # None) dying before ever reaching its own "2" still gets a direct reform
+                        # chance, correcting an earlier, now-superseded reading of 15-02-2021
+                        # (that case is unaffected either way -- the very FIRST gen the house
+                        # ever forms still needs a fresh TZ GREEN/TZ RED first, since there is no
+                        # prior gen to reform from at all). Per the user: "SAR - SAR SL DOES NOT
+                        # LEAD TO TZ RED. IMMEDIATELY ANY DAY WHICH IS FULFILLING TZ RED
+                        # CONDITIONS WILL BE A SAR... SAR - SAR SL - NEW SAR (not necessary wait
+                        # for SAR ref high)" -- confirmed against 24-06-2022/26-06-2022: a plain
+                        # SAR formed 24-06-2022 died pre-its-own-"2" on 25-06-2022, and the
+                        # 26-06-2022 breakout (which would otherwise form a fresh TZ RED) instead
+                        # reforms directly as plain `SAR` again, on this SAME lineage. Unlike
+                        # every other recovery window in this file, this one is not gated on any
+                        # reference of its own (`direct_reform`, resolved via recovery_would_
+                        # resolve() -> formation_break() instead of a threshold breach).
+                        lin.rear_recovery = {
+                            "ref": None,
+                            "target_label": gen_name,
+                            "source_2": label,
+                            "direct_reform": True,
+                        }
                     # Same gating (by this lineage's own paired competitor, not any other
                     # lineage), including the superseded-counts-as-dead extension, as the
                     # bar2_recovery-escalation site above -- see that comment for the full
