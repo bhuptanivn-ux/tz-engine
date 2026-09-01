@@ -262,6 +262,17 @@ class Lineage:
         # unchanged BAR2. Compared by object identity, so a later front change (a new Struct)
         # naturally re-opens eligibility without needing an explicit reset.
         self.pullback_used = None
+        # True the first time THIS lineage's own gen or anchor reaches its own "2" -- once
+        # proven this way, this lineage is a permanent, legitimate parallel thread and its
+        # paired competitor (Lineage.competitor) can never retire it (see retire_other_pending).
+        # A lineage that has NOT yet reached this milestone is still "unproven" -- if its paired
+        # competitor wins the race first, this one is retired instead of exempted, regardless of
+        # which side started first. Confirmed by the user: a fresh TZ RED that reached TZ RED 2
+        # on 29-05-2022 (proven) is never retired by its paired lineage's own later REAR SELL 2
+        # on 04-06-2022 ("no need to terminate the new lineage, keep it active") -- but a fresh
+        # competitor that has NOT yet reached any "2" of its own when the OTHER side reaches its
+        # new "2" first goes dormant instead ("new lineage will keep recording at the back end").
+        self.ever_reached_stage2 = False
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -322,31 +333,42 @@ def run_house(rows, bullish, gen_name, anchor_name):
 
     def retire_other_pending(winner):
         """The moment ANY lineage re-establishes itself past its own "2" (gen or anchor), every
-        OTHER lineage's still-pending recovery search (rear_recovery/bar2_recovery) that is NOT
-        winner's own directly-paired dual-track competitor is retired outright -- it belongs to
-        an older, already-superseded race, not the current one. The direct pair (winner and
-        whichever lineage it is paired with via Lineage.competitor, checked both ways) is
-        deliberately exempt: that specific dyad staying alive at once, each side independently
-        progressing for as long as it takes, is the confirmed, intentional dual-track (27-02
-        through 06-03-2022; 26-05 through 09-06-2022 -- REAR SELL/REAR SELL 2 still validly
-        applying at 03-06/04-06-2022 despite the paired fresh TZ RED already reaching TZ RED 2
-        on 29-05-2022: "REAR SELL AND REAR SELL 2 OCCURRED AND WILL BE APPLIED"). What must NOT
-        persist is an unrelated, older lineage from a PREVIOUS, already-resolved race -- e.g. one
-        formed back on 08-02-2022 whose own paired competitor died long ago -- still sitting
-        dormant and resurfacing (a REAR SELL reform, then a further fresh-anchor search) many
-        cycles later, well after a completely different, currently-active lineage has already
-        re-reached its own "2" one or more times over. Confirmed by the user against
-        17-06-2022/24-06-2022.
+        OTHER lineage's still-pending recovery search (rear_recovery/bar2_recovery) is retired
+        outright UNLESS that other lineage is winner's own directly-paired dual-track competitor
+        AND has ALREADY independently reached its own "2" at some earlier point (Lineage.
+        ever_reached_stage2) -- i.e. has already proven itself a permanent, legitimate parallel
+        thread. Whichever side of a paired dyad reaches "2" FIRST is safe forever from here on,
+        regardless of which side (older or newer) that turns out to be; the OTHER side, once it
+        also independently proves itself later, is likewise safe from then on too. What is NOT
+        safe is a paired competitor that has NEVER YET reached its own "2" when the other side
+        gets there first -- that one is retired along with any unrelated, already-superseded
+        lineage, not exempted merely for being "the" paired competitor. Confirmed by the user: a
+        fresh TZ RED that reached TZ RED 2 on 29-05-2022 (already proven) is never retired by its
+        paired lineage's own later REAR SELL 2 on 04-06-2022 ("no need to terminate the new
+        lineage, keep it active") -- but a fresh competitor that has NOT yet reached any "2" of
+        its own when the OTHER side reaches its new "2" first is retired instead ("new lineage
+        will keep recording at the back end [i.e. stops being shown]"). Separately, an unrelated,
+        older lineage from a PREVIOUS, already-resolved race entirely -- e.g. one formed back on
+        08-02-2022 whose own paired competitor died long ago -- must not persist either, still
+        sitting dormant and resurfacing many cycles later, well after a completely different,
+        currently-active lineage has already re-reached its own "2" one or more times over.
+        Confirmed by the user against 17-06-2022/24-06-2022.
+
+        Retires an unproven OTHER lineage outright regardless of whether it currently holds a
+        pending rear_recovery/bar2_recovery or is simply still alive and building toward its own
+        "2" (e.g. a freshly-started competing anchor that hasn't gotten there yet) -- either way,
+        once some OTHER lineage in the house wins the race, an unproven one has nothing further
+        worth recording.
         """
+        winner.ever_reached_stage2 = True
         for other in lineages:
             if other is winner or other.dead:
                 continue
-            if other is winner.competitor or other.competitor is winner:
+            if (other is winner.competitor or other.competitor is winner) and other.ever_reached_stage2:
                 continue
-            if other.rear_recovery is not None or other.bar2_recovery is not None:
-                other.rear_recovery = None
-                other.bar2_recovery = None
-                other.dead = True
+            other.rear_recovery = None
+            other.bar2_recovery = None
+            other.dead = True
 
     def process_gen(s, i, h, l, c, label, terminal_on_shallow=True, governed=False):
         """Two-tier deep SL detection shared by the anchor (TZ GREEN/TZ RED) and the gen
