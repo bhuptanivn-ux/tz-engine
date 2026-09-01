@@ -1031,6 +1031,17 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     lin.gen_started = True
                     lin.recovery_label = None
                     lin.gen_fresh_pending = False
+                    # A prior generation's bar2_recovery is now fully superseded by this brand-
+                    # new gen and must be abandoned, not left ticking in parallel -- this
+                    # trigger path (fresh gen off gen_pending) is a SEPARATE mechanism from
+                    # bar2_recovery's own escalate/recover/ratchet handling, and doesn't
+                    # otherwise touch it at all. Found via 15-06-2022 printing "INVALID SAR LL +
+                    # SAR LL" under the SAME lineage that had already formed a brand-new SAR on
+                    # 12-06-2022 -- a stale prior-generation reference was still ticking under
+                    # the new gen's own current label days after the new gen made it moot. Left
+                    # unabandoned, it could also later "recover" on its own criteria and silently
+                    # overwrite this brand-new, unrelated gen.
+                    lin.bar2_recovery = None
                     events[i].append(gen_name)
                     consumed_gen_pending_today = True
                 else:
