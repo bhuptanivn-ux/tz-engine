@@ -240,6 +240,19 @@ class Lineage:
         # CURRENT episode counter so a later, genuinely NEW gen_pending (a fresh RED2/GREEN2)
         # re-opens eligibility rather than leaving this lineage permanently blocked.
         self.declined_gen_pending_episode = None
+        # True once this lineage has LOST an older-lineage-precedence collision (its own gen-
+        # formation declined in favor of an older lineage reaching the same or an equivalent-
+        # shape outcome the same day). Permanent, unlike declined_gen_pending_episode -- this
+        # lineage's own front must never independently start a FRESH pullback again, since its
+        # future is redundant with the older lineage's from that point on. Deliberately does
+        # NOT set `dead` -- this lineage's own anchor/gen HH/LL/SL tracking, and its role in
+        # competitor-pairing elsewhere, are unrelated mechanics and must keep working exactly
+        # as before; only starting a NEW pullback is what's actually redundant here. Confirmed
+        # by the user against 21-05-2022/23-05-2022 ("2 different lineages... why mentioned
+        # both?"): the lineage that lost the 18-05-2022 SAR-formation race kept independently
+        # firing its own dual-tagged GREEN1/GREEN1 SL days later -- that's the specific thing
+        # this flag stops, nothing more.
+        self.superseded = False
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -851,8 +864,13 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # own independent standing from before the death (confirmed 01-03-2022, GREEN2
             # alongside SAR SL -- see `gen_deep_sl_today`, which only gates the FRESH-attach
             # branch below, not the already-active continuation branch).
+            # A lineage that has LOST an older-lineage-precedence collision (Lineage.superseded)
+            # must never independently start a FRESH pullback again either -- confirmed by the
+            # user against 21-05-2022/23-05-2022 (see that field's own comment for the full
+            # rationale). An ALREADY-active pullback (checked separately, above/below) is
+            # unaffected -- this only blocks a brand-new attach.
             attach_front = front if front is not None else front_before_today
-            front_ok_for_attach = attach_front is not None and not gen_deep_sl_today and (
+            front_ok_for_attach = attach_front is not None and not gen_deep_sl_today and not lin.superseded and (
                 front_stage2_before_today or (front is not None and front.stage2_formed)
             )
 
@@ -895,6 +913,12 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     )
                     if blocked_by_older_recovery_here:
                         lin.declined_gen_pending_episode = gen_pending_episode
+                        # Also permanent, unlike the episode decline above: this lineage's own
+                        # front must never independently start a FRESH pullback again either,
+                        # since (per the "same future impact" reasoning) its future is
+                        # redundant with the older lineage's from here on -- confirmed by the
+                        # user against 21-05-2022/23-05-2022 (see Lineage.superseded).
+                        lin.superseded = True
                     else:
                         # Deferred, not formed immediately -- see the precedence resolution
                         # after this loop: if ANOTHER lineage would ALSO independently form a
@@ -947,6 +971,8 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     consumed_gen_pending_today = True
                 else:
                     lin.declined_gen_pending_episode = gen_pending_episode
+                    # Also permanent -- see Lineage.superseded.
+                    lin.superseded = True
 
         # gen_pending is a persistent, shared-per-house signal: it stays available across
         # days (any lineage that becomes eligible later can still consume it) until at least
