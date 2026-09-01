@@ -376,6 +376,21 @@ def run_house(rows, bullish, gen_name, anchor_name):
 
         if deep_sl:
             events[i].append(f"{label} SL")
+            if not governed:
+                # The gen's own inner reference keeps ratcheting independently even on the
+                # SAME day it deep-SLs -- this is a genuinely separate axis (today's LOW
+                # extending the inner ref_low further, vs. today's HIGH breaking the deep/
+                # outer threshold), not a lesser event superseded by the more severe SL, the
+                # way shallow-vs-deep SL naming is superseded (§6). Confirmed by the user
+                # against 26-05-2022 ("every SAR 2 LL is very important. Why did you fail to
+                # record?") -- SAR2's own ref_low had genuinely moved further that same day
+                # (315.5, below its prior 316) independent of the unrelated upside SL breakout.
+                if h > s.ref_high + ANY:
+                    s.ref_high = h
+                    events[i].append(f"{label} 2 HH")
+                if l < s.ref_low - ANY:
+                    s.ref_low = l
+                    events[i].append(f"{label} 2 LL")
             s.alive = False
             return "deep"
 
