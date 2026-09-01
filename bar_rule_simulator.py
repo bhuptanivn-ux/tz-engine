@@ -253,6 +253,15 @@ class Lineage:
         # firing its own dual-tagged GREEN1/GREEN1 SL days later -- that's the specific thing
         # this flag stops, nothing more.
         self.superseded = False
+        # The exact front Struct object whose RED2/GREEN2 has already confirmed once. A front
+        # only ever gets ONE pullback cycle -- once RED2/GREEN2 fires against it, it cannot
+        # host a SECOND, fresh RED1/GREEN1 attach without first changing identity (a genuinely
+        # NEW Struct forming for this lineage, via any reform/formation path) -- confirmed by
+        # the user against 11-02-2022: RED2 already confirmed 10-02-2022, "there is no BUY
+        # event in between, hence RED1 and RED2 not possible" on 11-02-2022 against the SAME,
+        # unchanged BAR2. Compared by object identity, so a later front change (a new Struct)
+        # naturally re-opens eligibility without needing an explicit reset.
+        self.pullback_used = None
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -417,7 +426,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         current gen label once a gen has started, else its anchor name."""
         return current_label(lin) if lin.gen_started else anchor_name
 
-    def process_pullback(lin, i, h, l, c, ph, pl):
+    def process_pullback(lin, i, h, l, c, ph, pl, front=None):
         nonlocal gen_pending, gen_pending_episode
         pullback = lin.pullback
         if pullback is None or not pullback["active"]:
@@ -426,7 +435,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
             else:
                 attach = l >= pl and (h - ph) >= THRESH and c >= ph
             if attach:
-                lin.pullback = {"ref_high": h, "ref_low": l, "active": True}
+                lin.pullback = {"ref_high": h, "ref_low": l, "active": True, "front": front}
                 pullback_buffer[i].append((lin, "RED1" if bullish else "GREEN1"))
                 return True
             return False
@@ -439,6 +448,10 @@ def run_house(rows, bullish, gen_name, anchor_name):
         if red2:
             pullback_buffer[i].append((lin, "RED2" if bullish else "GREEN2"))
             pb["active"] = False
+            # This front's ONE pullback cycle is now used up -- confirmed by the user against
+            # 11-02-2022 (see Lineage.pullback_used): it cannot host a second, fresh RED1/
+            # GREEN1 attach without first changing identity (a genuinely new front).
+            lin.pullback_used = pb.get("front")
             gen_pending = True
             gen_pending_episode += 1
             return True
@@ -655,6 +668,17 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     base = current_label(lin)
                     inner_label = f"{base} 2"
                     inner_adverse = rec["inner_adverse"]
+                    # Once gen_pending has already foreclosed the lighter "NEW BAR2 reforms
+                    # directly" outcome (gen_fresh_pending), these routine ratchet EVENTS are
+                    # tracking a recovery target that will never actually be used -- only a
+                    # full fresh restart (via formation_break) or the deep escalation above
+                    # still matter from here. Printing them is misleading noise (implying an
+                    # active, meaningful recovery target that no longer exists) -- confirmed by
+                    # the user against 18-02-2022 ("BAR 2 SL already triggered [17-02], how is
+                    # BAR 2 LL now possible?"). The underlying rec[...] VALUES still update
+                    # unconditionally below regardless -- they still feed the deep-threshold
+                    # escalation check above, which must keep working exactly as before.
+                    silent = lin.gen_fresh_pending
                     # Favorable-side (recovery-target) reference: an attempt at reforming the
                     # "2" that ticks the reference further out without yet fully qualifying
                     # (Low/Close conditions not checked here -- same simple ANY-threshold
@@ -662,26 +686,32 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     if bullish:
                         if h - ref >= ANY:
                             rec["ref"] = h
-                            events[i].append(f"INVALID {base} HH")
+                            if not silent:
+                                events[i].append(f"INVALID {base} HH")
                     else:
                         if ref - l >= ANY:
                             rec["ref"] = l
-                            events[i].append(f"INVALID {base} LL")
+                            if not silent:
+                                events[i].append(f"INVALID {base} LL")
                     # Adverse-side outer/inner references, unchanged mechanic.
                     if bullish:
                         if rec["outer"] - l >= ANY:
                             rec["outer"] = l
-                            events[i].append(f"{base} LL")
+                            if not silent:
+                                events[i].append(f"{base} LL")
                         if inner_adverse - l >= ANY:
                             rec["inner_adverse"] = l
-                            events[i].append(f"{inner_label} LL")
+                            if not silent:
+                                events[i].append(f"{inner_label} LL")
                     else:
                         if h - rec["outer"] >= ANY:
                             rec["outer"] = h
-                            events[i].append(f"{base} HH")
+                            if not silent:
+                                events[i].append(f"{base} HH")
                         if h - inner_adverse >= ANY:
                             rec["inner_adverse"] = h
-                            events[i].append(f"{inner_label} HH")
+                            if not silent:
+                                events[i].append(f"{inner_label} HH")
 
             # --- Deep-SL recovery window: escalate to the next recovery level directly ---
             if lin.rear_recovery is not None:
@@ -869,9 +899,17 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # user against 21-05-2022/23-05-2022 (see that field's own comment for the full
             # rationale). An ALREADY-active pullback (checked separately, above/below) is
             # unaffected -- this only blocks a brand-new attach.
+            # A front whose own RED2/GREEN2 has ALREADY confirmed once cannot host a second,
+            # fresh attach without first changing identity -- confirmed by the user against
+            # 11-02-2022 (see Lineage.pullback_used): RED2 already confirmed 10-02-2022, and
+            # with no new BAR forming in between, a fresh RED1 re-attaching to the SAME,
+            # unchanged BAR2 on 11-02-2022 is not possible.
             attach_front = front if front is not None else front_before_today
-            front_ok_for_attach = attach_front is not None and not gen_deep_sl_today and not lin.superseded and (
-                front_stage2_before_today or (front is not None and front.stage2_formed)
+            front_already_used = attach_front is not None and attach_front is lin.pullback_used
+            front_ok_for_attach = (
+                attach_front is not None and not gen_deep_sl_today and not lin.superseded
+                and not front_already_used
+                and (front_stage2_before_today or (front is not None and front.stage2_formed))
             )
 
             if lin.pullback is not None and lin.pullback["active"]:
@@ -912,13 +950,23 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         for cd in resolving_rear_recovery_created_days
                     )
                     if blocked_by_older_recovery_here:
+                        # Per-day decline ONLY -- does NOT set `superseded`. This collision type
+                        # (an older lineage's REAR-ladder reform vs. a younger lineage's
+                        # would-be plain gen) is provisional, not a declaration that the two
+                        # lineages now share one identity: the older lineage (REAR BUY/SELL)
+                        # hasn't necessarily reached its own "2" yet, so there is no guarantee
+                        # it will ever independently do what the younger lineage's OWN front
+                        # might do later. Confirmed by the user against 04-03-2022 (and the
+                        # same principle at 23-03/24-03-2022, 17-04/18-04-2022): TZ GREEN
+                        # (declined here on 02-03-2022 in favor of REAR BUY, which never
+                        # reaches REAR BUY 2 before dying) must still independently attach its
+                        # own RED1 on 04-03-2022 -- "if REAR BUY 2 would have occurred before
+                        # 04-03, then excluding TZ GREEN makes sense" -- since REAR BUY 2 never
+                        # happens, there is no actual collision with TZ GREEN's own RED1 at
+                        # all, ever, in this window. Contrast the OTHER decline branch below
+                        # (gen_formation_candidates), where BOTH lineages reach the IDENTICAL
+                        # plain name via the SAME mechanism -- a real, permanent merge.
                         lin.declined_gen_pending_episode = gen_pending_episode
-                        # Also permanent, unlike the episode decline above: this lineage's own
-                        # front must never independently start a FRESH pullback again either,
-                        # since (per the "same future impact" reasoning) its future is
-                        # redundant with the older lineage's from here on -- confirmed by the
-                        # user against 21-05-2022/23-05-2022 (see Lineage.superseded).
-                        lin.superseded = True
                     else:
                         # Deferred, not formed immediately -- see the precedence resolution
                         # after this loop: if ANOTHER lineage would ALSO independently form a
@@ -943,14 +991,15 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # both lineages are simultaneously eligible), both attach independently and get the
         # dual-tag treatment instead -- confirmed against 04-03-2022, unaffected by this.
         by_front_day = {}
+        lin_to_front = dict(fresh_attach_candidates)
         for lin, front in fresh_attach_candidates:
             by_front_day.setdefault(front.formed_day, []).append(lin)
         for day, same_day_lins in by_front_day.items():
             if len(same_day_lins) > 1:
                 winner = min(same_day_lins, key=lambda l: (l.created_day if l.created_day is not None else -1))
-                process_pullback(winner, i, h, l, c, ph, pl)
+                process_pullback(winner, i, h, l, c, ph, pl, front=lin_to_front[winner])
             else:
-                process_pullback(same_day_lins[0], i, h, l, c, ph, pl)
+                process_pullback(same_day_lins[0], i, h, l, c, ph, pl, front=lin_to_front[same_day_lins[0]])
 
         # Older-lineage precedence among 2+ lineages that would ALL independently form a
         # plain gen off the SAME gen_pending signal today (see the comment at the collection
