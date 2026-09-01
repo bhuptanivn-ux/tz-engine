@@ -320,6 +320,34 @@ def run_house(rows, bullish, gen_name, anchor_name):
         rear = "REAR BUY" if bullish else "REAR SELL"
         return rear if lin.recovery_label is None else f"{rear} RE ENTER"
 
+    def retire_other_pending(winner):
+        """The moment ANY lineage re-establishes itself past its own "2" (gen or anchor), every
+        OTHER lineage's still-pending recovery search (rear_recovery/bar2_recovery) that is NOT
+        winner's own directly-paired dual-track competitor is retired outright -- it belongs to
+        an older, already-superseded race, not the current one. The direct pair (winner and
+        whichever lineage it is paired with via Lineage.competitor, checked both ways) is
+        deliberately exempt: that specific dyad staying alive at once, each side independently
+        progressing for as long as it takes, is the confirmed, intentional dual-track (27-02
+        through 06-03-2022; 26-05 through 09-06-2022 -- REAR SELL/REAR SELL 2 still validly
+        applying at 03-06/04-06-2022 despite the paired fresh TZ RED already reaching TZ RED 2
+        on 29-05-2022: "REAR SELL AND REAR SELL 2 OCCURRED AND WILL BE APPLIED"). What must NOT
+        persist is an unrelated, older lineage from a PREVIOUS, already-resolved race -- e.g. one
+        formed back on 08-02-2022 whose own paired competitor died long ago -- still sitting
+        dormant and resurfacing (a REAR SELL reform, then a further fresh-anchor search) many
+        cycles later, well after a completely different, currently-active lineage has already
+        re-reached its own "2" one or more times over. Confirmed by the user against
+        17-06-2022/24-06-2022.
+        """
+        for other in lineages:
+            if other is winner or other.dead:
+                continue
+            if other is winner.competitor or other.competitor is winner:
+                continue
+            if other.rear_recovery is not None or other.bar2_recovery is not None:
+                other.rear_recovery = None
+                other.bar2_recovery = None
+                other.dead = True
+
     def process_gen(s, i, h, l, c, label, terminal_on_shallow=True, governed=False):
         """Two-tier deep SL detection shared by the anchor (TZ GREEN/TZ RED) and the gen
         (BAR/SAR/REAR/REAR RE ENTER), but the two diverge once stage2 has formed:
@@ -524,6 +552,18 @@ def run_house(rows, bullish, gen_name, anchor_name):
             lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
             for lin in lineages
         )
+        # A fresh TZ GREEN/TZ RED anchor cannot form on a day where ANY (non-dead) lineage is
+        # sitting in gen_fresh_pending -- that state means RED2/GREEN2 has ALREADY fired for
+        # that lineage's dead "2", so its own recovery is GUARANTEED to be a full fresh restart
+        # on the SAME lineage (plain BAR/SAR reforming) the moment formation_break allows it --
+        # never a brand-new competing anchor. Confirmed by the user: "if a REAR 2 has occurred,
+        # or SAR 2 has occurred and there is an SL of [that] 2nd and there is GREEN 2, then TZ
+        # GREEN CANNOT OCCUR" -- against 24-06-2022, where an unrelated, long-dormant lineage's
+        # own independently-pending fresh-anchor search (open since 20-06-2022) coincidentally
+        # resolved into a fresh "TZ RED" the SAME day the actually-current lineage's SAR 2 SL
+        # (23-06-2022, itself already past GREEN 2) forced its own guaranteed full restart into
+        # plain "SAR" -- the TZ RED must not print at all that day.
+        blocked_by_gen_fresh_pending = any(lin.gen_fresh_pending for lin in lineages if not lin.dead)
         # Snapshot, BEFORE any lineage is processed today, which lineages' rear_recovery would
         # resolve today -- used below to gate a DIFFERENT, younger lineage's fresh-gen-formation
         # off gen_pending on the same older-lineage-precedence principle (see there). Must be
@@ -534,7 +574,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
             lin.created_day for lin in lineages
             if lin.rear_recovery is not None and rear_recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
         ]
-        if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and blocked_by_older_recovery:
+        if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and (blocked_by_older_recovery or blocked_by_gen_fresh_pending):
             awaiting_fresh_anchor = False
         elif awaiting_fresh_anchor and formation_break(ph, pl, h, l, c):
             # Retire any orphaned-anchor lineage(s) -- a gen that died pre-"2" (no REAR/ladder
@@ -552,6 +592,25 @@ def run_house(rows, bullish, gen_name, anchor_name):
             if pending_competitor_source is not None:
                 pending_competitor_source.competitor = lin
                 pending_competitor_source = None
+            else:
+                # This search wasn't opened by a gen-deep-SL/bar2_recovery-escalation (which
+                # always sets pending_competitor_source) -- it was an anchor's own unconditional
+                # total death instead, which pairs with nothing. If some OTHER lineage already
+                # holds a currently-pending recovery search at this exact moment, it is the
+                # genuinely current, still-relevant one (not a stale leftover) -- pair it as this
+                # new anchor's competitor so retire_other_pending (see there) does not mistake it
+                # for an unrelated older race the first time this brand-new anchor reaches its
+                # own "2". Confirmed against 06-05-2022/07-05-2022: the currently-active lineage
+                # (formed 13-04-2022) had a legitimate rear_recovery pending when an unrelated
+                # anchor total-death spawned a fresh TZ RED that day -- without this pairing, that
+                # TZ RED reaching TZ RED 2 the very next day wrongly retired the still-relevant
+                # rear_recovery, silently erasing the later, correct "REAR SELL" reform.
+                for other in lineages:
+                    if other is not lin and not other.dead and (
+                        other.rear_recovery is not None or other.bar2_recovery is not None
+                    ):
+                        other.competitor = lin
+                        break
 
         for lin in lineages:
             if lin.dead or id(lin) in newly_formed:
@@ -635,7 +694,18 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     # race. The anchor's own deep SL (below) stays unconditional -- that is
                     # total, unconditional lineage death, not a partial one, so it always needs
                     # a fresh search regardless of pairing.
-                    if lin.competitor is None or lin.competitor.dead:
+                    # A competitor that has been superseded (permanently lost an older-lineage-
+                    # precedence collision -- see Lineage.superseded) is, for this purpose, a
+                    # dead end exactly like a fully dead one: its own future is redundant with
+                    # the lineage that beat it, so it can never independently reform or matter
+                    # again even though nothing ever sets its `dead` flag. Without this, a
+                    # superseded competitor's own anchor sits "alive" forever, permanently
+                    # blocking this lineage from ever reopening a fresh-anchor search again --
+                    # confirmed against 26-05-2022/28-05-2022: the lineage formed 06-05-2022
+                    # was superseded on 18-05-2022, but without this check its still-`alive`
+                    # anchor wrongly blocked the legitimate fresh "TZ RED" that should reopen
+                    # and form again on 28-05-2022.
+                    if lin.competitor is None or lin.competitor.dead or lin.competitor.superseded:
                         awaiting_fresh_anchor = True
                         pending_competitor_source = lin
                     # This is a state TRANSITION for the gen (shallow SL escalating into the
@@ -673,6 +743,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         lin.gen = new_gen
                         lin.bar2_recovery = None
                         events[i].append(f"{current_label(lin)} 2")
+                        retire_other_pending(lin)
                         # Same rationale as above -- reforming the gen today isn't a total
                         # death, so an already-active pullback still gets to resolve/ratchet
                         # today too.
@@ -783,9 +854,12 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # --- gen's own SL/stage2/HH-LL ---
             if lin.gen is not None and lin.gen.alive and not anchor_dying_today:
                 label = current_label(lin)
+                was_stage2 = lin.gen.stage2_formed
                 gen_sl_kind = process_gen(lin.gen, i, h, l, c, label)
                 if lin.gen.stage2_formed:
                     lin.anchor_retired = True
+                    if not was_stage2:
+                        retire_other_pending(lin)
                 if gen_sl_kind == "deep":
                     gen_deep_sl_today = True
                     # A recovery window opens EITHER because this gen reached its own "2" (the
@@ -825,9 +899,10 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         # it simply never forms another gen on its own.
                         lin.orphaned_anchor = True
                     # Same gating (by this lineage's own paired competitor, not any other
-                    # lineage) as the bar2_recovery-escalation site above -- see that comment
-                    # for the full rationale (03-05-2022).
-                    if lin.competitor is None or lin.competitor.dead:
+                    # lineage), including the superseded-counts-as-dead extension, as the
+                    # bar2_recovery-escalation site above -- see that comment for the full
+                    # rationale (03-05-2022; 26-05-2022/28-05-2022).
+                    if lin.competitor is None or lin.competitor.dead or lin.competitor.superseded:
                         awaiting_fresh_anchor = True
                         pending_competitor_source = lin
                     lin.gen = None
@@ -876,7 +951,10 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # from that point BAR 2/REAR 2/etc. has its own separate deep-SL reference and the
             # anchor's own (now long-stale) one would be a redundant, unrelated failure mode.
             if not lin.anchor_retired and lin.anchor is not None and lin.anchor.alive:
+                was_anchor_stage2 = lin.anchor.stage2_formed
                 anchor_sl_kind = process_gen(lin.anchor, i, h, l, c, anchor_name, terminal_on_shallow=False, governed=True)
+                if lin.anchor.stage2_formed and not was_anchor_stage2:
+                    retire_other_pending(lin)
                 if anchor_sl_kind == "deep":
                     lin.dead = True
                     awaiting_fresh_anchor = True
