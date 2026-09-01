@@ -465,6 +465,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         newly_formed = set()
         consumed_gen_pending_today = False
         fresh_attach_candidates = []
+        gen_formation_candidates = []
 
         # 0. Fresh anchor search -- always live once triggered by an SL, until it succeeds.
         # Forfeited outright -- not merely deferred -- on a day where this exact breakout
@@ -857,7 +858,18 @@ def run_house(rows, bullish, gen_name, anchor_name):
 
             if lin.pullback is not None and lin.pullback["active"]:
                 process_pullback(lin, i, h, l, c, ph, pl)
-            elif front_ok_for_attach and not gen_pending:
+            elif front_ok_for_attach:
+                # NOT gated on `gen_pending` -- confirmed by the user (01-03-2022: "TZ GREEN 2
+                # completed, hence RED1 and RED2 is valid"): gen_pending is a single, PER-HOUSE
+                # shared flag, set by whichever lineage's RED2/GREEN2 happens to fire, and can
+                # sit unconsumed for weeks (nothing else in the house independently triggers a
+                # fresh-gen-formation). Gating a completely different, independently-eligible
+                # lineage's fresh attach on that unrelated flag blocked TZ GREEN2's own RED1
+                # for the entire 02-03 through 07-03-2022 stretch, even though its own front had
+                # been eligible since 01-03 -- confirmed numerically (front_ok_for_attach was
+                # True every one of those days; gen_pending, stale since 17-02-2022, was the
+                # only thing blocking it).
+                #
                 # Deferred, not attached immediately -- see the precedence resolution after
                 # this loop: if another lineage's front was born the exact same day as this
                 # one's, only the OLDER lineage gets to attach a fresh RED1/GREEN1 today.
@@ -876,11 +888,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     # same future impact" from here (own "2" -> SL -> RED1/GREEN1 -> reform,
                     # under whatever name) as the older lineage's own reform -- confirmed by
                     # the user against 02-03-2022 ("REAR BUY + BAR" -- only REAR BUY should
-                    # print; the older lineage is proper). Forfeited outright for THIS gen_
-                    # pending episode, not merely deferred -- `declined_gen_pending_episode`
-                    # stops this lineage from re-trying off the SAME still-pending signal on a
-                    # later day, but a genuinely NEW gen_pending (a fresh RED2/GREEN2, which
-                    # bumps gen_pending_episode) reopens eligibility.
+                    # print; the older lineage is proper).
                     blocked_by_older_recovery_here = any(
                         cd is not None and lin.created_day is not None and cd < lin.created_day
                         for cd in resolving_rear_recovery_created_days
@@ -888,13 +896,18 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     if blocked_by_older_recovery_here:
                         lin.declined_gen_pending_episode = gen_pending_episode
                     else:
-                        new_gen = Struct(h, l, gen_name, formed_day=i)
-                        lin.gen = new_gen
-                        lin.gen_started = True
-                        lin.recovery_label = None
-                        lin.gen_fresh_pending = False
-                        events[i].append(gen_name)
-                        consumed_gen_pending_today = True
+                        # Deferred, not formed immediately -- see the precedence resolution
+                        # after this loop: if ANOTHER lineage would ALSO independently form a
+                        # plain gen off this SAME gen_pending signal today, only the OLDEST
+                        # lineage actually forms it (both would reach the identical plain name
+                        # and an identical future shape from here, so the younger one is
+                        # redundant) -- confirmed by the user against 18-05-2022 ("2 different
+                        # lineages were at the same occurrence of SAR -- mention the earlier
+                        # one"). Genuinely different same-day events (one lineage reaching a
+                        # ladder reform, another's pullback ticking) are unaffected -- those are
+                        # already handled separately (dual-tagged pullback events, or the
+                        # rear_recovery-collision gate above).
+                        gen_formation_candidates.append(lin)
 
         # Fresh RED1/GREEN1 attach precedence: the attach formula itself is a raw price-
         # action check (doesn't reference any lineage-specific reference), so every eligible
@@ -914,6 +927,26 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 process_pullback(winner, i, h, l, c, ph, pl)
             else:
                 process_pullback(same_day_lins[0], i, h, l, c, ph, pl)
+
+        # Older-lineage precedence among 2+ lineages that would ALL independently form a
+        # plain gen off the SAME gen_pending signal today (see the comment at the collection
+        # site above) -- only the oldest actually forms it; the rest decline this episode.
+        if gen_formation_candidates:
+            winner = min(
+                gen_formation_candidates,
+                key=lambda l: (l.created_day if l.created_day is not None else -1),
+            )
+            for lin in gen_formation_candidates:
+                if lin is winner:
+                    new_gen = Struct(h, l, gen_name, formed_day=i)
+                    lin.gen = new_gen
+                    lin.gen_started = True
+                    lin.recovery_label = None
+                    lin.gen_fresh_pending = False
+                    events[i].append(gen_name)
+                    consumed_gen_pending_today = True
+                else:
+                    lin.declined_gen_pending_episode = gen_pending_episode
 
         # gen_pending is a persistent, shared-per-house signal: it stays available across
         # days (any lineage that becomes eligible later can still consume it) until at least
@@ -939,17 +972,8 @@ def run_house(rows, bullish, gen_name, anchor_name):
 bull_events = run_house(rows, True, "BAR", "TZ GREEN")
 bear_events = run_house(rows, False, "SAR", "TZ RED")
 
-print(f"{'DATE':12}{'OPEN':8}{'HIGH':8}{'LOW':8}{'CLOSE':8}{'HOUSE':14}EVENT")
+print(f"{'DATE':12}{'OPEN':8}{'HIGH':8}{'LOW':8}{'CLOSE':8}{'BULL EVENT':40}BEAR EVENT")
 for i, (d, o, h, l, c) in enumerate(rows):
-    be = bull_events[i]
-    re = bear_events[i]
-    if be and re:
-        house = "BULL + BEAR"
-    elif be:
-        house = "BULL"
-    elif re:
-        house = "BEAR"
-    else:
-        house = ""
-    ev = " + ".join(be + re)
-    print(f"{d:12}{o:<8}{h:<8}{l:<8}{c:<8}{house:14}{ev}")
+    be = " + ".join(bull_events[i])
+    re = " + ".join(bear_events[i])
+    print(f"{d:12}{o:<8}{h:<8}{l:<8}{c:<8}{be:40}{re}")
