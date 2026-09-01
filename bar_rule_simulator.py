@@ -51,8 +51,18 @@ that lineage dies permanently (no reference exists to reform against) --
 this matches the user's explicit worked example.
 """
 
-THRESH = 0.20
-ANY = 0.01
+from decimal import Decimal
+
+# All threshold comparisons throughout this file must be EXACT decimal arithmetic, not raw
+# binary floating point -- confirmed by the user against 27-06-2022: High(311.7) minus a SAR's
+# ref_high(311.5) is exactly 0.20 in decimal, which should tie the SL threshold (>= THRESH), but
+# raw Python floats compute 311.7 - 311.5 as 0.19999999999998863 (a hair under 0.20 due to binary
+# float rounding), silently flipping the result from "SAR SL" to "SAR HH" -- "NO FLOATING
+# ARITHMETIC... Can you change to proper mathematics." THRESH/ANY and every OHLC value are
+# Decimal from here on, so every `-`/`+`/comparison downstream is exact for these 2-3-decimal-
+# place prices, with zero changes needed to the comparison logic itself.
+THRESH = Decimal("0.20")
+ANY = Decimal("0.01")
 
 rows = [
     ("01-01-2021", 602,    605.5,  601.65, 604),
@@ -171,6 +181,8 @@ rows = [
     ("24-04-2021", 626.5,  629,    626.35, 628.65),
 ]
 
+rows = [(d, Decimal(str(o)), Decimal(str(h)), Decimal(str(l)), Decimal(str(c))) for d, o, h, l, c in rows]
+
 
 class Struct:
     def __init__(self, ref_high, ref_low, name, formed_day=None):
@@ -276,6 +288,9 @@ class Lineage:
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
+    # Defensively re-convert to Decimal here too, so run_house is exact regardless of what its
+    # caller passed in (see the module-level THRESH/ANY/rows comment for the full rationale).
+    rows = [(d, Decimal(str(o)), Decimal(str(h)), Decimal(str(l)), Decimal(str(c))) for d, o, h, l, c in rows]
     events = [[] for _ in rows]
     pullback_buffer = [[] for _ in rows]
     lineages = []
@@ -521,9 +536,9 @@ def run_house(rows, bullish, gen_name, anchor_name):
 
         pb = pullback
         if bullish:
-            red2 = l <= pb["ref_low"] and h <= ph and (ph - pl) >= THRESH and c <= pb["ref_low"] + 0.001
+            red2 = l <= pb["ref_low"] and h <= ph and (ph - pl) >= THRESH and c <= pb["ref_low"] + Decimal("0.001")
         else:
-            red2 = h >= pb["ref_high"] and l >= pl and (ph - pl) >= THRESH and c >= pb["ref_high"] - 0.001
+            red2 = h >= pb["ref_high"] and l >= pl and (ph - pl) >= THRESH and c >= pb["ref_high"] - Decimal("0.001")
         if red2:
             pullback_buffer[i].append((lin, "RED2" if bullish else "GREEN2"))
             pb["active"] = False
