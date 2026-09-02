@@ -938,12 +938,23 @@ def run_house(rows, bullish, gen_name, anchor_name):
                             rec["ref"] = l
                             if not silent:
                                 events[i].append(f"INVALID {base} LL")
-                    # Adverse-side outer/inner references, unchanged mechanic.
+                    # Adverse-side outer/inner references. The OUTER ratchet (`{base} HH`/
+                    # `{base} LL`, tracking rec["outer"]) is NEVER silenced by `silent` -- unlike
+                    # the favorable and inner-adverse prints above, it isn't just internal
+                    # bookkeeping for a recovery target that gen_pending has already foreclosed:
+                    # it's the live, continuously-relevant reference the support/resistance
+                    # highlighting reads (§15, "BAR LL/REAR BUY LL are exactly the gen's own
+                    # outer-reference ratchet"), and it stays meaningful regardless of which
+                    # reform path eventually applies. Confirmed by the user against 01-04-2021
+                    # ("FAILED TO RECOGNISE SAR HH. WHY?"): SAR's own bar2_recovery outer moved
+                    # that day (616 -> 616.05) while gen_fresh_pending happened to ALSO be true
+                    # (this SAME lineage's own GREEN2, the day before, had already foreclosed the
+                    # lighter reform) -- the 18-02-2022 precedent that introduced `silent` was
+                    # specifically about the INNER print ("BAR 2 LL"), never this outer one.
                     if bullish:
                         if rec["outer"] - l >= ANY:
                             rec["outer"] = l
-                            if not silent:
-                                events[i].append(f"{base} LL")
+                            events[i].append(f"{base} LL")
                         if inner_adverse - l >= ANY:
                             rec["inner_adverse"] = l
                             if not silent:
@@ -951,8 +962,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     else:
                         if h - rec["outer"] >= ANY:
                             rec["outer"] = h
-                            if not silent:
-                                events[i].append(f"{base} HH")
+                            events[i].append(f"{base} HH")
                         if h - inner_adverse >= ANY:
                             rec["inner_adverse"] = h
                             if not silent:
