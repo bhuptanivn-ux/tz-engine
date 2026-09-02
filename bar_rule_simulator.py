@@ -399,7 +399,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
             other.bar2_recovery = None
             other.dead = True
 
-    def process_gen(s, i, h, l, c, label, terminal_on_shallow=True, governed=False):
+    def process_gen(s, i, h, l, c, label, terminal_on_shallow=True, governed=False, mute_ratchet=False):
         """Two-tier deep SL detection shared by the anchor (TZ GREEN/TZ RED) and the gen
         (BAR/SAR/REAR/REAR RE ENTER), but the two diverge once stage2 has formed:
         - gen (governed=False, terminal_on_shallow=True, the default): ungoverned dual
@@ -456,20 +456,23 @@ def run_house(rows, bullish, gen_name, anchor_name):
         if deep_sl:
             events[i].append(f"{label} SL")
             if not governed:
-                # The gen's own inner reference keeps ratcheting independently even on the
-                # SAME day it deep-SLs -- this is a genuinely separate axis (today's LOW
-                # extending the inner ref_low further, vs. today's HIGH breaking the deep/
-                # outer threshold), not a lesser event superseded by the more severe SL, the
-                # way shallow-vs-deep SL naming is superseded (§6). Confirmed by the user
-                # against 26-05-2022 ("every SAR 2 LL is very important. Why did you fail to
-                # record?") -- SAR2's own ref_low had genuinely moved further that same day
-                # (315.5, below its prior 316) independent of the unrelated upside SL breakout.
-                if h > s.ref_high + ANY:
-                    s.ref_high = h
-                    events[i].append(f"{label} 2 HH")
-                if l < s.ref_low - ANY:
-                    s.ref_low = l
-                    events[i].append(f"{label} 2 LL")
+                # Only the side OPPOSITE whichever side triggered this deep SL is genuinely
+                # independent new information. The SAME side is automatically implied --
+                # breaching the more extreme OUTER threshold necessarily also breaches the
+                # closer INNER one on that same side, so printing it is just restating the SL
+                # that already fired. Confirmed by the user against 24-02-2021 ("BAR 2 LL will
+                # have no impact... Deep SL has triggered"), correcting an earlier version of
+                # this fix (26-05-2022) that checked BOTH sides unconditionally -- what made
+                # that instance genuinely correct was that "SAR 2 LL" there was the OPPOSITE
+                # side of the HIGH that triggered the SL, never the same side.
+                if bullish:
+                    if h > s.ref_high + ANY:
+                        s.ref_high = h
+                        events[i].append(f"{label} 2 HH")
+                else:
+                    if l < s.ref_low - ANY:
+                        s.ref_low = l
+                        events[i].append(f"{label} 2 LL")
             s.alive = False
             return "deep"
 
@@ -478,6 +481,25 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # forever once set at stage2 formation -- unchanged, reconfirmed by the user.
             if shallow_sl:
                 events[i].append(f"{label} 2 SL")
+                # The reference on the SAME side that triggered this shallow SL must still be
+                # updated to today's actual extreme (not left stale at the pre-SL value) -- it
+                # feeds forward into bar2_recovery's own inner_adverse tracking, a real,
+                # consequential VALUE used in future escalation math, not just a display
+                # concern. It is NOT separately printed, for the same same-side-is-redundant
+                # reason as the deep-SL correction above. The OPPOSITE side, if it also moved,
+                # remains genuinely independent and IS printed. Confirmed by the user against
+                # 03-03-2021 ("SAR HH not recorded? Such a basic") read together with the
+                # 24-02-2021 correction above -- same underlying value-vs-display distinction.
+                if bullish:
+                    s.ref_low = l
+                    if h > s.ref_high + ANY:
+                        s.ref_high = h
+                        events[i].append(f"{label} 2 HH")
+                else:
+                    s.ref_high = h
+                    if l < s.ref_low - ANY:
+                        s.ref_low = l
+                        events[i].append(f"{label} 2 LL")
                 if terminal_on_shallow:
                     s.alive = False
                 return "shallow"
@@ -503,14 +525,22 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # confirmed by the user (10-01-2022): a repeat "TZ RED 2 SL" would be doubly wrong,
         # since it cannot even repeat without an interceding re-entry, and there is no such
         # re-entry concept for the anchor at all.
+        # mute_ratchet (set once this lineage's gen has reached its own "2", i.e.
+        # Lineage.anchor_retired): the outer keeps ratcheting -- it must, since the anchor's
+        # own DEEP-SL threshold derived from it stays live and can still fire a TOTAL lineage
+        # death even after retirement (see the call site) -- but the routine HH/LL display is
+        # suppressed, since the anchor's own routine progress is no longer the "operative"
+        # narrative once the gen has taken over. Confirmed by the user against 16-01-2021.
         if bullish:
             if s.bar_ref_low - l >= ANY:
                 s.bar_ref_low = l
-                events[i].append(f"{label} LL")
+                if not mute_ratchet:
+                    events[i].append(f"{label} LL")
         else:
             if h - s.bar_ref_high >= ANY:
                 s.bar_ref_high = h
-                events[i].append(f"{label} HH")
+                if not mute_ratchet:
+                    events[i].append(f"{label} HH")
         return None
 
     def pullback_track(lin):
@@ -601,7 +631,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # ever forming an anchor. A later, NEW deep SL still reopens the search as usual.
         blocked_by_older_recovery = any(
             lin.rear_recovery is not None and recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
-            for lin in lineages
+            for lin in lineages if not lin.dead
         )
         # A fresh TZ GREEN/TZ RED anchor cannot form on a day where ANY (non-dead) lineage is
         # sitting in gen_fresh_pending -- that state means RED2/GREEN2 has ALREADY fired for
@@ -615,15 +645,31 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # (23-06-2022, itself already past GREEN 2) forced its own guaranteed full restart into
         # plain "SAR" -- the TZ RED must not print at all that day.
         blocked_by_gen_fresh_pending = any(lin.gen_fresh_pending for lin in lineages if not lin.dead)
-        # Snapshot, BEFORE any lineage is processed today, which lineages' rear_recovery would
-        # resolve today -- used below to gate a DIFFERENT, younger lineage's fresh-gen-formation
-        # off gen_pending on the same older-lineage-precedence principle (see there). Must be
-        # captured here, not re-checked per-lineage later in the loop below, since an older
-        # lineage's own rear_recovery gets resolved and cleared to None during ITS OWN turn in
-        # that same loop, before a younger lineage processed afterward would get to see it.
-        resolving_rear_recovery_created_days = [
-            lin.created_day for lin in lineages
-            if lin.rear_recovery is not None and recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
+        # Snapshot, BEFORE any lineage is processed today, which lineages currently hold a
+        # PENDING rear_recovery at all (not just one resolving today) -- used below to gate a
+        # DIFFERENT, younger lineage's fresh-gen-formation off gen_pending on the same older-
+        # lineage-precedence principle (see there). Must be captured here, not re-checked
+        # per-lineage later in the loop below, since an older lineage's own rear_recovery can
+        # get resolved and cleared to None during ITS OWN turn in that same loop, before a
+        # younger lineage processed afterward would get to see it.
+        #
+        # Deliberately broader than "resolving today" -- confirmed by the user against
+        # 03-03-2021: a younger lineage (TZ GREEN, formed 01-03-2021) formed a fresh plain BAR
+        # off gen_pending while an OLDER lineage's own REAR BUY recovery (opened 24-02-2021)
+        # was still unresolved, just not resolving on that EXACT day -- "another branch of BAR
+        # is not possible even though RED2 is there... REAR can occur above the earlier BAR 2
+        # HH." The shared gen_pending signal is a shortcut that lets an eligible lineage SKIP
+        # its own anchor-to-pullback buildup entirely; that shortcut must not be allowed to
+        # jump ahead of an OLDER lineage's own still-live recovery merely because the two
+        # don't happen to collide on the exact same day. This is scoped to THIS specific
+        # gen_pending-driven plain-gen-formation trigger only -- it does NOT affect a
+        # lineage's own fresh RED1/GREEN1 pullback-attach eligibility (front_ok_for_attach),
+        # which is a separate mechanism, confirmed unaffected by 04-03-2022 (TZ GREEN's own
+        # RED1 attaches independently there despite REAR BUY's recovery still being in play at
+        # the time) -- nor the top-level fresh-ANCHOR search (blocked_by_older_recovery,
+        # above), which stays resolving-today-only per the confirmed, permanent dual-track.
+        pending_rear_recovery_created_days = [
+            lin.created_day for lin in lineages if lin.rear_recovery is not None and not lin.dead
         ]
         if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and (blocked_by_older_recovery or blocked_by_gen_fresh_pending):
             awaiting_fresh_anchor = False
@@ -681,6 +727,60 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 lin.anchor if (not lin.gen_started and lin.anchor is not None and lin.anchor.alive) else None
             )
             front_stage2_before_today = front_before_today is not None and front_before_today.stage2_formed
+
+            # Peek (side-effect-free) whether this lineage's ANCHOR would deep-SL today, BEFORE
+            # any other processing for this lineage this iteration -- including bar2_recovery's
+            # escalation check and rear_recovery's resolution check, not just the ordinary gen
+            # block. The anchor's own deep-SL is TOTAL, unconditional lineage death (no REAR
+            # possible -- only a wholly fresh new lineage can start), and that must take absolute
+            # precedence over whatever a same-day bar2_recovery escalation or rear_recovery
+            # resolution would otherwise produce -- confirmed by the user against 16-01-2021:
+            # TZ RED's own retired-but-still-live deep-SL threshold (609.1) was breached the same
+            # day as SAR 2's own escalation threshold, and the earlier version of this fix (which
+            # only gated the ordinary gen-processing block, further below) missed this because
+            # by 16-01-2021 lin.gen was already None -- the gen had shallow-SL'd into
+            # bar2_recovery the PRIOR day, so it was bar2_recovery's own escalation check
+            # (unrelated to anchor_dying_today) that wrongly claimed the day and printed "SAR SL"
+            # instead, one day before the anchor's own check (previously positioned after both
+            # recovery blocks) ever got a chance to run. This check is NOT limited to a
+            # not-yet-retired anchor -- see the anchor-processing block further below for the
+            # full rationale on why the anchor's deep-SL threshold stays live (and its outer
+            # keeps ratcheting silently) even after `anchor_retired`.
+            anchor_dying_today = (
+                lin.anchor is not None and lin.anchor.alive
+                and would_deep_sl(lin.anchor, h, l, c)
+            )
+            if anchor_dying_today:
+                was_anchor_stage2 = lin.anchor.stage2_formed
+                anchor_sl_kind = process_gen(
+                    lin.anchor, i, h, l, c, anchor_name,
+                    terminal_on_shallow=False, governed=True, mute_ratchet=lin.anchor_retired,
+                )
+                if lin.anchor.stage2_formed and not was_anchor_stage2:
+                    retire_other_pending(lin)
+                if anchor_sl_kind == "deep":
+                    lin.dead = True
+                    awaiting_fresh_anchor = True
+                    gen_pending = False
+                    # This lineage's own bar2_recovery/rear_recovery (if it had one pending)
+                    # is now moot -- the anchor's total death overrides it outright (no REAR
+                    # possible). Cleared explicitly, not just left stale, since dead lineages
+                    # are never revisited by the per-lineage loop again (see `if lin.dead:
+                    # continue` at its top) but are NOT removed from `lineages`, so a couple of
+                    # house-wide scans elsewhere (`blocked_by_older_recovery`,
+                    # `pending_rear_recovery_created_days`) still read every lineage's
+                    # rear_recovery field regardless of `dead` -- a stale non-None value here
+                    # would otherwise permanently block every OTHER lineage in the house from
+                    # ever forming a fresh gen again, forever, over a recovery that can now
+                    # never actually resolve. Confirmed via 2022 regression: this exact
+                    # combination (an already-anchor_retired lineage's pending rear_recovery,
+                    # whose anchor THEN also deep-SLs thanks to the 16-01-2021 fix above) is a
+                    # new code path -- unreachable before that fix, since anchor_retired
+                    # previously blocked the anchor from ever dying at all -- so it was never
+                    # exercised until now.
+                    lin.rear_recovery = None
+                    lin.bar2_recovery = None
+                    continue
 
             # --- Shallow-SL recovery window: NEW BAR2/REAR2 reforms directly ---
             if lin.bar2_recovery is not None and gen_pending:
@@ -893,17 +993,11 @@ def run_house(rows, bullish, gen_name, anchor_name):
                             rec["ref"] = l
                             events[i].append(f"INVALID {source_2} LL")
 
-            # Peek (side-effect-free) whether this lineage's ANCHOR would ALSO deep-SL today,
-            # BEFORE processing its gen. The anchor's deep SL is total, unconditional lineage
-            # death (see the anchor-level processing block below); if it's also happening
-            # today, the gen's own SL that same day is redundant -- confirmed by the user
-            # (04-05-2022): "since TZ RED SL occurred, why need to record its descendant SAR
-            # SL?" -- so the gen isn't even processed today, and only the anchor's own "TZ RED
-            # SL" prints.
-            anchor_dying_today = (
-                not lin.anchor_retired and lin.anchor is not None and lin.anchor.alive
-                and would_deep_sl(lin.anchor, h, l, c)
-            )
+            # anchor_dying_today was already computed (and, if True, already handled and
+            # `continue`d past) at the very top of this lineage's per-day processing, above --
+            # by this point it is guaranteed False. It's still used below purely to skip the
+            # gen's own SL processing on a day the anchor is ALSO dying, which can no longer
+            # actually happen here (kept for clarity/symmetry with that gating condition).
 
             # Whether THIS lineage's gen deep-SL'd today -- used below to block a FRESH
             # RED1/GREEN1 attach from starting the same day (see the fresh-attach eligibility
@@ -975,32 +1069,50 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         pending_competitor_source = lin
                     lin.gen = None
                 elif gen_sl_kind == "shallow":
+                    # bar2_recovery is now opened unconditionally, even when gen_pending is
+                    # ALREADY true the SAME day this shallow SL fires -- previously that case
+                    # discarded the recovery structure entirely (only gen_fresh_pending was
+                    # set), silently dropping the deep/outer escalation check along with it.
+                    # That check is exactly as real and independent a price fact here as in
+                    # the already-fixed "preempted on a LATER day" case (24-04-2022) -- the
+                    # ONLY thing gen_pending forecloses is the LIGHTER "NEW BAR 2 reforms
+                    # directly" outcome specifically, never the escalation tracking itself.
+                    # Confirmed by the user against 04-03-2021: this SAR2's own deep/outer
+                    # threshold was breached the very next day, and the correct outcome
+                    # ("SAR SL", escalating into REAR SELL) was silently missing before this
+                    # fix, mirroring the exact class of bug already fixed for the later-day
+                    # case.
+                    label = current_label(lin)
+                    inner_adverse = lin.gen.ref_low if bullish else lin.gen.ref_high
+                    outer_before = lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high
+                    outer_now = outer_before
+                    # This transition's own "{label} LL/HH" ratchet is noise on a day gen_pending
+                    # already forecloses the lighter reform outcome -- same silencing rationale
+                    # as the routine bar2_recovery ratchet suppression elsewhere (18-02-2022).
+                    silent = gen_pending
+                    if bullish:
+                        if outer_before - l >= ANY:
+                            outer_now = l
+                            if not silent:
+                                events[i].append(f"{label} LL")
+                    else:
+                        if h - outer_before >= ANY:
+                            outer_now = h
+                            if not silent:
+                                events[i].append(f"{label} HH")
+                    lin.bar2_recovery = {
+                        "ref": lin.gen.ref_high if bullish else lin.gen.ref_low,
+                        "inner_adverse": inner_adverse,
+                        "outer": outer_now,
+                    }
                     if gen_pending:
                         # RED2 already fired for this generation before the shallow SL --
                         # per the original rule, that forecloses the lightweight "NEW BAR 2
-                        # reforms directly" path entirely: a full fresh BAR/gen starts
-                        # instead, directly off the already-set gen_pending.
+                        # reforms directly" outcome specifically; a full fresh BAR/gen starts
+                        # instead, directly off the already-set gen_pending, once the ordinary
+                        # fresh-gen-formation trigger's own formation_break() allows it.
                         lin.gen_fresh_pending = True
-                        lin.gen = None
-                    else:
-                        label = current_label(lin)
-                        inner_adverse = lin.gen.ref_low if bullish else lin.gen.ref_high
-                        outer_before = lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high
-                        outer_now = outer_before
-                        if bullish:
-                            if outer_before - l >= ANY:
-                                outer_now = l
-                                events[i].append(f"{label} LL")
-                        else:
-                            if h - outer_before >= ANY:
-                                outer_now = h
-                                events[i].append(f"{label} HH")
-                        lin.bar2_recovery = {
-                            "ref": lin.gen.ref_high if bullish else lin.gen.ref_low,
-                            "inner_adverse": inner_adverse,
-                            "outer": outer_now,
-                        }
-                        lin.gen = None
+                    lin.gen = None
 
             # --- Anchor-level processing: two-tier deep/shallow SL, ungoverned dual HH/LL,
             # exactly mirroring the gen (BAR/BAR 2) EXCEPT for the shallow tier's consequence.
@@ -1018,15 +1130,24 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # the anchor -- only the gen reaching its own "2" stage does (anchor_retired, below):
             # from that point BAR 2/REAR 2/etc. has its own separate deep-SL reference and the
             # anchor's own (now long-stale) one would be a redundant, unrelated failure mode.
-            if not lin.anchor_retired and lin.anchor is not None and lin.anchor.alive:
+            # (A deep SL here is no longer actually reachable -- the higher-precedence peek at
+            # the top of this lineage's per-day processing already caught and handled that case
+            # before bar2_recovery/rear_recovery/gen ever ran; the `anchor_sl_kind == "deep"`
+            # branch below is kept only as a defensive fallback.)
+            if lin.anchor is not None and lin.anchor.alive:
                 was_anchor_stage2 = lin.anchor.stage2_formed
-                anchor_sl_kind = process_gen(lin.anchor, i, h, l, c, anchor_name, terminal_on_shallow=False, governed=True)
+                anchor_sl_kind = process_gen(
+                    lin.anchor, i, h, l, c, anchor_name,
+                    terminal_on_shallow=False, governed=True, mute_ratchet=lin.anchor_retired,
+                )
                 if lin.anchor.stage2_formed and not was_anchor_stage2:
                     retire_other_pending(lin)
                 if anchor_sl_kind == "deep":
                     lin.dead = True
                     awaiting_fresh_anchor = True
                     gen_pending = False  # complete lineage death -- see the matching note above
+                    lin.rear_recovery = None  # see the matching note at the top-level check above
+                    lin.bar2_recovery = None
                     continue
 
             # --- pullback attach/continue ---
@@ -1108,7 +1229,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     # print; the older lineage is proper).
                     blocked_by_older_recovery_here = any(
                         cd is not None and lin.created_day is not None and cd < lin.created_day
-                        for cd in resolving_rear_recovery_created_days
+                        for cd in pending_rear_recovery_created_days
                     )
                     if blocked_by_older_recovery_here:
                         # Per-day decline ONLY -- does NOT set `superseded`. This collision type
