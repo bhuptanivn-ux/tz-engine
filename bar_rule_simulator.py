@@ -294,7 +294,19 @@ def run_house(rows, bullish, gen_name, anchor_name):
     events = [[] for _ in rows]
     pullback_buffer = [[] for _ in rows]
     lineages = []
-    gen_pending = False        # shared per-house: any lineage's RED2 sets it; any eligible lineage may consume it
+    gen_pending = False        # set by a RED2/GREEN2 confirming; consumable only by its OWN lineage (gen_pending_owner)
+    # WHICH lineage's own RED1/RED2 (GREEN1/GREEN2) pullback actually produced the currently
+    # pending signal. A lineage may only form its fresh plain gen (BAR/SAR) off ITS OWN
+    # pullback confirmation -- never off another lineage's, however long that other signal has
+    # been sitting unconsumed. Confirmed by the user against 03-03-2021 ("NEW LINEAGE TZ GREEN
+    # 01/03 has not received RED 2. How is BAR POSSIBLE?") read together with 22-03-2021 ("this
+    # SAR is a result of TZ RED - TZ RED 2 - GREEN1 (17/03) - GREEN 2 (19/03)"): the two cases
+    # are otherwise structurally identical (a fresh anchor, paired as the dual-track competitor
+    # of an older lineage that still holds a pending REAR recovery, reaching its own anchor "2"
+    # and then trying to form its first plain gen) and differ ONLY in whether that lineage had
+    # earned its own RED2/GREEN2 first. The older lineage's own pending recovery has nothing to
+    # do with it: "BAR SL of earlier lineage cannot stop from having SAR."
+    gen_pending_owner = None
     # Bumped every time gen_pending newly turns True (a fresh RED2/GREEN2) -- lets a lineage's
     # declined-due-to-collision state (Lineage.declined_gen_pending_episode) tell "the same
     # still-pending signal I already declined" apart from "a genuinely new one," so a forfeited
@@ -552,7 +564,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
         return current_label(lin) if lin.gen_started else anchor_name
 
     def process_pullback(lin, i, h, l, c, ph, pl, front=None):
-        nonlocal gen_pending, gen_pending_episode
+        nonlocal gen_pending, gen_pending_episode, gen_pending_owner
         pullback = lin.pullback
         if pullback is None or not pullback["active"]:
             if bullish:
@@ -578,6 +590,7 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # GREEN1 attach without first changing identity (a genuinely new front).
             lin.pullback_used = pb.get("front")
             gen_pending = True
+            gen_pending_owner = lin
             gen_pending_episode += 1
             return True
 
@@ -646,31 +659,25 @@ def run_house(rows, bullish, gen_name, anchor_name):
         # (23-06-2022, itself already past GREEN 2) forced its own guaranteed full restart into
         # plain "SAR" -- the TZ RED must not print at all that day.
         blocked_by_gen_fresh_pending = any(lin.gen_fresh_pending for lin in lineages if not lin.dead)
-        # Snapshot, BEFORE any lineage is processed today, which lineages currently hold a
-        # PENDING rear_recovery at all (not just one resolving today) -- used below to gate a
-        # DIFFERENT, younger lineage's fresh-gen-formation off gen_pending on the same older-
-        # lineage-precedence principle (see there). Must be captured here, not re-checked
-        # per-lineage later in the loop below, since an older lineage's own rear_recovery can
-        # get resolved and cleared to None during ITS OWN turn in that same loop, before a
-        # younger lineage processed afterward would get to see it.
+        # Snapshot, BEFORE any lineage is processed today, which lineages hold a rear_recovery
+        # that would RESOLVE today -- used below to gate a DIFFERENT, younger lineage's fresh-
+        # gen-formation on the same-day older-lineage-precedence principle (see there, and
+        # 02-03-2022). Must be captured here, not re-checked per-lineage later in the loop
+        # below, since an older lineage's own rear_recovery gets cleared to None during ITS OWN
+        # turn in that same loop, before a younger lineage processed afterward would see it.
         #
-        # Deliberately broader than "resolving today" -- confirmed by the user against
-        # 03-03-2021: a younger lineage (TZ GREEN, formed 01-03-2021) formed a fresh plain BAR
-        # off gen_pending while an OLDER lineage's own REAR BUY recovery (opened 24-02-2021)
-        # was still unresolved, just not resolving on that EXACT day -- "another branch of BAR
-        # is not possible even though RED2 is there... REAR can occur above the earlier BAR 2
-        # HH." The shared gen_pending signal is a shortcut that lets an eligible lineage SKIP
-        # its own anchor-to-pullback buildup entirely; that shortcut must not be allowed to
-        # jump ahead of an OLDER lineage's own still-live recovery merely because the two
-        # don't happen to collide on the exact same day. This is scoped to THIS specific
-        # gen_pending-driven plain-gen-formation trigger only -- it does NOT affect a
-        # lineage's own fresh RED1/GREEN1 pullback-attach eligibility (front_ok_for_attach),
-        # which is a separate mechanism, confirmed unaffected by 04-03-2022 (TZ GREEN's own
-        # RED1 attaches independently there despite REAR BUY's recovery still being in play at
-        # the time) -- nor the top-level fresh-ANCHOR search (blocked_by_older_recovery,
-        # above), which stays resolving-today-only per the confirmed, permanent dual-track.
+        # Deliberately NOT broadened to "pending at all." An intermediate version of this was,
+        # on a misreading of 03-03-2021 -- the actual reason the fresh BAR was wrong that day is
+        # that the TZ GREEN lineage was consuming ANOTHER lineage's RED2 ("NEW LINEAGE TZ GREEN
+        # 01/03 has not received RED 2. How is BAR POSSIBLE?"), now enforced properly by
+        # gen_pending_owner. An older lineage's merely-pending recovery has no say over a
+        # separate lineage that HAS earned its own RED2/GREEN2: "BAR SL of earlier lineage
+        # cannot stop from having SAR" (22-03-2021). Broadening it here suppressed that whole
+        # lineage's SAR for 08-03--28-03-2021 and the BULL house's BAR from 08-04-2021 on.
         pending_rear_recovery_created_days = [
-            lin.created_day for lin in lineages if lin.rear_recovery is not None and not lin.dead
+            lin.created_day for lin in lineages
+            if lin.rear_recovery is not None and not lin.dead
+            and recovery_would_resolve(lin.rear_recovery, h, l, c, ph, pl)
         ]
         if awaiting_fresh_anchor and formation_break(ph, pl, h, l, c) and (blocked_by_older_recovery or blocked_by_gen_fresh_pending):
             awaiting_fresh_anchor = False
@@ -1214,9 +1221,14 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 # one's, only the OLDER lineage gets to attach a fresh RED1/GREEN1 today.
                 fresh_attach_candidates.append((lin, attach_front))
 
-            # --- fresh gen formation off the shared gen_pending signal ---
+            # --- fresh gen formation off this lineage's OWN RED2/GREEN2 signal ---
+            # The signal must be THIS lineage's own (gen_pending_owner) -- see that field's
+            # comment for the 03-03-2021 vs. 22-03-2021 pair that pins this down. The
+            # gen_fresh_pending path is the same-lineage guaranteed restart after its own "2"
+            # died shallow (§7) and is self-evidently its own signal, so it qualifies either way.
             if (
                 gen_pending
+                and (gen_pending_owner is lin or lin.gen_fresh_pending)
                 and (front_stage2_before_today or lin.gen_fresh_pending)
                 and lin.declined_gen_pending_episode != gen_pending_episode
             ):
