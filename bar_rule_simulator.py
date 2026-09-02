@@ -1104,20 +1104,25 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     inner_adverse = lin.gen.ref_low if bullish else lin.gen.ref_high
                     outer_before = lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high
                     outer_now = outer_before
-                    # This transition's own "{label} LL/HH" ratchet is noise on a day gen_pending
-                    # already forecloses the lighter reform outcome -- same silencing rationale
-                    # as the routine bar2_recovery ratchet suppression elsewhere (18-02-2022).
-                    silent = gen_pending
+                    # This transition's own "{label} LL/HH" ratchet is the SAME outer reference
+                    # bar2_recovery's own ratchet loop tracks further down (rec["outer"]) --
+                    # never silenced, regardless of gen_pending/gen_fresh_pending, since it is
+                    # the live reference that will become the future deep-SL/escalation
+                    # threshold for this exact recovery, not internal bookkeeping for a
+                    # foreclosed lighter-tier target. Confirmed by the user against 01-04-2021
+                    # ("Make sure SAR HH is always recorded since it will be the reference high
+                    # for SAR SL") -- an earlier version of this fix silenced this transition
+                    # print too, on the mistaken assumption it shared the routine ratchet loop's
+                    # "noise once foreclosed" rationale; it doesn't, for the same reason the
+                    # outer print there doesn't either (see that fix's own comment).
                     if bullish:
                         if outer_before - l >= ANY:
                             outer_now = l
-                            if not silent:
-                                events[i].append(f"{label} LL")
+                            events[i].append(f"{label} LL")
                     else:
                         if h - outer_before >= ANY:
                             outer_now = h
-                            if not silent:
-                                events[i].append(f"{label} HH")
+                            events[i].append(f"{label} HH")
                     lin.bar2_recovery = {
                         "ref": lin.gen.ref_high if bullish else lin.gen.ref_low,
                         "inner_adverse": inner_adverse,
