@@ -481,25 +481,26 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # forever once set at stage2 formation -- unchanged, reconfirmed by the user.
             if shallow_sl:
                 events[i].append(f"{label} 2 SL")
-                # The reference on the SAME side that triggered this shallow SL must still be
-                # updated to today's actual extreme (not left stale at the pre-SL value) -- it
-                # feeds forward into bar2_recovery's own inner_adverse tracking, a real,
-                # consequential VALUE used in future escalation math, not just a display
-                # concern. It is NOT separately printed, for the same same-side-is-redundant
-                # reason as the deep-SL correction above. The OPPOSITE side, if it also moved,
-                # remains genuinely independent and IS printed. Confirmed by the user against
-                # 03-03-2021 ("SAR HH not recorded? Such a basic") read together with the
-                # 24-02-2021 correction above -- same underlying value-vs-display distinction.
-                if bullish:
-                    s.ref_low = l
-                    if h > s.ref_high + ANY:
-                        s.ref_high = h
-                        events[i].append(f"{label} 2 HH")
-                else:
+                # Unlike the deep-SL case above, the SAME side that triggered a shallow SL is
+                # NOT redundant with the SL and IS still printed -- confirmed by the user
+                # against 03-03-2021 ("SAR HH not recorded? Such a basic"), reasserted even
+                # after an intermediate version of this fix wrongly extended the deep-SL
+                # same-side suppression to this branch too. The deep-SL suppression is
+                # justified specifically because that reference becomes genuinely moot the
+                # instant the lineage dies into a completely different tracking mechanism
+                # (rear_recovery, keyed off the FAVORABLE side only, §8); a shallow SL's same-
+                # side reference, by contrast, is exactly what bar2_recovery's own
+                # `inner_adverse` keeps reading on EVERY subsequent day for its escalation
+                # check (§7) -- a live, ongoing fact worth reporting each time it moves, not a
+                # one-off capture into a dead structure. Both sides are therefore checked and
+                # printed unconditionally here, identical to the ordinary (non-SL) ratchet
+                # check just below.
+                if h > s.ref_high + ANY:
                     s.ref_high = h
-                    if l < s.ref_low - ANY:
-                        s.ref_low = l
-                        events[i].append(f"{label} 2 LL")
+                    events[i].append(f"{label} 2 HH")
+                if l < s.ref_low - ANY:
+                    s.ref_low = l
+                    events[i].append(f"{label} 2 LL")
                 if terminal_on_shallow:
                     s.alive = False
                 return "shallow"
