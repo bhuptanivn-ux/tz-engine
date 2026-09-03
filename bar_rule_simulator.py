@@ -300,6 +300,29 @@ class Lineage:
         # competitor that has NOT yet reached any "2" of its own when the OTHER side reaches its
         # new "2" first goes dormant instead ("new lineage will keep recording at the back end").
         self.ever_reached_stage2 = False
+        # A superseded gen's own bar2_recovery, kept alive in the background (silently -- its
+        # routine ratchet/INVALID prints never fire) when a NEWER gen forms via the ordinary
+        # "N number of BAR can occur" supersession path (gen_pending or gen_fresh_pending),
+        # rather than being discarded outright. Only the FULL escalation (this dormant
+        # structure's own deep threshold breaching) still matters -- and when it does, it is a
+        # TOTAL, unconditional termination of the whole lineage, taking precedence over
+        # whatever the newer/active gen is doing that same day, and opens the standard post-"2"
+        # dual-track (REAR-ladder reform off THIS structure's own history, plus a fresh-anchor
+        # search) exactly as an ordinary deep SL would. A dict shaped like bar2_recovery
+        # (ref/inner_adverse/outer) plus `label`/`recovery_label` captured at the moment it went
+        # dormant. None whenever no superseded structure is currently dormant. Only the single
+        # most-recently-superseded one is tracked -- a later supersession while one is already
+        # dormant replaces it, since a still-more-recent structure is by then the meaningful one.
+        # Confirmed by the user against their 2023 test data: a BAR formed 24-02-2023, reached
+        # BAR 2 25-02-2023, shallow-SL'd 02-03-2023 (opening bar2_recovery) -- then, since RED2
+        # ALSO confirmed that same day, a brand-new BAR superseded it 03-03-2023 per the ordinary
+        # rule. The superseded BAR 2's own bar2_recovery must not simply vanish at that point (an
+        # earlier, narrower fix at 15-06-2022 discarded it outright, which was itself too broad):
+        # "this new BAR (03/03) does not have BAR 2 hence earlier BAR is dormant not dead" -- its
+        # escalation threshold breaching on 04-03-2023 is what should actually terminate the
+        # lineage that day (opening TZ GREEN/REAR), not the newer BAR's own separate pre-"2"
+        # failure.
+        self.dormant_recovery = None
 
 
 def run_house(rows, bullish, gen_name, anchor_name):
@@ -812,7 +835,81 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     # exercised until now.
                     lin.rear_recovery = None
                     lin.bar2_recovery = None
+                    lin.dormant_recovery = None
                     continue
+
+            # --- Dormant recovery: a superseded gen's own bar2_recovery, kept ticking silently
+            # in the background (see Lineage.dormant_recovery for the full rationale). Checked
+            # here -- ahead of the CURRENT/active gen's own bar2_recovery/rear_recovery windows
+            # below -- because an escalation here is a TOTAL termination of the whole lineage's
+            # gen-level progress, exactly like an ordinary deep SL, and must override whatever
+            # the newer/active gen is separately doing this same day. Confirmed by the user
+            # against their 2023 test data: a BAR formed 24-02-2023 reached BAR 2 25-02-2023,
+            # shallow-SL'd 02-03-2023 (opening bar2_recovery), was superseded by a brand-new BAR
+            # 03-03-2023 (per the ordinary "N number of BAR, no limit" rule) -- the superseded
+            # BAR 2's own bar2_recovery went dormant at that point instead of being discarded --
+            # and its own deep/outer threshold breaching independently terminates the lineage,
+            # opening the standard post-"2" dual-track (REAR-ladder reform off the DORMANT
+            # structure's own history/label, plus a fresh-anchor search), regardless of what the
+            # newer BAR (03-03-2023) was itself doing that day.
+            if lin.dormant_recovery is not None:
+                rec = lin.dormant_recovery
+                ref = rec["ref"]
+                deep_threshold = (
+                    min(rec["outer"], rec["inner_adverse"]) if bullish
+                    else max(rec["outer"], rec["inner_adverse"])
+                )
+                if bullish:
+                    escalates = (deep_threshold - l) >= THRESH and c <= deep_threshold
+                else:
+                    escalates = (h - deep_threshold) >= THRESH and c >= deep_threshold
+                if escalates:
+                    events[i].append(f"{rec['label']} SL")
+                    # Escalated-label ladder uses the recovery_label CAPTURED at the moment this
+                    # structure went dormant, not the lineage's current one -- the newer/active
+                    # gen that superseded it may since have moved the lineage's own
+                    # recovery_label along its own, unrelated path, which is irrelevant to
+                    # naming THIS structure's own escalation target correctly.
+                    rear = "REAR BUY" if bullish else "REAR SELL"
+                    dormant_escalated_label = rear if rec["recovery_label"] is None else f"{rear} RE ENTER"
+                    lin.rear_recovery = {
+                        "ref": ref,
+                        "target_label": dormant_escalated_label,
+                        "source_2": f"{rec['label']} 2",
+                    }
+                    # Total termination of the CURRENT active gen's own progress too -- this
+                    # dormant escalation supersedes whatever the newer/active gen was separately
+                    # doing this same day, exactly mirroring an ordinary gen deep-SL's own
+                    # `lin.gen = None` (see the gen-processing block further below).
+                    lin.gen = None
+                    lin.bar2_recovery = None
+                    lin.gen_fresh_pending = False
+                    lin.dormant_recovery = None
+                    if lin.competitor is None or lin.competitor.dead or lin.competitor.superseded:
+                        awaiting_fresh_anchor = True
+                        pending_competitor_source = lin
+                    gen_pending = False
+                    continue
+                # Routine ratchet: values update silently every day, exactly mirroring Fix 4
+                # (an anchor's own deep-SL threshold surviving its own display-retirement) --
+                # NO print ever fires for a dormant structure's routine moves, unconditionally
+                # (unlike bar2_recovery's own `silent` flag, which still prints once
+                # gen_fresh_pending is false) -- a dormant structure's routine ticking is never
+                # display-relevant, only its escalation is.
+                if bullish:
+                    if h - ref >= ANY:
+                        rec["ref"] = h
+                    if rec["outer"] - l >= ANY:
+                        rec["outer"] = l
+                    if rec["inner_adverse"] - l >= ANY:
+                        rec["inner_adverse"] = l
+                else:
+                    if ref - l >= ANY:
+                        rec["ref"] = l
+                    if h - rec["outer"] >= ANY:
+                        rec["outer"] = h
+                    if h - rec["inner_adverse"] >= ANY:
+                        rec["inner_adverse"] = h
 
             # --- Shallow-SL recovery window: NEW BAR2/REAR2 reforms directly ---
             if lin.bar2_recovery is not None and gen_pending:
@@ -1360,21 +1457,28 @@ def run_house(rows, bullish, gen_name, anchor_name):
             )
             for lin in gen_formation_candidates:
                 if lin is winner:
+                    # A prior generation's bar2_recovery is now superseded by this brand-new
+                    # gen -- its routine display must stop (never left ticking in parallel under
+                    # the new gen's own current label), but per the user's 2023 correction it is
+                    # NOT abandoned outright: it goes dormant instead (see Lineage.dormant_recovery
+                    # for the full rationale), captured here -- BEFORE recovery_label resets below
+                    # -- with the label/recovery_label context needed to name its own eventual
+                    # REAR-ladder reform correctly if it later escalates. Originally (15-06-2022)
+                    # this was a hard `lin.bar2_recovery = None` to stop "INVALID SAR LL + SAR LL"
+                    # printing under a already-superseded SAR days after a brand-new SAR made it
+                    # moot -- that display concern is still fully honored (dormant structures never
+                    # print routine ratchet/INVALID events), only the outright discarding was wrong.
+                    if lin.bar2_recovery is not None:
+                        lin.dormant_recovery = {
+                            **lin.bar2_recovery,
+                            "label": current_label(lin),
+                            "recovery_label": lin.recovery_label,
+                        }
                     new_gen = Struct(h, l, gen_name, formed_day=i)
                     lin.gen = new_gen
                     lin.gen_started = True
                     lin.recovery_label = None
                     lin.gen_fresh_pending = False
-                    # A prior generation's bar2_recovery is now fully superseded by this brand-
-                    # new gen and must be abandoned, not left ticking in parallel -- this
-                    # trigger path (fresh gen off gen_pending) is a SEPARATE mechanism from
-                    # bar2_recovery's own escalate/recover/ratchet handling, and doesn't
-                    # otherwise touch it at all. Found via 15-06-2022 printing "INVALID SAR LL +
-                    # SAR LL" under the SAME lineage that had already formed a brand-new SAR on
-                    # 12-06-2022 -- a stale prior-generation reference was still ticking under
-                    # the new gen's own current label days after the new gen made it moot. Left
-                    # unabandoned, it could also later "recover" on its own criteria and silently
-                    # overwrite this brand-new, unrelated gen.
                     lin.bar2_recovery = None
                     events[i].append(gen_name)
                     consumed_gen_pending_today = True
