@@ -64,6 +64,21 @@ from decimal import Decimal
 THRESH = Decimal("0.20")
 ANY = Decimal("0.01")
 
+# INVARIANT -- every comparison against THRESH or ANY anywhere in this file must be INCLUSIVE
+# (>= THRESH / <= x - THRESH / x - y >= ANY), never strict (> / <). An exact tie against the
+# threshold QUALIFIES. This was violated in four formulas (up_break/down_break, a gen's own
+# stage2-formation check, rear_recovery_would_resolve, bar2_recovery's "recovers" check) and,
+# separately, in eight ordinary HH/LL ratchet checks (written as `h > ref + ANY` / `l < ref -
+# ANY`, the strict-inequality form of the same mistake) -- both classes fixed against exact
+# 0.20/0.01 ties in a 2023 test dataset ("HIGH, LOW AND CLOSE all conditions are met" -- a Low
+# landing EXACTLY on `pl - THRESH` was wrongly read as not qualifying, delaying an anchor's
+# formation by a day). The bug is easy to reintroduce by writing a new check as `x > y + THRESH`
+# instead of `x - y >= THRESH` -- these look equivalent but are NOT: the first is strict, the
+# second is the required inclusive form. When adding or editing ANY comparison against THRESH
+# or ANY, always write it in the `difference >= constant` form, never `a > b + constant`, and
+# verify by hand that an exact-tie input (difference == THRESH exactly, or == ANY exactly)
+# evaluates True.
+
 rows = [
     ("01-01-2021", 602,    605.5,  601.65, 604),
     ("02-01-2021", 603.5,  608,    603,    607),
@@ -457,10 +472,10 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 s.stage2_formed = True
                 events[i].append(f"{label} 2")
                 return None
-            if h > s.ref_high + ANY:
+            if h - s.ref_high >= ANY:
                 s.ref_high = h
                 events[i].append(f"{label} HH")
-            if l < s.ref_low - ANY:
+            if s.ref_low - l >= ANY:
                 s.ref_low = l
                 events[i].append(f"{label} LL")
             return None
@@ -487,11 +502,11 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 # that instance genuinely correct was that "SAR 2 LL" there was the OPPOSITE
                 # side of the HIGH that triggered the SL, never the same side.
                 if bullish:
-                    if h > s.ref_high + ANY:
+                    if h - s.ref_high >= ANY:
                         s.ref_high = h
                         events[i].append(f"{label} 2 HH")
                 else:
-                    if l < s.ref_low - ANY:
+                    if s.ref_low - l >= ANY:
                         s.ref_low = l
                         events[i].append(f"{label} 2 LL")
             s.alive = False
@@ -516,19 +531,19 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 # one-off capture into a dead structure. Both sides are therefore checked and
                 # printed unconditionally here, identical to the ordinary (non-SL) ratchet
                 # check just below.
-                if h > s.ref_high + ANY:
+                if h - s.ref_high >= ANY:
                     s.ref_high = h
                     events[i].append(f"{label} 2 HH")
-                if l < s.ref_low - ANY:
+                if s.ref_low - l >= ANY:
                     s.ref_low = l
                     events[i].append(f"{label} 2 LL")
                 if terminal_on_shallow:
                     s.alive = False
                 return "shallow"
-            if h > s.ref_high + ANY:
+            if h - s.ref_high >= ANY:
                 s.ref_high = h
                 events[i].append(f"{label} 2 HH")
-            if l < s.ref_low - ANY:
+            if s.ref_low - l >= ANY:
                 s.ref_low = l
                 events[i].append(f"{label} 2 LL")
             return None
