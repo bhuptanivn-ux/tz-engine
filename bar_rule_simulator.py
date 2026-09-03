@@ -318,11 +318,20 @@ def run_house(rows, bullish, gen_name, anchor_name):
     # anchor actually forms, pairing the two as dual-track counterparts (see Lineage.competitor).
     pending_competitor_source = None
 
+    # Threshold comparisons throughout this file are inclusive (>= THRESH / <= ref-THRESH) --
+    # an exact 0.20 move qualifies, it isn't required to exceed 0.20. up_break/down_break,
+    # rear_recovery_would_resolve, and the gen's own stage2-formation check (below) originally
+    # used a strict >/< here, the one inconsistency in the file, silently requiring an exact
+    # tie to fail. Confirmed wrong by the user against 04-01-2023 (a 2023 test dataset): the
+    # anchor's own formation condition read a Low of exactly `pl - THRESH` (202 against a
+    # threshold of 202.2 - 0.20 = 202.0) as NOT qualifying, one day later than it should have --
+    # "HIGH, LOW AND CLOSE all conditions are met." Made inclusive here to match every other
+    # threshold check in the file.
     def up_break(ph, pl, h, l, c):
-        return l >= pl and h > ph + THRESH and c >= ph
+        return l >= pl and h - ph >= THRESH and c >= ph
 
     def down_break(ph, pl, h, l, c):
-        return h <= ph and l < pl - THRESH and c <= pl
+        return h <= ph and pl - l >= THRESH and c <= pl
 
     def formation_break(ph, pl, h, l, c):
         return up_break(ph, pl, h, l, c) if bullish else down_break(ph, pl, h, l, c)
@@ -330,8 +339,8 @@ def run_house(rows, bullish, gen_name, anchor_name):
     def rear_recovery_would_resolve(rec, h, l, c, ph, pl):
         ref = rec["ref"]
         if bullish:
-            return l >= pl and h > ref + THRESH and c >= ref
-        return h <= ph and l < ref - THRESH and c <= ref
+            return l >= pl and h - ref >= THRESH and c >= ref
+        return h <= ph and ref - l >= THRESH and c <= ref
 
     def recovery_would_resolve(rec, h, l, c, ph, pl):
         """Dispatches to the right resolution test for a lineage's rear_recovery -- the ordinary
@@ -433,9 +442,9 @@ def run_house(rows, bullish, gen_name, anchor_name):
                 s.alive = False
                 return "deep"
             if bullish:
-                stage2 = (h > s.ref_high + THRESH) and (l >= rows[i - 1][3]) and (c >= s.ref_high)
+                stage2 = (h - s.ref_high >= THRESH) and (l >= rows[i - 1][3]) and (c >= s.ref_high)
             else:
-                stage2 = (l < s.ref_low - THRESH) and (h <= rows[i - 1][2]) and (c <= s.ref_low)
+                stage2 = (s.ref_low - l >= THRESH) and (h <= rows[i - 1][2]) and (c <= s.ref_low)
             if stage2:
                 if bullish:
                     s.bar_ref_low = s.ref_low
@@ -878,9 +887,9 @@ def run_house(rows, bullish, gen_name, anchor_name):
                         process_pullback(lin, i, h, l, c, ph, pl)
                     continue
                 if bullish:
-                    recovers = l >= pl and h > ref + THRESH and c >= ref
+                    recovers = l >= pl and h - ref >= THRESH and c >= ref
                 else:
-                    recovers = h <= ph and l < ref - THRESH and c <= ref
+                    recovers = h <= ph and ref - l >= THRESH and c <= ref
                 if recovers:
                     if lin.gen_fresh_pending:
                         # RED2/GREEN2 already fired before this recovery -- per the rule above,
