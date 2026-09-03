@@ -1241,8 +1241,23 @@ def run_house(rows, bullish, gen_name, anchor_name):
             # comment for the 03-03-2021 vs. 22-03-2021 pair that pins this down. The
             # gen_fresh_pending path is the same-lineage guaranteed restart after its own "2"
             # died shallow (§7) and is self-evidently its own signal, so it qualifies either way.
+            # `lin.gen is None` is required too -- this trigger exists to REFORM a front that
+            # has actually died (gen never started at all, or died into a recovery window);
+            # it must never fire while this lineage's own gen is still alive and progressing
+            # normally. Without this, a gen that reaches its own "2" and then hosts a SECOND,
+            # later pullback cycle on that SAME still-alive front (one legitimately allowed,
+            # since `pullback_used` only blocks a second attach on an UNCHANGED front, not a
+            # second full pullback CYCLE after the front moves on) would have that pullback's
+            # own RED2/GREEN2 wrongly construed as license to form an entirely NEW gen for
+            # this lineage, silently discarding the live one and its whole accumulated
+            # reference history. Confirmed by the user's 2023 test data: BAR formed 08-01-2023,
+            # reached BAR 2 09-01-2023, never died -- yet a second RED1/RED2 cycle attached to
+            # that same live BAR 2 (12-01/13-01-2023) wrongly re-formed a brand-new plain `BAR`
+            # on 14-01-2023, discarding BAR 2's own ref_high/ref_low (210.15/205) built up over
+            # the preceding four days.
             if (
-                gen_pending
+                lin.gen is None
+                and gen_pending
                 and (gen_pending_owner is lin or lin.gen_fresh_pending)
                 and (front_stage2_before_today or lin.gen_fresh_pending)
                 and lin.declined_gen_pending_episode != gen_pending_episode
