@@ -300,28 +300,50 @@ class Lineage:
         # competitor that has NOT yet reached any "2" of its own when the OTHER side reaches its
         # new "2" first goes dormant instead ("new lineage will keep recording at the back end").
         self.ever_reached_stage2 = False
-        # A superseded gen's own bar2_recovery, kept alive in the background (silently -- its
-        # routine ratchet/INVALID prints never fire) when a NEWER gen forms via the ordinary
+        # A superseded gen's own deep-SL reference, kept alive in the background (silently --
+        # its routine ratchet/INVALID prints never fire) when a NEWER gen forms via the ordinary
         # "N number of BAR can occur" supersession path (gen_pending or gen_fresh_pending),
-        # rather than being discarded outright. Only the FULL escalation (this dormant
-        # structure's own deep threshold breaching) still matters -- and when it does, it is a
-        # TOTAL, unconditional termination of the whole lineage, taking precedence over
-        # whatever the newer/active gen is doing that same day, and opens the standard post-"2"
-        # dual-track (REAR-ladder reform off THIS structure's own history, plus a fresh-anchor
-        # search) exactly as an ordinary deep SL would. A dict shaped like bar2_recovery
-        # (ref/inner_adverse/outer) plus `label`/`recovery_label` captured at the moment it went
-        # dormant. None whenever no superseded structure is currently dormant. Only the single
-        # most-recently-superseded one is tracked -- a later supersession while one is already
-        # dormant replaces it, since a still-more-recent structure is by then the meaningful one.
-        # Confirmed by the user against their 2023 test data: a BAR formed 24-02-2023, reached
-        # BAR 2 25-02-2023, shallow-SL'd 02-03-2023 (opening bar2_recovery) -- then, since RED2
-        # ALSO confirmed that same day, a brand-new BAR superseded it 03-03-2023 per the ordinary
-        # rule. The superseded BAR 2's own bar2_recovery must not simply vanish at that point (an
-        # earlier, narrower fix at 15-06-2022 discarded it outright, which was itself too broad):
-        # "this new BAR (03/03) does not have BAR 2 hence earlier BAR is dormant not dead" -- its
-        # escalation threshold breaching on 04-03-2023 is what should actually terminate the
-        # lineage that day (opening TZ GREEN/REAR), not the newer BAR's own separate pre-"2"
-        # failure.
+        # rather than being discarded outright. This applies whenever the superseded gen had
+        # already reached its own "2" -- whether it was already shallow-SL'd into a live
+        # `bar2_recovery` at the moment of supersession, or was still fully ALIVE (never
+        # shallow-SL'd at all); either way, reaching "2" is what makes its own deep-SL threshold
+        # a real, independent price fact worth preserving, mirroring Fix 4 (the anchor's own
+        # threshold surviving its own display-retirement). A gen superseded BEFORE ever reaching
+        # its own "2" has no such threshold and is simply overwritten, same as always. Only the
+        # FULL escalation (this dormant structure's own deep threshold breaching) still matters
+        # from here -- and when it fires, it is a TOTAL, unconditional termination of the whole
+        # lineage, taking precedence over whatever the newer/active gen is doing that same day,
+        # and opens the standard post-"2" dual-track (REAR-ladder reform off THIS structure's
+        # own history, plus a fresh-anchor search) exactly as an ordinary deep SL would --
+        # EXCEPT that fresh-anchor search reopens unconditionally here, never gated on an
+        # existing paired competitor's aliveness (see the escalation site) -- a dormant
+        # escalation is, by construction, always a genuine reached-its-own-"2" failure, not a
+        # lesser pre-2 ladder blip, and that weight is what earns it the unconditional reopen.
+        # A dict shaped like bar2_recovery (ref/inner_adverse/outer) plus `label`/`recovery_label`
+        # captured at the moment it went dormant. None whenever no superseded structure is
+        # currently dormant. Only the single most-recently-superseded POST-"2" structure is
+        # tracked -- a later supersession whose own predecessor also reached "2" replaces it
+        # (a still-more-recent structure is by then the meaningful one), but a later supersession
+        # whose own predecessor never reached "2" leaves the existing dormant structure
+        # untouched, still ticking, since there is nothing of equal weight to replace it with.
+        # Confirmed by the user against their 2023 test data, in two rounds:
+        # Round 1 (shallow-SL'd case): a BAR formed 24-02-2023, reached BAR 2 25-02-2023,
+        # shallow-SL'd 02-03-2023 (opening bar2_recovery) -- then, since RED2 ALSO confirmed that
+        # same day, a brand-new BAR superseded it 03-03-2023 per the ordinary rule. The
+        # superseded BAR 2's own bar2_recovery must not simply vanish at that point (an earlier,
+        # narrower fix at 15-06-2022 discarded it outright, which was itself too broad): "this
+        # new BAR (03/03) does not have BAR 2 hence earlier BAR is dormant not dead."
+        # Round 2 (still-alive case): a BAR formed 31-01-2023 reached BAR 2 06-02-2023,
+        # shallow-SL'd 13-02-2023 (opening bar2_recovery), was superseded by a new BAR 15-02-2023
+        # (going dormant, per Round 1) -- that NEW BAR itself reached its OWN BAR 2 20-02-2023,
+        # and stayed fully ALIVE (no shallow SL) when it too was superseded by yet another new
+        # BAR on 02-03-2023. The user's correction: this ALIVE BAR 2 must ALSO go dormant,
+        # REPLACING the 31-01/06-02 structure in the single dormant slot -- "a latest gen that
+        # reached its own '2' ... means earlier gen is dead" -- and the two later, interim BARs
+        # (02-03, 17-03) never reach their own "2" before dying, so neither one replaces this
+        # dormant structure again; it keeps ticking under their events untouched. Numerically
+        # verified: escalating the 15-02/20-02 structure's own ratcheted ref/inner_adverse/outer
+        # independently confirms 31-03-2023 as its SL date, exactly matching the user's claim.
         self.dormant_recovery = None
 
 
@@ -885,9 +907,24 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     lin.bar2_recovery = None
                     lin.gen_fresh_pending = False
                     lin.dormant_recovery = None
-                    if lin.competitor is None or lin.competitor.dead or lin.competitor.superseded:
-                        awaiting_fresh_anchor = True
-                        pending_competitor_source = lin
+                    # Unlike the ordinary bar2_recovery-escalation/gen-deep-SL sites, this search
+                    # reopens UNCONDITIONALLY -- never gated on whether this lineage's existing
+                    # paired competitor is still alive. A dormant escalation is, by construction,
+                    # always a genuine "reached its own 2" failure (this is what qualifies a
+                    # structure for dormant tracking in the first place -- see the capture site
+                    # below), not a lesser pre-2 ladder blip -- and the user's explicit correction
+                    # is that a failure of that weight reopens the fresh-TZ-GREEN race regardless
+                    # of an existing competitor's aliveness, racing it in parallel against the
+                    # REAR reform this same escalation just opened above. Confirmed against the
+                    # user's 2023 test data: the dormant escalation of the BAR/BAR 2 formed
+                    # 15-02-2023/20-02-2023 fires 31-03-2023 while this lineage's EARLIER paired
+                    # competitor (TZ GREEN, formed 23-11-2022) is still alive on its own REAR BUY
+                    # ladder -- "TZ GREEN will be looked for after 31/03... Now REAR or TZ GREEN
+                    # (NEW) cycle will have a race." (The ordinary, non-dormant competitor gate
+                    # elsewhere -- bar2_recovery's own escalation, and the gen's own deep-SL site --
+                    # is unchanged; this narrowing is scoped to the dormant-escalation site only.)
+                    awaiting_fresh_anchor = True
+                    pending_competitor_source = lin
                     gen_pending = False
                     continue
                 # Routine ratchet: values update silently every day, exactly mirroring Fix 4
@@ -1471,6 +1508,35 @@ def run_house(rows, bullish, gen_name, anchor_name):
                     if lin.bar2_recovery is not None:
                         lin.dormant_recovery = {
                             **lin.bar2_recovery,
+                            "label": current_label(lin),
+                            "recovery_label": lin.recovery_label,
+                        }
+                    # A gen that reached its own "2" and was superseded while STILL ALIVE (never
+                    # shallow-SL'd, so no bar2_recovery ever existed for it) also needs to go
+                    # dormant -- not just the shallow-SL'd case above. Reaching "2" is what makes
+                    # a structure's own deep-SL threshold a real, independent price fact worth
+                    # preserving (the same reasoning as Fix 4, the anchor's own threshold
+                    # surviving its own display-retirement); a gen that never reached "2" (a
+                    # plain pre-2 alive front, or a pre-2 direct-reform death) has no such
+                    # threshold and is simply overwritten, same as always. Only the MOST RECENT
+                    # post-"2" structure occupies the single dormant slot -- a later supersession
+                    # whose own predecessor never reached "2" leaves the existing dormant
+                    # structure untouched, still ticking. Confirmed by the user against their
+                    # 2023 test data: BAR (15-02-2023) reached BAR 2 (20-02-2023), was superseded
+                    # by a new BAR on 02-03-2023 while its BAR 2 was still alive (no shallow SL) --
+                    # this must ALSO go dormant, replacing whatever was in the slot before it
+                    # (the OLDER 31-01-2023/06-02-2023 BAR/BAR 2, which becomes genuinely dead
+                    # from this point, not separately dormant) -- "15/02 cycle was dormanted
+                    # every time new BAR(n+1) occurred but not dead" (the interim 02-03/17-03
+                    # BARs never reached their own "2", so neither one replaces this dormant
+                    # structure again). Escalating this exact structure's own ratcheted
+                    # ref/inner_adverse/outer independently confirms 31-03-2023 as its SL date --
+                    # numerically verified against the user's claim.
+                    elif lin.gen is not None and lin.gen.alive and lin.gen.stage2_formed:
+                        lin.dormant_recovery = {
+                            "ref": lin.gen.ref_high if bullish else lin.gen.ref_low,
+                            "inner_adverse": lin.gen.ref_low if bullish else lin.gen.ref_high,
+                            "outer": lin.gen.bar_ref_low if bullish else lin.gen.bar_ref_high,
                             "label": current_label(lin),
                             "recovery_label": lin.recovery_label,
                         }
