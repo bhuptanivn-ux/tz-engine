@@ -565,9 +565,16 @@ class TZEngine:
             # display once this lineage has its own BAR 2 -- BAR 2 is now
             # the governing reference for everything above it. Value keeps
             # updating internally (lin.ref_high), only the display is
-            # suppressed.
+            # suppressed. BAR's own LL is NEVER suppressed, bar2 or not --
+            # it's what feeds BAR's own SL reference low, so it must always
+            # display (confirmed: bundling it with the HH suppression was a
+            # bug -- lin.ref_low was still being tracked correctly, but the
+            # "BAR LL(label)" event text itself was wrongly getting dropped
+            # from the output the moment BAR 2 existed).
             if newest_lin.bar2 is None:
                 ev += lin_hh_ev
+            else:
+                ev += [e for e in lin_hh_ev if e.startswith("BAR LL(")]
 
         # BAR 2 variant: formation check + forever-ungoverned HH/LL/SL
         # tracking for EVERY lineage currently in buy.bar_lineages -- not
