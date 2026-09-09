@@ -1,131 +1,138 @@
-# New Theory — TZ GREEN → TZ BUY → BAR (unlimited) → REAR cascade
+# New Theory — v2: TZ GREEN → BAR (unlimited) → REAR
 
-**Status:** provisional design + first-pass implementation (`tz_engine_new_theory.py`).
-**Not yet verified against real OHLC data** — no dataset has been supplied for this
-theory (03/2021–08/2026 was mentioned but never attached). Nothing below has been
-checked against real numbers; treat every mechanic as a hypothesis until it's run
-against real data and confirmed, per this project's standing discipline (never
-guess past a flagged date, re-verify after every fix).
+**Status:** provisional design + implementation (`tz_engine_new_theory.py`).
+**Not yet verified against real OHLC data** — no dataset has been supplied for
+this theory. Treat every mechanic as a hypothesis until it's run against real
+data and confirmed, per this project's standing discipline (never guess past
+a flagged date, re-verify after every fix).
 
-This is a separate, from-scratch theory. It does **not** touch, extend, or depend
-on `tz_engine_v9.py`, `tz_engine_bar2_variant.py`, or the DTF/WTF variant — those
-are unrelated, already-built work on `claude/rulebook-logic-interpretation-g3z130`.
+This is a separate, from-scratch theory. It does **not** touch, extend, or
+depend on `tz_engine_v9.py`, `tz_engine_bar2_variant.py`, or the DTF/WTF
+variant — those are unrelated, already-built work on
+`claude/rulebook-logic-interpretation-g3z130`.
 
-## Rules, as given (verbatim intent)
+**v2 supersedes v1** (the earlier TZ GREEN → TZ BUY → BAR → REAR draft in this
+same file's history). TZ BUY / TZ BUY 2 / TZ GREEN 2 are removed entirely.
 
-1. TZ GREEN — Low ≥ PrevLow, High > PrevHigh by ≥0.20, Close ≥ PrevHigh, subject to
-   the branch-spawn eligibility rule (below).
-2. TZ GREEN 2 — same shape as BAR 2 (the template): Low ≥ PrevLow, High > TZ GREEN's
-   ref high by ≥0.20, Close ≥ that ref high, only while TZ GREEN itself is pre-SL.
-3. RED1 — unchanged shape, attaches to TZ GREEN 2 once it exists.
-4. RED2 — unchanged shape, deepens RED1.
-5. TZ BUY — forms above TZ GREEN 2's reference high (not TZ GREEN's), once RED2 has
-   fired against TZ GREEN 2.
-6. TZ BUY 2 — same BAR-2 shape, forms above TZ BUY's own reference high.
-7. BAR — forms above TZ BUY 2's reference high, and behaves structurally like TZ BUY
-   (not the original plain-PrevHigh-breakout BAR). Only occurs if TZ BUY is still
-   active **and** RED2 has fired against TZ BUY 2.
-8. BAR 2 — standard BAR-2 shape, forms above BAR's own reference high.
-9. BAR / BAR 2 are unlimited: BAR(n) → BAR 2(n) → RED1 → RED2 → BAR(n+1) → BAR 2(n+1)
-   → … indefinitely, until a BAR SL2 fires.
-10. REAR — forms above BAR 2's reference high, once a BAR SL2 fires.
-11. REAR 2 — same BAR-2 shape, forms above REAR's own reference high.
-
-Flow, as given:
+## The flow, as given verbatim
 
 ```
-TZ GREEN - TZ GREEN 2 - RED 1 - RED 2 - TZ BUY - TZ BUY 2 - RED 1 - RED 2 -
-BAR - BAR 2 - RED 1 - RED 2 - BAR - BAR 2 - RED 1 - RED 2 /
-BAR SL - BAR SL2 - TZ GREEN (NEW CYCLE) / REAR ABOVE THE BAR 2 HH
+TZ GREEN - RED1 - RED2 - BAR - BAR2 - RED1 - RED2 - BAR - BAR2 -
+RED1/BAR SL - RED2/BAR SL - BAR SL2 -
+TZ GREEN NEW CYCLE (TZ GREEN - RED1 - RED2 - BAR) / REAR, whichever is earlier
 ```
 
-## Open questions — resolutions adopted for this first pass
+## Rules, as given
 
-Each is a judgment call, not a verified fact. Flagged `ASSUMPTION` in the code at
-the relevant site; revisit as soon as real data disagrees.
+- **TZ GREEN**: unchanged (Low ≥ PrevLow, High > PrevHigh by ≥0.20, Close ≥
+  PrevHigh, subject to branch-spawn eligibility). HH/LL/SL unchanged.
+- **RED1 / RED2**: unchanged shape, but now attach **directly to TZ GREEN**
+  (no "TZ GREEN 2" gate — that tier no longer exists in v2).
+- **BAR**: forms above **TZ GREEN's own reference high** (not TZ BUY 2's, not
+  TZ GREEN 2's). Low compared to Previous Day, High/Close compared to TZ
+  GREEN's reference high. Only once TZ GREEN's own RED2 has fired.
+- **BAR 2**: forms above BAR's own reference high (same shape/mechanics as
+  the already-established BAR 2 template — single-tier SL/recovery, no
+  escalation of its own).
+- BAR / BAR 2 are unlimited, exactly as before: BAR(n) → BAR 2(n) → RED1 →
+  RED2 → BAR(n+1) → BAR 2(n+1) → … until a BAR SL2 fires.
+- **TZ GREEN SL2: not needed.** TZ GREEN's own SL is single-shot per cycle —
+  no deeper escalation tier of its own.
+- **TZ BUY / TZ BUY 2: not needed** — removed entirely, confirmed twice.
+- **Post TZ GREEN SL:**
+  - **Before RED2** (TZ GREEN's own RED2 has never fired for this cycle): a
+    new lineage starts immediately. No REAR involved — nothing to queue a
+    reference from yet.
+  - **After RED2**: REAR can occur, using whichever of {TZ GREEN's own
+    reference high, the last-confirmed BAR 2's reference high} occurred
+    **last** before the TZ GREEN SL.
+- **REAR — BIG CHANGE**: REAR forms above BAR 2's reference in the case of a
+  BAR SL2 trigger (the original mechanism). REAR forms above TZ GREEN's own
+  reference high in the case of a (post-RED2) TZ GREEN SL trigger.
+- **REAR 2**: same BAR-2 shape, above REAR's own reference high.
 
-**1. Is "TZ GREEN (NEW CYCLE)" a parallel branch, or an alternative to REAR?**
-Adopted: **parallel, independent branch** — not an alternative to REAR. Rule 10
-states REAR forms "once BAR SL2 triggers," unconditionally, with no dead-end
-caveat, so REAR is the standing outcome of every BAR SL2. A fresh TZ GREEN can
-spawn independently, at any point, once this cycle's own RED1-against-GREEN-2 has
-fired (see the branch-spawn rule below) — mirroring the base engine's §8 sibling-
-spawn rule, and the "TZ GREEN new lineage not reaching TZ BUY" idea from the
-BAR2-variant discussion. The diagram places it next to `BAR SL2` only because
-that's typically when the original cycle stops being "live" and a sibling becomes
-spawn-eligible, not because it's gated on SL2 specifically.
+## Resolutions adopted (judgment calls, not verified facts)
 
-**2. Does LL ever get suppressed once a tier's "2" forms?**
-Adopted: **no, never** — mirrors the real bug already found and fixed in the
-committed BAR2 variant (BAR's own LL was wrongly bundled with HH and dropped;
-only HH should be suppressed). Every tier's LL always displays; only HH is
-suppressed once that tier's own "2" exists.
+**A. "Whichever occurred last" vs. the "BIG CHANGE" trigger-based rule.**
+The rules give two readings for REAR's reference on a post-RED2 TZ GREEN SL:
+(1) whichever of {TZ GREEN's ref, last BAR 2's ref} is more recent, or (2) the
+simpler, explicitly-flagged "BIG CHANGE": TZ GREEN SL → always TZ GREEN's own
+ref; BAR SL2 → always BAR 2's own ref. **Adopted: (2)**, since it's the one
+explicitly labeled as the corrected/final statement. Revisit if real data
+shows a case where the *last-confirmed-reference* reading (1) would give a
+different, better answer (e.g. TZ GREEN SL fires while a BAR 2 higher than TZ
+GREEN's own ref is still the most recently confirmed structure).
 
-**3. Does RED1 require the matching "2" to already exist before attaching?**
-Adopted: **yes, uniformly** — generalizing rule 7's explicit statement for BAR
-("BAR only occurs if TZ BUY is still active AND RED2 has occurred after TZ BUY 2")
-to every tier: RED1/RED2 attach to a tier's own "2" once it exists, and the *next*
-tier only forms after RED2 has fired against the current tier's "2". This also
-means the base engine's standalone one-time "RED" (before RED1) does not exist
-separately in this theory — TZ GREEN 2 is followed directly by RED1 (no separate
-plain "RED" step), consistent with the flow diagram, which never shows a bare RED.
+**B. The endgame race — what "whichever is earlier" means, mechanically.**
+Adopted: a **single-slot, first-past-the-post race** between (i) REAR
+confirming (a real recovery breakout above the queued reference — Low ≥
+PrevLow, High − ref ≥ 0.20, Close ≥ ref; not an instant formation on the
+triggering candle itself, mirroring the already-established base-engine
+recovery-confirmation pattern) and (ii) **any** fresh sibling TZ GREEN cycle
+completing its own TZ GREEN → RED1 → RED2 → BAR sequence and reaching its own
+first BAR formation. Whichever happens first wins:
+  - If a sibling reaches its own first BAR before REAR confirms, REAR is
+    **cancelled** (the queued reference is discarded, never confirms) and the
+    sibling continues on as the ongoing story.
+  - If REAR confirms first, it becomes the terminal structure for the
+    original cycle; any sibling still mid-attempt is not retroactively
+    erased (its already-fired events stand), it simply stops mattering for
+    this race — it keeps existing as a normal cycle in its own right.
+  - **Same-day tie** (both conditions satisfied on the identical candle):
+    REAR wins, since its reference was queued earlier in wall-clock time. Not
+    verified against real data — a genuine tie is expected to be rare.
+  - **Recursive re-attempts**: a sibling that itself dies (its own TZ GREEN
+    SL, before its own RED2) does not cancel the race — it just becomes
+    eligible-anchor for yet another fresh attempt, same as the very first
+    failure was. The queued REAR reference keeps racing across any number of
+    failed sibling attempts.
+  - **Single slot**: if the racing sibling itself later reaches its own BAR
+    SL2 (having already won the earlier race), that queues a *new* pending
+    REAR reference, single-slot-superseding style (mirrors the base engine's
+    own REAR-family single-slot convention) — there is only ever one race in
+    flight at a time.
 
-**4. Is failure at the TZ GREEN or TZ BUY tier terminal (no reactivation)?**
-Adopted: **yes, terminal, cycle-wide.** Only BAR/BAR 2 are explicitly called
-"unlimited" — TZ GREEN and TZ BUY are one-shot gates into that cascade. TZ GREEN's
-own SL is checked every candle, unconditionally, and terminates the entire cycle
-(TZ GREEN 2, TZ BUY, TZ BUY 2, every BAR generation, REAR) permanently — mirroring
-the base engine's TZ GREEN SL cascade. TZ BUY's own SL is terminal for TZ BUY
-itself (no "NEW TZ BUY" retry mechanic — not mentioned in this theory) but does
-**not** retroactively kill BAR generations already in progress (mirrors the base
-engine's "TZ BUY SL doesn't stop the BAR family below it"); it does stop **new**
-BAR generations from forming afterward, per rule 7's explicit "TZ BUY still
-active" gate on BAR formation.
+**C. Branch-spawn eligibility.** A fresh sibling TZ GREEN may spawn once the
+most recent cycle's own forward progress is over — either its own TZ GREEN SL
+fired, or any of its BAR generations reached SL2. (No separate "is a buy
+still live" check exists in v2, since TZ BUY is gone — this single
+`terminated` flag is now the whole gate.)
 
-**5. Do TZ GREEN 2 / TZ BUY 2 mirror BAR 2's own SL/recovery exactly?**
-Adopted: **yes** — every "2" tier (TZ GREEN 2, TZ BUY 2, BAR 2, REAR 2) uses the
-identical single-tier SL/recovery cycle: SL fires on a ≥0.20 breach with no
-reclaim; recovery (same label) fires when price clears the SL's own ref high by
-≥0.20 with Close holding. No escalation to a "2 SL2" at any tier.
+**D. BAR's own SL/SL2 vs. BAR 2's own SL** — unchanged from v1: BAR's own
+two-tier SL/SL2 escalation is gated on that generation's BAR 2 having formed
+at all (a BAR SL with no BAR 2 is a dead end — no SL/SL2 tracking reachable).
+BAR 2's own SL/recovery is a separate, single-tier cycle, does not persist
+through BAR-level reactivation.
 
-## Branch-spawn eligibility (new cycle)
+**E. LL is never suppressed** (carried over from v1) — only HH suppression is
+tied to a tier's own display rules; TZ GREEN's own LL, BAR's own LL, and BAR
+2/REAR 2's own LL all keep tracking regardless of what's formed above them.
 
-Mirrors the base engine's §8 rule, adapted for the absence of a standalone "RED":
-a fresh TZ GREEN (NEW CYCLE) may spawn on a qualifying breakout candle whenever
-the anchor cycle's own RED1-against-TZ-GREEN-2 has fired at least once, and that
-cycle's TZ BUY is either nonexistent, dead (its own SL fired), or every BAR
-generation it ever produced has reached BAR SL2 and none is currently live — or
-no cycle exists yet at all.
+## Not yet modeled / open
 
-## BAR's own SL/SL2 vs. BAR 2's SL — two separate mechanisms
-
-- **BAR's own SL/SL2** (two-tier, mirrors the base engine exactly): gated on that
-  generation's BAR 2 having formed at all (a BAR SL with no BAR 2 ever formed is a
-  permanent dead end for that generation — no SL/SL2 tracking, only a fresh BAR
-  generation elsewhere or the top-level TZ BUY SL can follow, per the already-
-  committed BAR2-variant rule). BAR SL2 is the trigger for REAR (rule 10).
-- **BAR 2's own SL/recovery** (single-tier, rule 5 above): independent of BAR's
-  own SL/SL2; does not persist through BAR-level reactivation — a reactivated
-  BAR(n) needs a brand new BAR 2 from scratch (mirrors the committed variant).
+- TZ GREEN's own HH is **not** suppressed by anything in v2 (there's no "TZ
+  GREEN 2" to suppress it the way v1 had) — it keeps climbing for the life of
+  the cycle. Not explicitly addressed in the v2 rules as given; flagged for
+  confirmation once real data is available.
+- No cross-cycle leadership/dormancy contest (mirrors v1's same
+  simplification) — every cycle tracks and displays independently other than
+  the single-slot REAR race described above.
+- Reference selection reading (A) above (last-confirmed-wins instead of
+  trigger-based) is the most likely candidate for revision once real data
+  disagrees with the simpler adopted rule.
 
 ## Testing so far
 
-`test_new_theory_smoke.py` walks one hand-constructed, synthetic OHLC sequence
-through the entire escalation once (TZ GREEN → … → REAR 2 → REAR SL → an
-independent sibling TZ GREEN spawn) and asserts every milestone event fires.
+`test_new_theory_smoke.py` walks one hand-constructed, synthetic OHLC
+sequence through three scenarios back to back:
+1. TZ GREEN SL before RED2 → immediate fresh sibling, no REAR queued.
+2. BAR SL2 → REAR confirms on the very next qualifying candle (the ordinary,
+   uncontested case — "REAR wins" because nothing else had time to race it).
+3. BAR SL2 → a fresh sibling completes its own TZ GREEN → RED1 → RED2 → BAR
+   faster than the queued REAR reference ever confirms — "new cycle wins",
+   and the test asserts REAR never fires for that cycle.
+
 This only proves the state machine's plumbing is internally consistent on
 data built to exercise it — it is **not** a substitute for verification
 against real OHLC, which this theory has never had. Run `python3
 test_new_theory_smoke.py`.
-
-## Not yet modeled (deliberate simplification, first pass)
-
-- No cross-cycle leadership/dormancy contest (base engine §7a) — every spawned
-  cycle tracks and displays independently. The new theory only mentions the single
-  linear escalation plus one independent-sibling-spawn concept; nothing in the
-  rules as given calls for multi-branch dormancy suppression. Revisit if real data
-  produces overlapping cycles that need arbitration.
-- No cross-generation reference pool (`bar_high_pool` equivalent) — REAR's
-  reference at SL2 is exactly BAR 2(n)'s own reference for the generation that
-  reached SL2 (rule 10), not a pool across earlier generations, since generations
-  here are strictly sequential (RED2-driven), not multi-lineage racing.

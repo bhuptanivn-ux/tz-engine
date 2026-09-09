@@ -1,36 +1,38 @@
 """
-TZ ENGINE -- New Theory variant: TZ GREEN -> TZ BUY -> BAR (unlimited) -> REAR.
+TZ ENGINE -- New Theory variant, v2: TZ GREEN -> BAR (unlimited) -> REAR.
 
 STATUS: provisional first-pass implementation. NOT yet verified against real
-OHLC data -- no dataset has been supplied for this theory. Every open question
-the theory left unresolved has an explicit, documented default; see
-NEW_THEORY_RULEBOOK.md for the reasoning behind each one (all marked
-"ASSUMPTION" at the relevant site below too). Re-check every one of these
-against real data before trusting this engine's output.
+OHLC data -- no dataset has been supplied for this theory. Every open
+question left unresolved has an explicit, documented default; see
+NEW_THEORY_RULEBOOK.md for the reasoning behind each one ("v2" section).
+Re-check every one of these against real data before trusting this engine's
+output.
 
 Separate from, and independent of, tz_engine_v9.py / tz_engine_bar2_variant.py
 and the DTF/WTF variant on claude/rulebook-logic-interpretation-g3z130.
 
-Shape, in order of escalation:
-    TZ GREEN -> TZ GREEN 2 -> RED1 -> RED2 ->
-    TZ BUY   -> TZ BUY 2   -> RED1 -> RED2 ->
-    BAR(1)   -> BAR 2(1)   -> RED1 -> RED2 ->
-    BAR(2)   -> BAR 2(2)   -> RED1 -> RED2 -> ... (unlimited)
-    ... until a BAR SL2 fires -> REAR (above that generation's BAR 2 reference)
-    -> REAR 2
+v2 supersedes v1: TZ BUY / TZ BUY 2 / TZ GREEN 2 are removed entirely. RED1/
+RED2 now attach directly to TZ GREEN, and BAR forms directly above TZ GREEN's
+own reference high (not TZ BUY 2's). TZ GREEN has no SL2 of its own -- its
+own SL is single-shot per cycle, but what happens next depends on whether
+this cycle's RED2 has ever fired:
 
-Every "2" tier (TZ GREEN 2 / TZ BUY 2 / BAR 2 / REAR 2) shares one shape:
-    forms while its parent is pre-SL: Low >= PrevLow, High > parent.ref_high by
-    >= THRESH, Close >= parent.ref_high.
-and one single-tier SL/recovery cycle (no escalation of its own):
-    SL: Low breaks its own ref_low by >= THRESH, Close doesn't reclaim.
-    Recovery (same label): High clears sl.ref_high by >= THRESH, Close holds.
+    TZ GREEN -> RED1 -> RED2 -> BAR(1) -> BAR 2(1) -> RED1 -> RED2 ->
+    BAR(2) -> BAR 2(2) -> RED1 -> RED2 -> ... (unlimited) ...
+    -> BAR SL -> BAR SL2  ---\\
+                               >--> RACE: REAR (above the reference queued at
+    TZ GREEN SL (after RED2) -/       the trigger) vs. a fresh TZ GREEN (NEW
+                                       CYCLE) reaching ITS OWN first BAR --
+                                       whichever happens first wins; the
+                                       other is abandoned.
+    TZ GREEN SL (before RED2 ever fired) -> immediate fresh TZ GREEN (NEW
+        CYCLE), no REAR involved at all (nothing to queue a reference from).
 
-RED1/RED2 (shared mechanic, reused at every escalation point) only attach once
-the current tier's "2" exists (ASSUMPTION 3 in the rulebook):
-    RED1: High <= PrevHigh, Low < PrevLow by >= THRESH, Close <= PrevLow.
-    RED2: Low < RED1's own ref_low, High <= PrevHigh, gap >= THRESH,
-          Close <= RED1's ref_low.
+BAR / BAR 2 keep the v1 shape (BAR 2 forms off BAR's own reference; BAR's own
+SL/SL2 two-tier escalation is gated on BAR 2 having formed at all -- a BAR SL
+with no BAR 2 is a dead end, no SL2 reachable, per the already-established
+pattern this theory reuses). REAR / REAR 2 also keep the v1 shape once REAR
+actually confirms.
 """
 from dataclasses import dataclass, field
 from typing import Optional, List
@@ -63,7 +65,7 @@ def load_days_csv(path):
     days = []
     with open(path, newline="") as f:
         reader = csv.reader(f)
-        header = next(reader)
+        next(reader)  # header
         for row in reader:
             if not row or row[0] == "":
                 continue
@@ -93,43 +95,73 @@ def load_days_xlsx(path):
 
 @dataclass
 class RedTracker:
-    """RED1/RED2, shared mechanic reused at every escalation point. Attaches
-    to a tier's own "2" once that "2" exists (rulebook assumption 3)."""
+    """RED1/RED2, shared mechanic reused at every escalation point (attaches
+    directly to TZ GREEN, and to each generation's BAR 2)."""
     ref_high: float
     ref_low: float
     red2_fired: bool = False
 
 
+def eval_red_tracker(holder, parent_terminated: bool, prev: Day, cur: Day):
+    """Attach/advance RED1/RED2 on `holder.red`. `parent_terminated` is
+    supplied by the caller (TZ GREEN's own `dead`, or a Tier2's own `sl`) --
+    SL always beats RED1/RED2, so callers must not invoke this on a candle
+    where the parent's own SL just fired."""
+    if holder is None or parent_terminated:
+        return None
+    red = holder.red
+    if red is None:
+        if cur.h <= prev.h and prev.l - cur.l >= THRESH - EPS and cur.c <= prev.l:
+            holder.red = RedTracker(ref_high=cur.h, ref_low=cur.l)
+            return "RED1"
+        return None
+    if red.red2_fired:
+        return None
+    if cur.h - red.ref_high >= THRESH - EPS and cur.c >= red.ref_high:
+        holder.red = None
+        return "INVALID_RED1"
+    gap = red.ref_low - cur.l
+    if cur.l < red.ref_low and cur.h <= prev.h and gap >= THRESH - EPS and cur.c <= red.ref_low + EPS:
+        red.red2_fired = True
+        return "RED2"
+    if cur.l < red.ref_low:
+        red.ref_low = cur.l
+        return "RED1_LL"
+    if cur.h - red.ref_high >= ANY - EPS:
+        red.ref_high = cur.h
+        return "RED1_HH"
+    return None
+
+
 @dataclass
 class Tier2SL:
-    """Single-tier SL for a "2" structure -- no escalation of its own. Can
-    recover and re-fire indefinitely (rulebook assumption 5: "no escalation"
-    means no SL2 tier, not a one-shot lifetime)."""
+    """Single-tier SL for a "2" structure (BAR 2 / REAR 2) -- no escalation
+    of its own. Can recover and re-fire indefinitely."""
     ref_high: float
     ref_low: float
 
 
 @dataclass
 class Tier2:
-    """TZ GREEN 2 / TZ BUY 2 / BAR 2 / REAR 2 -- identical shape and identical
-    single-tier SL/recovery cycle (rulebook assumption 5)."""
+    """BAR 2 / REAR 2 -- identical shape and identical single-tier
+    SL/recovery cycle."""
     ref_high: float
     ref_low: float
     sl: Optional[Tier2SL] = None
     red: Optional[RedTracker] = None
 
 
-def try_form_tier2(parent_ref_high: float, parent_sl_fired: bool, prev: Day, cur: Day):
-    """Generic "2"-tier formation check: only while the parent is pre-SL."""
-    if parent_sl_fired:
-        return None
+def try_form_tier2(parent_ref_high: float, prev: Day, cur: Day):
+    """"2"-tier formation: Low >= PrevLow, High > parent's ref by >= THRESH,
+    Close >= parent's ref. Caller only invokes this while the parent is
+    pre-SL."""
     if cur.l >= prev.l and cur.h - parent_ref_high >= THRESH - EPS and cur.c >= parent_ref_high:
         return Tier2(ref_high=cur.h, ref_low=cur.l)
     return None
 
 
 def eval_tier2_hh_ll(t2: Tier2, prev: Day, cur: Day):
-    """Returns (event_or_None, hh_bool). LL is never suppressed (assumption 2)."""
+    """LL is never suppressed by the "2" existing; HH is (own display rule)."""
     events = []
     if t2.sl is None:
         if cur.h - t2.ref_high >= ANY - EPS:
@@ -151,7 +183,6 @@ def eval_tier2_sl_cycle(t2: Tier2, prev: Day, cur: Day):
             events.append("SL")
     else:
         if cur.h - t2.sl.ref_high >= THRESH - EPS and cur.c >= t2.sl.ref_high:
-            # recovery: fresh cycle under the same label
             t2.ref_high = cur.h
             t2.ref_low = cur.l
             t2.red = None
@@ -161,35 +192,6 @@ def eval_tier2_sl_cycle(t2: Tier2, prev: Day, cur: Day):
             t2.sl.ref_low = cur.l
             events.append("SL_LL")
     return events
-
-
-def eval_red_tracker(parent_ref: Tier2, prev: Day, cur: Day):
-    """Attach/advance RED1/RED2 against a tier's own "2" (assumption 3).
-    Returns event tag or None. Only called while parent_ref is pre-SL."""
-    if parent_ref is None or parent_ref.sl is not None:
-        return None
-    red = parent_ref.red
-    if red is None:
-        if cur.h <= prev.h and prev.l - cur.l >= THRESH - EPS and cur.c <= prev.l:
-            parent_ref.red = RedTracker(ref_high=cur.h, ref_low=cur.l)
-            return "RED1"
-        return None
-    if red.red2_fired:
-        return None
-    if cur.h - red.ref_high >= THRESH - EPS and cur.c >= red.ref_high:
-        parent_ref.red = None
-        return "INVALID_RED1"
-    gap = red.ref_low - cur.l
-    if cur.l < red.ref_low and cur.h <= prev.h and gap >= THRESH - EPS and cur.c <= red.ref_low + EPS:
-        red.red2_fired = True
-        return "RED2"
-    if cur.l < red.ref_low:
-        red.ref_low = cur.l
-        return "RED1_LL"
-    if cur.h - red.ref_high >= ANY - EPS:
-        red.ref_high = cur.h
-        return "RED1_HH"
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +216,7 @@ class BarGen:
 
 
 # ---------------------------------------------------------------------------
-# Top-level tiers
+# Cycle (one TZ GREEN lineage)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -224,66 +226,49 @@ class Tier1SL:
 
 @dataclass
 class Cycle:
-    """One full TZ GREEN -> ... -> REAR chain. Independently tracked; no
-    cross-cycle dormancy/leadership contest in this first pass (see
-    NEW_THEORY_RULEBOOK.md, "Not yet modeled")."""
+    """One TZ GREEN -> RED1/RED2 -> BAR/BAR2 (unlimited) -> [REAR] chain."""
     seq: int
     green_ref_high: float
     green_ref_low: float
-    green2: Optional[Tier2] = None
-
-    buy_ref_high: float = 0.0
-    buy_ref_low: float = 0.0
-    buy_active: bool = False
-    buy_sl_fired: bool = False
-    buy2: Optional[Tier2] = None
+    red: Optional[RedTracker] = None
+    red2_ever: bool = False  # this cycle's own RED2 (against TZ GREEN) has fired at least once
 
     bar_gens: List[BarGen] = field(default_factory=list)
     bar_sub_counter: int = 0
 
-    # REAR forms only once price actually recovers above the queued
-    # reference by >=THRESH (mirrors the base engine's own sl.invalid_hh_ref
-    # + real-breakout-confirmation pattern, §5) -- NOT instantly on the BAR
-    # SL2 candle itself. rear_pending_ref is set at SL2 and climbs weakly
-    # (ANY threshold, "INVALID BAR HH"-equivalent) until the real breakout
-    # confirms and REAR actually forms from that day's own H/L.
-    rear_pending_ref: Optional[float] = None
+    dead: bool = False        # TZ GREEN's own SL fired
+    terminated: bool = False  # dead=True, OR any generation reached BAR SL2 --
+    # in either case this cycle's own forward escalation is over and a new
+    # sibling TZ GREEN becomes spawn-eligible (§ branch-spawn rule below).
+
     rear_ref_high: float = 0.0
     rear_ref_low: float = 0.0
     rear_sl: Optional[Tier1SL] = None
     rear2: Optional[Tier2] = None
-
-    dead: bool = False       # TZ GREEN SL fired -- whole cycle terminated
-    red1_ever: bool = False  # this cycle's own RED1-against-GREEN-2 has fired at least once
 
 
 class Engine:
     def __init__(self):
         self.cycles: List[Cycle] = []
         self.next_seq = 1
+        # Single-slot "race" state (newest terminating event always wins,
+        # mirroring the base engine's single-slot REAR-family convention):
+        # a reference queued by either BAR SL2 or a post-RED2 TZ GREEN SL,
+        # racing against whichever fresh sibling cycle reaches its own first
+        # BAR first. See NEW_THEORY_RULEBOOK.md, "v2 -- the endgame race".
+        self.pending_rear_ref: Optional[float] = None
+        self.pending_rear_owner: Optional[Cycle] = None
 
     # -- spawn eligibility -------------------------------------------------
     def _spawn_eligible(self) -> bool:
-        """ASSUMPTION 1 + branch-spawn rule: mirrors base engine's sibling-
-        spawn rule, adapted since this theory has no standalone RED (only
-        RED1-against-GREEN-2)."""
-        if not self.cycles:
-            return True
-        anchor = self.cycles[-1]
-        if anchor.dead:
-            # TZ GREEN SL is terminal and cascades (assumption 4) -- a dead
-            # cycle is not "active" and cannot anchor a new sibling, mirroring
-            # the base engine's own §8 anchor-must-be-active requirement.
-            return False
-        if not anchor.red1_ever:
-            return False
-        if not anchor.buy_active and anchor.buy_sl_fired:
-            return True
-        if anchor.bar_gens and all(g.sl is not None and g.sl.sl2 for g in anchor.bar_gens):
-            return True
-        if anchor.rear_sl is not None:
-            return True
-        return False
+        """A fresh sibling TZ GREEN may spawn once the most recent cycle's
+        own forward escalation is over (`terminated`) -- whether via its own
+        TZ GREEN SL or via any of its BAR generations reaching SL2. This
+        naturally covers the recursive case too: a fresh sibling that itself
+        fails early (its own TZ GREEN SL before its own RED2) immediately
+        becomes eligible-anchor for yet another attempt, all while any
+        pending REAR race keeps running independently in the background."""
+        return not self.cycles or self.cycles[-1].terminated
 
     def _try_spawn(self, prev: Day, cur: Day):
         if not self._spawn_eligible():
@@ -295,140 +280,108 @@ class Engine:
             return f"TZ GREEN({branch_label(c.seq)})"
         return None
 
+    # -- the REAR-vs-fresh-cycle race ---------------------------------------
+    def _queue_rear(self, owner: Cycle, ref: float):
+        """Single slot: the newest terminating event's reference always
+        supersedes whatever was previously queued (mirrors the base engine's
+        REAR-family single-slot convention)."""
+        self.pending_rear_ref = ref
+        self.pending_rear_owner = owner
+
+    def _eval_pending_rear(self, prev: Day, cur: Day, events: list):
+        """Checked once per day, ahead of per-cycle evaluation, so that a
+        fresh sibling reaching BAR the same day REAR would confirm is
+        resolved deterministically (tie -> REAR wins, since its reference
+        was queued earlier in wall-clock time -- see rulebook)."""
+        if self.pending_rear_ref is None:
+            return
+        ref = self.pending_rear_ref
+        owner = self.pending_rear_owner
+        label = branch_label(owner.seq)
+        if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
+            owner.rear_ref_high = cur.h
+            owner.rear_ref_low = cur.l
+            events.append(f"REAR({label})")
+            self.pending_rear_ref = None
+            self.pending_rear_owner = None
+        elif cur.h - ref >= ANY - EPS:
+            self.pending_rear_ref = cur.h
+
     # -- per-cycle evaluation -----------------------------------------------
     def _eval_cycle(self, c: Cycle, prev: Day, cur: Day):
         events = []
         label = branch_label(c.seq)
-        if c.dead:
+        if c.terminated and not c.rear_ref_high:
+            # Fully resolved with no REAR ever confirmed for it (either it
+            # lost the race, or it died before RED2 with nothing to race).
             return events
 
-        # Snapshot every "child forms above this reference" value as it stood
-        # BEFORE today's own processing -- otherwise a tier's own same-day
-        # weak-HH bump could self-block the child's full-THRESH breakout
-        # check (mirrors the base engine's own documented §5a fix: read the
-        # ancestor's reference as it stood coming into today).
-        green2_ref_pre = c.green2.ref_high if c.green2 is not None else None
-        buy2_ref_pre = c.buy2.ref_high if c.buy2 is not None else None
+        if not c.dead:
+            # 1. TZ GREEN's own SL -- single-shot, no SL2 of its own. What
+            # happens next depends on whether RED2 has ever fired.
+            gap = c.green_ref_low - cur.l
+            if cur.l <= c.green_ref_low and gap >= THRESH - EPS and cur.c <= c.green_ref_low:
+                c.dead = True
+                c.terminated = True
+                events.append(f"TZ GREEN SL({label})")
+                if c.red2_ever:
+                    # Queue REAR above TZ GREEN's OWN reference high (not the
+                    # last BAR 2's -- the "BIG CHANGE" simplification; see
+                    # rulebook for the alternate reading this replaces).
+                    self._queue_rear(c, c.green_ref_high)
+                # else: no REAR queued at all -- a fresh sibling can spawn
+                # immediately (handled by _spawn_eligible/_try_spawn).
+                return events
 
-        # 1. TZ GREEN's own SL -- checked first, unconditionally, cascades
-        #    (assumption 4): kills TZ GREEN 2 / BUY / BUY2 / BAR family / REAR.
-        gap = c.green_ref_low - cur.l
-        if cur.l <= c.green_ref_low and gap >= THRESH - EPS and cur.c <= c.green_ref_low:
-            c.dead = True
-            events.append(f"TZ GREEN SL({label})")
-            return events
+            # Snapshot BEFORE today's own HH update, for BAR's own formation
+            # check below (avoids the self-comparison bug: forming BAR the
+            # same day TZ GREEN's own HH ratchets up to today's own High).
+            green_ref_pre = c.green_ref_high
 
-        # 2+3. TZ GREEN 2 formation check uses the PRE-today reference
-        # (forming today suppresses today's own HH, not LL -- display rule +
-        # assumption 2). LL always tracks, regardless of GREEN 2's existence.
-        pre_green_ref_high = c.green_ref_high
-        if c.green2 is None:
-            t2 = try_form_tier2(pre_green_ref_high, False, prev, cur)
-            if t2 is not None:
-                c.green2 = t2
-                events.append(f"TZ GREEN 2({label})")
-            elif cur.h - pre_green_ref_high >= ANY - EPS:
+            # 2. TZ GREEN HH/LL.
+            if cur.h - c.green_ref_high >= ANY - EPS:
                 c.green_ref_high = cur.h
                 events.append(f"TZ GREEN HH({label})")
-        else:
-            for tag in eval_tier2_hh_ll(c.green2, prev, cur):
-                events.append(f"TZ GREEN 2 {tag}({label})")
-            for tag in eval_tier2_sl_cycle(c.green2, prev, cur):
-                events.append(f"TZ GREEN 2 {tag}({label})")
+            if cur.l < c.green_ref_low:
+                c.green_ref_low = cur.l
+                events.append(f"TZ GREEN LL({label})")
 
-        if cur.l < c.green_ref_low:
-            c.green_ref_low = cur.l
-            events.append(f"TZ GREEN LL({label})")
-
-        # 4. RED1/RED2 against TZ GREEN 2, gating TZ BUY formation.
-        if c.green2 is not None and not c.buy_active and not c.buy_sl_fired:
-            tag = eval_red_tracker(c.green2, prev, cur)
+            # 3. RED1/RED2 directly against TZ GREEN (no "TZ GREEN 2" in v2).
+            tag = eval_red_tracker(c, c.dead, prev, cur)
             if tag:
                 events.append(f"{tag.replace('_', ' ')}({label})")
                 if tag == "RED2":
-                    c.red1_ever = True
+                    c.red2_ever = True
 
-        # 5. TZ BUY formation -- above TZ GREEN 2's ref, once its RED2 fired.
-        if (
-            c.green2 is not None
-            and c.green2.red is not None
-            and c.green2.red.red2_fired
-            and not c.buy_active
-            and not c.buy_sl_fired
-        ):
-            ref = green2_ref_pre
-            if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
-                c.buy_active = True
-                c.buy_ref_high = cur.h
-                c.buy_ref_low = cur.l
-                events.append(f"TZ BUY({label})")
+            # 4. First BAR generation -- above TZ GREEN's own reference,
+            # once TZ GREEN's own RED2 has fired.
+            if c.red is not None and c.red.red2_fired and not c.bar_gens:
+                ref = green_ref_pre
+                if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
+                    c.bar_sub_counter += 1
+                    gen = BarGen(label=f"{label}.{c.bar_sub_counter}", ref_high=cur.h, ref_low=cur.l)
+                    c.bar_gens.append(gen)
+                    events.append(f"BAR({gen.label})")
 
-        # 6. TZ BUY's own SL (terminal for the buy; does not retro-kill BAR
-        #    generations already formed -- assumption 4). SL beats RED1/RED2
-        #    (§3 in the base rulebook, applied uniformly): firing it today
-        #    must also block RED1/RED2 from attaching to TZ BUY 2 today.
-        buy_sl_fired_today = False
-        if c.buy_active:
-            gap = c.buy_ref_low - cur.l
-            if cur.l <= c.buy_ref_low and gap >= THRESH - EPS and cur.c <= c.buy_ref_low:
-                c.buy_active = False
-                c.buy_sl_fired = True
-                buy_sl_fired_today = True
-                events.append(f"TZ BUY SL({label})")
-            else:
-                # 7. TZ BUY 2 formation uses the PRE-today reference (same
-                # same-day-self-comparison fix as TZ GREEN, above).
-                pre_buy_ref_high = c.buy_ref_high
-                if c.buy2 is None:
-                    t2 = try_form_tier2(pre_buy_ref_high, False, prev, cur)
-                    if t2 is not None:
-                        c.buy2 = t2
-                        events.append(f"TZ BUY 2({label})")
-                    elif cur.h - pre_buy_ref_high >= ANY - EPS:
-                        c.buy_ref_high = cur.h
-                        events.append(f"TZ BUY HH({label})")
-                else:
-                    for tag in eval_tier2_hh_ll(c.buy2, prev, cur):
-                        events.append(f"TZ BUY 2 {tag}({label})")
-                    for tag in eval_tier2_sl_cycle(c.buy2, prev, cur):
-                        events.append(f"TZ BUY 2 {tag}({label})")
-                if cur.l < c.buy_ref_low:
-                    c.buy_ref_low = cur.l
-                    events.append(f"TZ BUY LL({label})")
+        # 5. Unlimited BAR/BAR2/RED1/RED2 loop; BAR SL2 queues REAR (handled
+        # inside _eval_bar_chain). Stops once terminated -- a cycle that
+        # already resolved (via either termination path) must not keep
+        # evaluating stale BAR generations after REAR later confirms.
+        if not c.terminated:
+            self._eval_bar_chain(c, prev, cur, events)
 
-        # 8. RED1/RED2 against TZ BUY 2, gating the first BAR generation.
-        if c.buy2 is not None and not c.bar_gens and not buy_sl_fired_today:
-            tag = eval_red_tracker(c.buy2, prev, cur)
-            if tag:
-                events.append(f"{tag.replace('_', ' ')}({label})")
-
-        # 9. First BAR generation -- above TZ BUY 2's ref, once its RED2
-        #    fired, and only while TZ BUY is still active (rule 7).
-        if (
-            c.buy_active
-            and c.buy2 is not None
-            and c.buy2.red is not None
-            and c.buy2.red.red2_fired
-            and not c.bar_gens
-        ):
-            ref = buy2_ref_pre
-            if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
-                c.bar_sub_counter += 1
-                gen = BarGen(label=f"{label}.{c.bar_sub_counter}", ref_high=cur.h, ref_low=cur.l)
-                c.bar_gens.append(gen)
-                events.append(f"BAR({gen.label})")
-
-        # 10. Unlimited BAR/BAR2/RED1/RED2 loop; once a generation reaches
-        # BAR SL2, REAR forms and REAR/REAR 2 tracking takes over from here
-        # (handled inside _eval_bar_chain -> _queue_rear/_eval_rear).
-        self._eval_bar_chain(c, prev, cur, events)
+        # 6. REAR's own HH/LL/SL/2, once REAR has actually confirmed for
+        # this cycle (independent of `dead`/`terminated` -- REAR outlives
+        # the cycle that spawned it).
+        if c.rear_ref_high:
+            self._eval_rear_tracking(c, prev, cur, events)
 
         return events
 
     def _eval_bar_chain(self, c: Cycle, prev: Day, cur: Day, events: list):
         active_gens = [g for g in c.bar_gens if not g.superseded]
         if not active_gens:
-            return self._eval_rear(c, prev, cur, events)
+            return
         gen = active_gens[-1]
 
         # BAR's own SL/SL2 -- gated on BAR2 having formed (dead end otherwise).
@@ -438,28 +391,29 @@ class Engine:
                 if cur.l <= gen.ref_low and gap >= THRESH - EPS and cur.c <= gen.ref_low:
                     gen.sl = BarSL(ref_high=gen.ref_high, ref_low=cur.l)
                     events.append(f"BAR SL({gen.label})")
-                    return self._eval_rear(c, prev, cur, events)
+                    return
             elif not gen.sl.sl2:
                 gap2 = gen.sl.ref_low - cur.l
                 if cur.l <= gen.sl.ref_low and gap2 >= THRESH - EPS and cur.c <= gen.sl.ref_low:
                     gen.sl.sl2 = True
+                    c.terminated = True
                     events.append(f"BAR SL2({gen.label})")
-                    return self._queue_rear(c, prev, cur, gen, events)
+                    ref = gen.bar2.ref_high if gen.bar2 is not None else gen.ref_high
+                    self._queue_rear(c, ref)
+                    return
                 if cur.l < gen.sl.ref_low:
                     gen.sl.ref_low = cur.l
                     events.append(f"BAR SL LL({gen.label})")
 
         if gen.sl is not None:
-            return self._eval_rear(c, prev, cur, events)
+            return
 
-        # BAR 2 formation uses the PRE-today reference (same self-comparison
-        # fix as TZ GREEN/TZ BUY, above). LL never suppressed (assumption 2).
-        # Also snapshot BAR 2's own ref_high before its HH tracking runs below,
-        # for the next-generation breakout check further down (same fix).
+        # BAR 2 formation uses the PRE-today reference (avoids self-
+        # comparison against today's own weak-HH bump). LL never suppressed.
         pre_bar_ref_high = gen.ref_high
         bar2_ref_pre = gen.bar2.ref_high if gen.bar2 is not None else None
         if gen.bar2 is None:
-            t2 = try_form_tier2(pre_bar_ref_high, False, prev, cur)
+            t2 = try_form_tier2(pre_bar_ref_high, prev, cur)
             if t2 is not None:
                 gen.bar2 = t2
                 events.append(f"BAR 2({gen.label})")
@@ -477,22 +431,14 @@ class Engine:
 
         # RED1/RED2 against this generation's BAR 2, gating the next generation.
         if gen.bar2 is not None:
-            tag = eval_red_tracker(gen.bar2, prev, cur)
+            tag = eval_red_tracker(gen.bar2, gen.bar2.sl is not None, prev, cur)
             if tag:
                 events.append(f"{tag.replace('_', ' ')}({gen.label})")
 
         # Attempt next-generation formation once this generation's BAR 2 had
         # a fired RED2 coming into today and is awaiting the fresh breakout
-        # above BAR 2's pre-today reference -- only while TZ BUY is still
-        # active (rule 7's gate applies to every generation, not just the
-        # first -- assumption 4).
-        if (
-            c.buy_active
-            and gen.bar2 is not None
-            and gen.bar2.red is not None
-            and gen.bar2.red.red2_fired
-            and bar2_ref_pre is not None
-        ):
+        # above BAR 2's pre-today reference.
+        if gen.bar2 is not None and gen.bar2.red is not None and gen.bar2.red.red2_fired and bar2_ref_pre is not None:
             ref = bar2_ref_pre
             if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
                 gen.superseded = True
@@ -504,51 +450,17 @@ class Engine:
                 c.bar_gens.append(new_gen)
                 events.append(f"BAR({new_gen.label})")
 
-        return None
-
-    def _queue_rear(self, c: Cycle, prev: Day, cur: Day, gen: BarGen, events: list):
-        """BAR SL2 queues REAR's reference (rule 10) -- REAR itself only
-        forms once price actually recovers above it by >=THRESH (mirrors the
-        base engine's own §5 real-breakout-confirmation, not an instant
-        formation on the SL2 candle)."""
-        ref = gen.bar2.ref_high if gen.bar2 is not None else gen.ref_high
-        if c.rear_pending_ref is None or ref > c.rear_pending_ref:
-            c.rear_pending_ref = ref
-        return None
-
-    def _eval_rear(self, c: Cycle, prev: Day, cur: Day, events: list):
+    def _eval_rear_tracking(self, c: Cycle, prev: Day, cur: Day, events: list):
         label = branch_label(c.seq)
-
-        if not c.rear_ref_high:
-            # Queued, not yet confirmed -- check for the real recovery
-            # breakout; otherwise the pending reference keeps climbing
-            # weakly on any new High (INVALID BAR HH-equivalent, ANY
-            # threshold), same principle as base engine §5's queued state.
-            if c.rear_pending_ref is None:
-                return None
-            ref = c.rear_pending_ref
-            if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
-                c.rear_ref_high = cur.h
-                c.rear_ref_low = cur.l
-                c.rear_sl = None
-                c.rear2 = None
-                c.rear_pending_ref = None
-                events.append(f"REAR({label})")
-            elif cur.h - ref >= ANY - EPS:
-                c.rear_pending_ref = cur.h
-            return None
-
         if c.rear_sl is None:
             gap = c.rear_ref_low - cur.l
             if cur.l <= c.rear_ref_low and gap >= THRESH - EPS and cur.c <= c.rear_ref_low:
                 c.rear_sl = Tier1SL(ref_low=cur.l)
                 events.append(f"REAR SL({label})")
-                return None
-            # REAR 2 formation uses the PRE-today reference (same
-            # self-comparison fix as TZ GREEN/TZ BUY/BAR, above).
+                return
             pre_rear_ref_high = c.rear_ref_high
             if c.rear2 is None:
-                t2 = try_form_tier2(pre_rear_ref_high, False, prev, cur)
+                t2 = try_form_tier2(pre_rear_ref_high, prev, cur)
                 if t2 is not None:
                     c.rear2 = t2
                     events.append(f"REAR 2({label})")
@@ -560,11 +472,9 @@ class Engine:
                     events.append(f"REAR 2 {tag}({label})")
                 for tag in eval_tier2_sl_cycle(c.rear2, prev, cur):
                     events.append(f"REAR 2 {tag}({label})")
-
             if cur.l < c.rear_ref_low:
                 c.rear_ref_low = cur.l
                 events.append(f"REAR LL({label})")
-        return None
 
     def process(self, days: List[Day]):
         out = []
@@ -572,12 +482,24 @@ class Engine:
             prev, cur = days[i - 1], days[i]
             day_events = []
 
+            # Pending REAR race checked first (per-day tie-break: REAR wins
+            # a same-day tie against a sibling's fresh BAR -- see rulebook).
+            self._eval_pending_rear(prev, cur, day_events)
+
             spawn_ev = self._try_spawn(prev, cur)
             if spawn_ev:
                 day_events.append(spawn_ev)
 
             for c in list(self.cycles):
-                day_events.extend(self._eval_cycle(c, prev, cur))
+                had_bar_gens = bool(c.bar_gens)
+                events = self._eval_cycle(c, prev, cur)
+                day_events.extend(events)
+                # This cycle just formed its OWN first BAR (not a later
+                # generation) -- it wins the race against any still-pending
+                # REAR queued by an older, already-terminated cycle.
+                if not had_bar_gens and c.bar_gens and self.pending_rear_ref is not None:
+                    self.pending_rear_ref = None
+                    self.pending_rear_owner = None
 
             out.append((cur.date, day_events))
         return out
