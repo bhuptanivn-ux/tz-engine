@@ -513,7 +513,7 @@ class TZEngine:
         return ev
 
     # -----------------------------------------------------------------
-    def _eval_buy(self, pc, buy: Buy, prev: Day, cur: Day):
+    def _eval_buy(self, pc, buy: Buy, prev: Day, cur: Day, extra_reentry_floor: Optional[float] = None):
         ev = []
         label = "TZ BUY"
         sl_label = "TZ BUY SL"
@@ -587,6 +587,11 @@ class TZEngine:
             ref = pre_today_buy_ref
             if pre_today_tzbuy2_ref is not None:
                 ref = max(ref, pre_today_tzbuy2_ref)
+            # DTF/WTF Rule A / Rule B hook: an external, more mature
+            # reference (Rule B's own BAR 2) can also govern reentry here --
+            # unused by the main engine itself (always None), additive only.
+            if extra_reentry_floor is not None:
+                ref = max(ref, extra_reentry_floor)
             if (cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS and cur.c >= ref):
                 buy.active = True
                 buy.ref_high = cur.h
