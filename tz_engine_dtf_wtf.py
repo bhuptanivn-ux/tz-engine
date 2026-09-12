@@ -138,12 +138,18 @@ RULE A / RULE B (once WTF reaches plain BAR, not BAR 2)
   5. If Rule B wins that live race (its BAR ENTRY is what actually
      triggers) -> Rule A dies permanently -- symmetric with rule 1.
 
-  UNSPECIFIED: what happens to Rule B if its own BAR 2 (BAR ENTRY) later
-  reaches its own SL with no further escalation defined (no "REAR" was
-  ever specified for Rule B). Implemented here as: Rule B's BAR 2 just
-  freezes and keeps climbing as "INVALID BAR HH(RuleB)" forever after,
-  mirroring the main engine's own dead-lineage behavior, pending
-  confirmation from real data / further rules.
+  RESOLVED: what happens once Rule B's own BAR 2 (BAR ENTRY) reaches its
+  own SL. Confirmed: BAR's own SL never escalates to a "BAR SL2" and never
+  leads anywhere else (no REAR-equivalent for Rule B) -- it reactivates in
+  place under the same "BAR" label, indefinitely, exactly mirroring TZ
+  BUY's own reactivation one tier up: a plain fresh breakout (no gate) if
+  BAR ENTRY never formed yet (scenario 1c), else reactivation must clear
+  max(BAR's own frozen reference, BAR ENTRY's own reference). BAR ENTRY
+  does NOT persist through BAR's reactivation -- it resets and must reform
+  fresh above BAR's new reference, mirroring TZ BUY 2 resetting on TZ
+  BUY's own reactivation. Confirmed via: "RED1-RED2-BAR-BAR ENTRY-RED1-
+  RED2-BAR ENTRY SL-BAR SL-BAR (RE ENTRY ABOVE BAR ENTRY REFERENCE HIGH)-
+  BAR ENTRY (ABOVE THE BAR REFERENCE HIGH)".
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -390,7 +396,6 @@ class RuleBTrack:
         self._buy = Buy(ref_high=0.0, ref_low=0.0)  # holds bar_lineages/red1 only
         self.pre = None
         self.lin: Optional[BarLineage] = None
-        self.dead = False
 
     def step(self, prev: Day, cur: Day):
         ev = []
@@ -420,57 +425,74 @@ class RuleBTrack:
                     ev.append("BAR(RuleB)")
             return ev
 
-        if self.dead:
-            return ev
-
         lin = self.lin
         eng = self._engine
-        # HH/LL tracking + BAR 2 (="BAR ENTRY") formation/HH/LL/SL/recovery,
-        # reusing the main engine's own single-lineage helpers verbatim.
-        # Pre-today snapshot taken BEFORE the HH tracking mutates lin.ref_high
-        # -- same same-day self-reference hazard documented throughout the
-        # main engine file (BAR 2's formation must compare against lin's
-        # reference AS OF THE START OF TODAY, not after today's own HH climb).
+
+        if lin.sl is not None:
+            # BAR's own SL never escalates to a "BAR SL2" and never leads
+            # anywhere else (no REAR-equivalent for Rule B) -- it
+            # reactivates in place under the same "BAR" label, indefinitely,
+            # exactly mirroring TZ BUY's own reactivation one tier up:
+            #  - if BAR ENTRY (bar2) has NEVER formed, a plain fresh
+            #    breakout above the previous day's high suffices, no gate
+            #    (scenario 1c: "reference high considered only after BAR
+            #    ENTRY");
+            #  - once BAR ENTRY HAS formed at least once, reactivation must
+            #    clear max(BAR's own frozen reference, BAR ENTRY's own
+            #    reference) -- confirmed: "BAR (RE ENTRY ABOVE BAR ENTRY
+            #    REFERENCE HIGH)".
+            # Checked BEFORE bar2's own tracking below runs this same
+            # candle -- mirrors _eval_buy/_eval_tzbuy2's own discipline
+            # ("BAR 2 can never form the same day BAR reactivates").
+            if lin.bar2 is None:
+                if eng._bar_entry_shape(prev, cur):
+                    lin.sl = None
+                    lin.ref_high = cur.h
+                    lin.ref_low = cur.l
+                    ev.append("BAR(RuleB)")
+                    return ev
+            else:
+                ref = max(lin.ref_high, lin.bar2.ref_high)
+                if (cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS and cur.c >= ref):
+                    lin.sl = None
+                    lin.ref_high = cur.h
+                    lin.ref_low = cur.l
+                    lin.red1_since = False
+                    lin.red2_ever = False
+                    # BAR ENTRY does NOT persist through BAR's own
+                    # reactivation -- must reform fresh above BAR's NEW
+                    # reference (confirmed: "BAR ENTRY (ABOVE THE BAR
+                    # REFERENCE HIGH)"), mirrors TZ BUY 2 not persisting
+                    # through TZ BUY's own reactivation.
+                    lin.bar2 = None
+                    ev.append("BAR(RuleB)")
+                    return ev
+            # no reactivation today -- bar2 (if any) keeps quietly climbing
+            # as INVALID BAR HH, same as everywhere else in this file.
+            if lin.bar2 is not None:
+                ev += eng._eval_bar2(self._pc, self._buy, lin, prev, cur)
+            return ev
+
+        # lin.sl is None: HH/LL tracking + BAR 2 (="BAR ENTRY") formation/
+        # HH/LL/SL/recovery, reusing the main engine's own single-lineage
+        # helpers verbatim. Pre-today snapshot taken BEFORE the HH tracking
+        # mutates lin.ref_high -- same same-day self-reference hazard
+        # documented throughout the main engine file (BAR 2's formation
+        # must compare against lin's reference AS OF THE START OF TODAY).
         pre_today_lin_ref = lin.ref_high
-        if lin.sl is None:
-            ev += eng._eval_bar_lineage_hh(self._pc, self._buy, lin, prev, cur)
-            ev += eng._eval_bar2(self._pc, self._buy, lin, prev, cur, pre_today_lin_ref)
-        else:
-            ev += eng._eval_bar2(self._pc, self._buy, lin, prev, cur, pre_today_lin_ref)
+        ev += eng._eval_bar_lineage_hh(self._pc, self._buy, lin, prev, cur)
+        ev += eng._eval_bar2(self._pc, self._buy, lin, prev, cur, pre_today_lin_ref)
 
-        if lin.sl is None:
-            if (cur.l < lin.ref_low and (lin.ref_low - cur.l) >= THRESH - EPS and cur.c <= lin.ref_low + EPS):
-                ev.append("BAR SL(RuleB)")
-                lin.sl = BarSL(ref_high=cur.h, ref_low=cur.l)
-                self._buy.red1 = None
-                return ev
-            red1_preexisting = self._buy.red1 is not None and self._buy.red1.active
-            if red1_preexisting:
-                ev += eng._eval_red1_generic(self._pc, self._buy, lin, prev, cur)
-            elif lin.bar2 is not None and not lin.red2_ever:
-                ev += eng._attach_fresh_red1(self._pc, self._buy, lin, prev, cur)
+        if (cur.l < lin.ref_low and (lin.ref_low - cur.l) >= THRESH - EPS and cur.c <= lin.ref_low + EPS):
+            ev.append("BAR SL(RuleB)")
+            lin.sl = BarSL(ref_high=cur.h, ref_low=cur.l)
+            self._buy.red1 = None
             return ev
-
-        # lin.sl is not None: reactivation, NOT gated on the earlier BAR's
-        # own reference (scenario 1c: "reference high considered only after
-        # BAR ENTRY") -- plain fresh-breakout-above-previous-day shape.
-        if lin.bar2 is None:
-            # dead end: this Rule B attempt never reached BAR ENTRY, so per
-            # rule 1/5 it never "completed" -- but a plain BAR reactivation
-            # is still available (mirrors the main engine's own INVALID BAR
-            # SL -> BAR reactivation path).
-            if eng._bar_entry_shape(prev, cur):
-                lin.sl = None
-                lin.ref_high = cur.h
-                lin.ref_low = cur.l
-                ev.append("BAR(RuleB)")
-            return ev
-        # UNSPECIFIED beyond this point (see module docstring): no further
-        # escalation was defined for Rule B once its own BAR 2 fails its
-        # own SL. Freezing it here, matching the main engine's own
-        # dead-lineage behavior for a lineage whose SL fired with no
-        # further path back up.
-        self.dead = True
+        red1_preexisting = self._buy.red1 is not None and self._buy.red1.active
+        if red1_preexisting:
+            ev += eng._eval_red1_generic(self._pc, self._buy, lin, prev, cur)
+        elif lin.bar2 is not None and not lin.red2_ever:
+            ev += eng._attach_fresh_red1(self._pc, self._buy, lin, prev, cur)
         return ev
 
     @property
