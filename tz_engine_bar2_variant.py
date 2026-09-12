@@ -254,7 +254,7 @@ class ParentCycle:
     buy: Optional[Buy] = None
 
 
-MILESTONE_KEYS = ("TZ BUY(", "BAR(", "REAR(", "REAR RE-ENTER(")
+MILESTONE_KEYS = ("TZ BUY(", "TZ BUY 2(", "BAR(", "REAR(", "REAR RE-ENTER(")
 
 SL_LL_KEYS = (
     "TZ GREEN SL(", "TZ GREEN LL(",
@@ -388,9 +388,21 @@ class TZEngine:
         tip_deep_failure = (tip is not None and tip.buy is not None and
                              self._deep_failure_reached(tip.buy) and
                              not self._buy_currently_live(tip.buy))
+        # TZ BUY 2 variant: TZ BUY 2's own SL ALSO opens eligibility for a
+        # fresh sibling TZ GREEN cycle, unconditionally -- irrespective of
+        # whatever happens afterward under the same TZ BUY (RED1/BAR/BAR 2/
+        # REAR can all keep progressing independently). The race is
+        # specifically "whoever reaches TZ BUY 2 first": the new cycle's own
+        # first TZ BUY 2, or this SAME TZ BUY 2 reactivating in place above
+        # its own reference high (both are milestone events -- see
+        # MILESTONE_KEYS). Eligibility closes itself out naturally the
+        # moment tz_buy2.sl_active flips back to False (reactivation), same
+        # as the other eligibility conditions being read fresh each day.
+        tip_tz_buy2_sl_active = (tip is not None and tip.buy is not None and
+                                  tip.buy.tz_buy2 is not None and tip.buy.tz_buy2.sl_active)
         eligible_anchor = (
             tip is not None and not tip.dormant and tip.red_ever and
-            (tip.buy is None or not tip.buy.active or tip_deep_failure)
+            (tip.buy is None or not tip.buy.active or tip_deep_failure or tip_tz_buy2_sl_active)
         )
         can_spawn = eligible_anchor or tip is None
         new_branch_id = None
