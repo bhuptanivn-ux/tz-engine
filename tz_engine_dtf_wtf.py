@@ -128,15 +128,32 @@ RULE A / RULE B (once WTF reaches plain BAR, not BAR 2)
      rule -- no permanent discarding of either side, regardless of which
      order the two references matured in. (Implemented via the
      extra_reentry_floor hook on TZEngine._eval_buy.)
-  4. If Rule A fails (TZ BUY ENTRY SL) with NO BAR2(B) yet formed at all,
-     two fresh, independent candidates go live simultaneously: a brand-
-     new RED1-RED2-BAR-BAR ENTRY track (Rule B, starting clean) at its own
-     (typically lower) breakout level, and TZ BUY ENTRY's own reentry
-     above its own reference high. Whichever level is actually crossed on
-     the earlier calendar date governs. On a same-day tie, TZ BUY ENTRY
-     (Rule A) wins.
+  4. If Rule A fails via TZ BUY ENTRY's own SL -- whether that fires alone,
+     or together with TZ BUY's own SL on the same day -- WITH NO BAR/BAR 2
+     yet formed under Rule A at all, two fresh, independent candidates go
+     live simultaneously: a brand-new RED1-RED2-BAR-BAR ENTRY track (Rule
+     B, starting clean) at its own (typically lower) breakout level, and
+     TZ BUY ENTRY's own reentry above its own reference high. Whichever
+     level is actually crossed on the earlier calendar date governs. On a
+     same-day tie, TZ BUY ENTRY (Rule A) wins. Confirmed: if a BAR/BAR 2
+     HAS already formed under Rule A by the time this SL fires, this fresh
+     race does NOT start -- rule 3's max-reference reentry applies instead
+     (the trigger is TZ BUY ENTRY's own SL specifically, not TZ BUY's own
+     top-level SL, which already has its own correct, unrelated
+     reactivation).
   5. If Rule B wins that live race (its BAR ENTRY is what actually
      triggers) -> Rule A dies permanently -- symmetric with rule 1.
+
+  SCOPING NOTE: the main engine's own separate rule -- TZ BUY 2's SL also
+  opens spawn-eligibility for a sibling TZ GREEN cycle at the WTF/main-
+  engine level, irrespective of later events -- is confirmed to apply
+  ONLY at WTF's own level (automatic there, since WTF just runs a real
+  TZEngine.process()). It does NOT extend to DTF's own anchored mechanics
+  (DTFSimpleAnchor, or Rule A here) -- DTF's own TZ BUY 2 SL never spawns
+  a competing structure before DTF's own first BAR SL2; it simply
+  reactivates in place (or, within this dual-track case, triggers rule 4
+  above, which is a DTF-specific mechanism, not the WTF sibling-spawn
+  rule).
 
   RESOLVED: what happens once Rule B's own BAR 2 (BAR ENTRY) reaches its
   own SL. Confirmed: BAR's own SL never escalates to a "BAR SL2" and never
@@ -558,14 +575,22 @@ class DTFBarDual:
         # Rule A has formed and leads (or is racing again post-SL, rule 4).
         ra = self.rule_a
         buy = ra.pc.buy
-        was_active = buy.active
+        # rule 4's trigger is TZ BUY ENTRY's own SL (buy.tz_buy2.sl_active),
+        # NOT TZ BUY's own top-level SL (buy.active) -- confirmed: the
+        # trigger fires whether TZ BUY ENTRY SL happens alone, or together
+        # with TZ BUY's own SL on the same day. TZ BUY's own SL already has
+        # its own correct, existing reactivation (max of TZ BUY's/TZ BUY
+        # ENTRY's reference) regardless -- it plays no separate role here.
+        was_tz_buy2_sl_active = buy.tz_buy2.sl_active if buy.tz_buy2 is not None else False
 
         extra_floor = None
         if buy.bar_lineages and buy.bar_lineages[-1].bar2 is not None:
             extra_floor = buy.bar_lineages[-1].bar2.ref_high
 
         ev = ra.engine._eval_buy(ra.pc, buy, prev, cur, extra_reentry_floor=extra_floor)
-        sl_fired_now = was_active and not buy.active
+
+        is_tz_buy2_sl_active_now = buy.tz_buy2.sl_active if buy.tz_buy2 is not None else False
+        tz_buy2_sl_fired_now = is_tz_buy2_sl_active_now and not was_tz_buy2_sl_active
 
         if self._racing_after_sl:
             # rule 4 race in progress: check whether Rule B's own BAR ENTRY
@@ -586,9 +611,12 @@ class DTFBarDual:
                 self._racing_after_sl = False
             return ev + rb_ev
 
-        if sl_fired_now and extra_floor is None:
-            # rule 4: nothing had formed under Rule A yet -- a fresh,
-            # independent Rule B race starts now.
+        if tz_buy2_sl_fired_now and extra_floor is None:
+            # rule 4: TZ BUY ENTRY SL just fired, and nothing (no BAR/BAR 2)
+            # had formed under Rule A yet -- a fresh, independent Rule B
+            # race starts now. (If extra_floor is not None, a BAR 2 already
+            # exists under Rule A -- rule 3's max-reference reentry applies
+            # instead, no fresh race needed.)
             self.rule_b = RuleBTrack()
             self._racing_after_sl = True
 
