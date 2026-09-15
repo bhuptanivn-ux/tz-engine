@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GLOBAL_INDICES } from "@/lib/indices";
+import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
 
 interface SymbolMatch {
   symbol: string;
@@ -46,6 +47,7 @@ export default function Home() {
   const [interval, setIntervalValue] = useState("1d");
 
   const [rows, setRows] = useState<HistoryRow[]>([]);
+  const [events, setEvents] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -105,6 +107,7 @@ export default function Home() {
   async function handleFetch() {
     setError("");
     setRows([]);
+    setEvents(new Map());
 
     if (!selected) {
       setError(
@@ -134,7 +137,9 @@ export default function Home() {
       if (!res.ok) {
         throw new Error(data.error || "Failed to fetch history");
       }
-      setRows(data.rows || []);
+      const fetchedRows: HistoryRow[] = data.rows || [];
+      setRows(fetchedRows);
+      setEvents(computeNewTheoryEvents(fetchedRows));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch history");
     } finally {
@@ -142,11 +147,17 @@ export default function Home() {
     }
   }
 
+  function csvEscape(value: string): string {
+    return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  }
+
   function downloadCSV() {
     if (rows.length === 0) return;
-    const header = "Date,Open,High,Low,Close";
+    const header = "Date,Open,High,Low,Close,Event";
     const body = rows
-      .map((r) => [r.date, r.open, r.high, r.low, r.close].join(","))
+      .map((r) =>
+        [r.date, r.open, r.high, r.low, r.close, csvEscape(events.get(r.date) || "")].join(",")
+      )
       .join("\n");
     const blob = new Blob([`${header}\n${body}`], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -300,6 +311,12 @@ export default function Home() {
               Download CSV
             </button>
           </div>
+          <p className="muted event-disclaimer">
+            The Event column runs a provisional, unverified trading-signal theory over this
+            data (see NEW_THEORY_RULEBOOK.md) — treat it as a hypothesis, not a confirmed
+            signal. The first row never shows an event: each day is only evaluated against
+            the one before it.
+          </p>
           <div className="table-wrap">
             <table>
               <thead>
@@ -309,6 +326,7 @@ export default function Home() {
                   <th>High</th>
                   <th>Low</th>
                   <th>Close</th>
+                  <th className="event-col">Event</th>
                 </tr>
               </thead>
               <tbody>
@@ -319,6 +337,7 @@ export default function Home() {
                     <td>{fmt(r.high)}</td>
                     <td>{fmt(r.low)}</td>
                     <td>{fmt(r.close)}</td>
+                    <td className="event-col">{events.get(r.date) || ""}</td>
                   </tr>
                 ))}
               </tbody>

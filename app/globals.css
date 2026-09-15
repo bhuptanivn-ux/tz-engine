@@ -183,6 +183,12 @@ th:first-child, td:first-child {
   text-align: left;
 }
 
+.event-col {
+  text-align: left;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .table-wrap {
   max-height: 480px;
   overflow-y: auto;
@@ -206,4 +212,8 @@ thead th {
 .muted {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.event-disclaimer {
+  margin: 0 0 0.75rem;
 }
