@@ -27,11 +27,19 @@ against real data at this specific tier):
   TZ BUY at all until TZ BUY 2 has formed. Has the same independent
   SL/recovery cycle as every other "2" (no escalation of its own). UNLIKE
   BAR 2/REAR 2/REAR RE-ENTER 2, TZ BUY's own top-level SL is never a dead
-  end regardless of whether TZ BUY 2 ever formed -- it always permits a
-  NEW TZ BUY retry (the base engine's existing system-wide safety valve);
-  TZ BUY 2's only effect at that transition is which reference the retry
-  must clear: TZ BUY 2's own (frozen) reference if it existed, else the old
-  buy's own peak exactly as the un-extended base engine already did.
+  end regardless of whether TZ BUY 2 ever formed -- but UNLIKE the
+  un-extended base engine's "NEW TZ BUY" retry (a brand-new Buy object,
+  distinct label), TZ BUY reactivates IN PLACE -- same object, same "TZ
+  BUY" event text, no "NEW TZ BUY" distinction at all -- retrying above
+  max(TZ BUY's own frozen reference, TZ BUY 2's own reference if it
+  existed). TZ BUY 2 forming (or reactivating) IS its own leadership-
+  contest milestone -- unlike BAR 2/REAR 2/REAR RE-ENTER 2, none of which
+  are. TZ BUY 2's own SL never opens spawn eligibility for a fresh sibling
+  TZ GREEN(n+1) -- only TZ BUY's own top-level SL does. TZ BUY 2's own HH
+  display is muted once some deeper tier's reference (any BAR/BAR 2, or
+  REAR/REAR 2/REAR RE-ENTER/REAR RE-ENTER 2) actually reaches or exceeds
+  it -- a comparison, not a mere existence check, since TZ BUY 2 isn't
+  guaranteed lower than what eventually forms below it.
 - BAR 2 forms off its own BAR lineage's reference high, mirroring TZ
   GREEN 2's shape (Low >= PrevLow, High > ref by >= 0.20, Close >= ref) --
   only while the lineage itself is still pre-SL.
@@ -229,18 +237,25 @@ class RearReenter:
 
 @dataclass
 class Buy:
-    kind: str
     ref_high: float
     ref_low: float
     active: bool = True
     red1_ever: bool = False
     ref_high_at_red1: float = 0.0
     red1: Optional[Red1] = None
-    buy2: Optional[Bar2] = None  # TZ BUY 2: the confirmation gate, one tier
-    # above BAR 2 -- same shape, same independent SL/recovery, gates
-    # RED1/RED2 attaching to TZ BUY itself. Does NOT persist through a
-    # NEW TZ BUY retry (mirrors BAR 2 not persisting through BAR
-    # reactivation) -- a fresh NEW TZ BUY needs its own new TZ BUY 2.
+    tz_buy2: Optional[Bar2] = None  # TZ BUY 2: the confirmation gate, one
+    # tier above BAR 2 -- same shape, same independent SL/recovery, gates
+    # RED1/RED2 attaching to TZ BUY itself. Does NOT persist through TZ
+    # BUY's own reactivation (mirrors BAR 2 not persisting through BAR
+    # reactivation) -- a fresh reactivation needs its own new TZ BUY 2.
+    tz_buy2_hh_muted: bool = False  # TZ BUY 2's own HH keeps showing only
+    # until some deeper tier's own reference (any BAR/BAR 2, or REAR/REAR 2/
+    # REAR RE-ENTER/REAR RE-ENTER 2, once they exist) actually reaches or
+    # exceeds it -- a comparison, not a mere existence check (TZ BUY 2 isn't
+    # guaranteed lower than what forms below it, since it may have been
+    # climbing long before any of that ever formed). Permanent and one-
+    # directional once tripped; TZ BUY 2 itself keeps tracking internally
+    # regardless, only its own HH display stops.
     bar_lineages: list = field(default_factory=list)  # ordered oldest-first; see BarLineage
     bar_sub_counter: int = 0   # for allocating "A.1", "A.2", ... sub-labels
     bar_pending: bool = False  # RED2 fired; awaiting BAR's own entry-shape confirmation
@@ -265,11 +280,14 @@ class ParentCycle:
     buy: Optional[Buy] = None
 
 
-MILESTONE_KEYS = ("TZ BUY(", "NEW TZ BUY(", "BAR(", "REAR(", "REAR RE-ENTER(")
+# TZ BUY 2 variant: "TZ BUY 2(" is explicitly its own milestone -- unlike
+# BAR 2/REAR 2/REAR RE-ENTER 2 (none of which trigger the leadership
+# contest), TZ BUY 2 forming (or reactivating -- same event text) does.
+MILESTONE_KEYS = ("TZ BUY(", "TZ BUY 2(", "BAR(", "REAR(", "REAR RE-ENTER(")
 
 SL_LL_KEYS = (
     "TZ GREEN SL(", "TZ GREEN LL(",
-    "TZ BUY SL(", "TZ BUY LL(", "NEW TZ BUY SL(", "NEW TZ BUY LL(",
+    "TZ BUY SL(", "TZ BUY LL(",
     "BAR LL(", "BAR SL(", "BAR SL LL(", "BAR SL2(",
     "REAR LL(", "REAR SL(",
     "REAR RE-ENTER LL(", "REAR RE-ENTER SL(",
@@ -391,7 +409,12 @@ class TZEngine:
 
             for e in all_events:
                 if is_milestone(e):
-                    is_fresh_buy = e.startswith("TZ BUY(") or e.startswith("NEW TZ BUY(")
+                    # TZ BUY 2 variant: "TZ BUY(" reactivating in place is
+                    # still the same fresh-milestone text as first formation
+                    # (no more "NEW TZ BUY" distinction). "TZ BUY 2(" does
+                    # NOT match this prefix (space before the digit), so it
+                    # is a *continuation* milestone -- the exemption applies.
+                    is_fresh_buy = e.startswith("TZ BUY(")
                     milestone_achievers.append((pc, is_fresh_buy))
 
         active_branches = [pc for pc in self.branches.values() if pc.active]
@@ -506,26 +529,17 @@ class TZEngine:
                 pc.ref_high_at_red = pc.ref_high
                 ev.append(f"RED({branch_label(pc.id)})")
 
-        old_buy_unresolved = (pc.buy is not None and not pc.buy.active and
-                               (bool(pc.buy.bar_lineages) or
-                                pc.buy.rear is not None or pc.buy.rear_reenter is not None))
-        if pc.red_ever and (pc.buy is None or not pc.buy.active) and not old_buy_unresolved and not any_live_buy:
-            # TZ BUY 2 variant: a retry's threshold is "whichever occurred
-            # last" one tier up -- TZ BUY 2's own (frozen) reference if it
-            # ever formed for the dead buy, else the dead buy's own peak
-            # exactly as the un-extended base engine already used ("TZ BUY
-            # (NEW ABOVE THE TZ BUY 2 REFERENCE HIGH)" -- explicit user rule).
-            if pc.buy is not None and pc.buy.buy2 is not None:
-                ref_high = pc.buy.buy2.ref_high
-            elif pc.buy is not None:
-                ref_high = pc.buy.ref_high
-            else:
-                ref_high = max(pc.ref_high, pc.ref_high_at_red)
+        # TZ BUY 2 variant: this only ever handles the very FIRST TZ BUY this
+        # branch ever forms. Once pc.buy exists, every subsequent
+        # reactivation (after TZ BUY's own SL) happens IN PLACE inside
+        # _eval_buy -- there is no "create a brand-new Buy object" path and
+        # no "NEW TZ BUY" label; reactivation always reuses the SAME object
+        # and the SAME "TZ BUY" event text (explicit user correction).
+        if pc.red_ever and pc.buy is None and not any_live_buy:
+            ref_high = max(pc.ref_high, pc.ref_high_at_red)
             if cur.l >= prev.l and cur.h > ref_high and (cur.h - ref_high) >= THRESH - EPS and cur.c >= ref_high:
-                kind = 'TZ_BUY' if pc.buy is None else 'NEW_TZ_BUY'
-                pc.buy = Buy(kind=kind, ref_high=cur.h, ref_low=cur.l)
-                label = "TZ BUY" if kind == 'TZ_BUY' else "NEW TZ BUY"
-                ev.append(f"{label}({branch_label(pc.id)})")
+                pc.buy = Buy(ref_high=cur.h, ref_low=cur.l)
+                ev.append(f"TZ BUY({branch_label(pc.id)})")
 
         if pc.buy is not None:
             ev += self._eval_buy(pc, pc.buy, prev, cur)
@@ -535,18 +549,21 @@ class TZEngine:
     # -----------------------------------------------------------------
     def _eval_buy(self, pc, buy: Buy, prev: Day, cur: Day):
         ev = []
-        label = "TZ BUY" if buy.kind == 'TZ_BUY' else "NEW TZ BUY"
-        sl_label = "TZ BUY SL" if buy.kind == 'TZ_BUY' else "NEW TZ BUY SL"
+        label = "TZ BUY"
+        sl_label = "TZ BUY SL"
 
         has_deeper_active = (bool(buy.bar_lineages) or buy.bar_pending or
                               buy.rear is not None or buy.rear_reenter is not None)
         no_bar_yet = not has_deeper_active
         red1_preexisting_at_buy_level = buy.active and no_bar_yet and buy.red1 is not None and buy.red1.active
-        # TZ BUY 2 variant: snapshot BEFORE today's own HH update below can
-        # mutate it -- same ordering-bug class as every other "2" tier's
-        # pre-today snapshot in this file (see the block just below).
+        # TZ BUY 2 variant: snapshots BEFORE today's own tracking below (or
+        # _eval_tzbuy2's own forever-climbing branch, called later this same
+        # candle) can mutate them -- same ordering-bug class as every other
+        # "2" tier's pre-today snapshot in this file.
         pre_today_buy_ref = buy.ref_high
+        pre_today_tzbuy2_ref = buy.tz_buy2.ref_high if buy.tz_buy2 is not None else None
 
+        reactivated_today = False
         if buy.active:
             if buy.bar_high_pool > buy.ref_high:
                 buy.ref_high = buy.bar_high_pool
@@ -571,12 +588,12 @@ class TZEngine:
                     ll = True
 
             # TZ BUY 2 variant: TZ BUY's own HH permanently suppressed from
-            # display once buy2 exists -- mirrors BAR HH's suppression once
-            # BAR 2 exists. Value keeps updating internally above regardless
-            # (needed so buy2's own HH tracking, and a later NEW TZ BUY
-            # retry with no buy2, both read a live reference). LL is never
-            # suppressed, same as every other tier.
-            if hh and buy.buy2 is None:
+            # display once TZ BUY 2 exists -- mirrors BAR HH's suppression
+            # once BAR 2 exists. Value keeps updating internally above
+            # regardless (needed so TZ BUY 2's own HH tracking, and a later
+            # reactivation with no TZ BUY 2 having ever formed, both read a
+            # live reference). LL is never suppressed, same as every tier.
+            if hh and buy.tz_buy2 is None:
                 ev.append(f"{label} HH({branch_label(pc.id)})")
             if ll:
                 ev.append(f"{label} LL({branch_label(pc.id)})")
@@ -586,12 +603,49 @@ class TZEngine:
                 buy.active = False
                 buy.bar_pending = False
                 buy.red1 = None
+        else:
+            # TZ BUY 2 variant: TZ BUY's own SL has no escalation (no "TZ
+            # BUY SL2") and never leads to REAR by itself (REAR stays
+            # reachable exclusively via BAR SL2) -- it just reactivates
+            # directly, always under the SAME "TZ BUY" label (no "NEW TZ
+            # BUY" distinction -- explicit user correction), retrying above
+            # whichever of {TZ BUY's own frozen reference, TZ BUY 2's own
+            # reference} is more mature: TZ BUY 2's, if it had already
+            # formed before this SL (strictly higher/later by construction);
+            # TZ BUY's own frozen reference otherwise (the dead-end case --
+            # TZ BUY 2 never formed, so RED1/RED2 never became reachable on
+            # this instance, but a plain retry is still always available).
+            # Does NOT touch bar_lineages/rear/rear_reenter/bar_pending --
+            # those keep racing independently regardless of top-level TZ
+            # BUY's own state, same principle as everywhere else in this
+            # file ("TZ BUY SL does not stop the BAR/REAR family below it").
+            ref = pre_today_buy_ref
+            if pre_today_tzbuy2_ref is not None:
+                ref = max(ref, pre_today_tzbuy2_ref)
+            if cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS and cur.c >= ref:
+                buy.active = True
+                buy.ref_high = cur.h
+                buy.ref_low = cur.l
+                buy.red1_ever = False
+                buy.red1 = None
+                # TZ BUY 2 does NOT persist through TZ BUY's own
+                # reactivation -- a fresh one has to form from scratch, same
+                # principle as BAR 2 not persisting through BAR reactivation.
+                buy.tz_buy2 = None
+                buy.tz_buy2_hh_muted = False
+                ev.append(f"{label}({branch_label(pc.id)})")
+                reactivated_today = True
 
         # TZ BUY 2 variant: forms off TZ BUY's own reference, tracks/
         # recovers independently for as long as buy.active stays True,
         # regardless of what's happening deeper (mirrors BAR 2 tracking
-        # regardless of RED2/bar_pending state one tier down).
-        ev += self._eval_buy2(pc, buy, prev, cur, pre_today_buy_ref)
+        # regardless of RED2/bar_pending state one tier down). Skipped on
+        # the exact day TZ BUY itself just reactivated -- pre_today_buy_ref
+        # is stale (frozen from before today's reactivation) and a fresh TZ
+        # BUY 2 needs tomorrow's candle at the earliest, same as every other
+        # freshly-reset "2" tier in this file.
+        if not reactivated_today:
+            ev += self._eval_tzbuy2(pc, buy, prev, cur, pre_today_buy_ref)
 
         # BAR 2 variant: pre-today snapshots, taken BEFORE any of today's
         # own tracking below can mutate the values they need to compare
@@ -727,7 +781,7 @@ class TZEngine:
             # TZ BUY 2 gate: mirrors BAR 2 gating RED1 on a BAR lineage --
             # a fresh RED1 cannot attach to TZ BUY until TZ BUY 2 has formed
             # ("NO RED1-RED2 UNTIL TZ BUY 2 is there" -- explicit user rule).
-            if buy.buy2 is not None and (
+            if buy.tz_buy2 is not None and (
                     cur.h <= prev.h and cur.l < prev.l and (prev.l - cur.l) >= THRESH - EPS and cur.c <= prev.l):
                 if not buy.red1_ever:
                     buy.ref_high_at_red1 = buy.ref_high
@@ -758,6 +812,33 @@ class TZEngine:
                 buy.red1 = None
                 buy.bar_pending = False
 
+        # TZ BUY 2 variant: TZ BUY 2's own HH keeps showing only until some
+        # deeper tier's own reference (any BAR/BAR 2, or REAR/REAR 2/REAR
+        # RE-ENTER/REAR RE-ENTER 2, once they exist) actually reaches or
+        # exceeds it -- unlike BAR's HH being suppressed by BAR 2's mere
+        # existence (guaranteed ordered by construction: BAR 2 always starts
+        # above BAR's own reference), TZ BUY 2 isn't guaranteed lower than
+        # BAR 2/REAR/REAR 2 since it may have been climbing long before any
+        # of those ever formed, so this needs an explicit reference
+        # comparison, not a mere existence check. Checked here, using the
+        # CURRENT (post-today) values, so the cutover is retroactive
+        # same-day. Permanent once tripped.
+        if buy.tz_buy2 is not None and not buy.tz_buy2_hh_muted:
+            deeper_refs = [lin.ref_high for lin in buy.bar_lineages]
+            deeper_refs += [lin.bar2.ref_high for lin in buy.bar_lineages if lin.bar2 is not None]
+            if buy.rear is not None:
+                deeper_refs.append(buy.rear.ref_high)
+                if buy.rear.rear2 is not None:
+                    deeper_refs.append(buy.rear.rear2.ref_high)
+            if buy.rear_reenter is not None:
+                deeper_refs.append(buy.rear_reenter.ref_high)
+                if buy.rear_reenter.rre2 is not None:
+                    deeper_refs.append(buy.rear_reenter.rre2.ref_high)
+            if deeper_refs and max(deeper_refs) >= buy.tz_buy2.ref_high:
+                buy.tz_buy2_hh_muted = True
+        if buy.tz_buy2_hh_muted:
+            ev = [e for e in ev if not e.startswith("TZ BUY 2 HH(")]
+
         # BAR 2 variant retroactive same-day suppression pass -- both parts
         # confirmed necessary because HH/LL/SL-tier functions above run
         # BEFORE the checks that would otherwise need to suppress them:
@@ -769,7 +850,7 @@ class TZEngine:
         sl_labels = set()
         for e in ev:
             if (e.startswith("BAR SL(") or e.startswith("REAR SL(") or e.startswith("REAR RE-ENTER SL(") or
-                    e.startswith("TZ BUY SL(") or e.startswith("NEW TZ BUY SL(")):
+                    e.startswith("TZ BUY SL(")):
                 sl_labels.add(e[e.index("(") + 1:-1])
         if sl_labels:
             ev = [e for e in ev if not (
@@ -788,19 +869,18 @@ class TZEngine:
         # any later day (26/04, 07/06, 21/06 confirmed: "BAR HH(label) +
         # BAR 2(label)" together on BAR 2's own formation day is wrong).
         two_labels = {
-            "BAR HH(": set(), "REAR HH(": set(), "REAR RE-ENTER HH(": set(),
-            "TZ BUY HH(": set(), "NEW TZ BUY HH(": set(),
+            "BAR HH(": set(), "REAR HH(": set(), "REAR RE-ENTER HH(": set(), "TZ BUY HH(": set(),
         }
         for e in ev:
             for prefix, underlying in (
                 ("BAR 2(", "BAR HH("), ("BAR 2 ", "BAR HH("),
                 ("REAR RE-ENTER 2(", "REAR RE-ENTER HH("), ("REAR RE-ENTER 2 ", "REAR RE-ENTER HH("),
                 ("REAR 2(", "REAR HH("), ("REAR 2 ", "REAR HH("),
-                ("TZ BUY 2(", label + " HH("), ("TZ BUY 2 ", label + " HH("),
+                ("TZ BUY 2(", "TZ BUY HH("), ("TZ BUY 2 ", "TZ BUY HH("),
             ):
                 if e.startswith(prefix):
-                    label = e[e.index("(") + 1:-1]
-                    two_labels[underlying].add(label)
+                    branch_lbl = e[e.index("(") + 1:-1]
+                    two_labels[underlying].add(branch_lbl)
         if any(two_labels.values()):
             ev = [e for e in ev if not any(
                 e.startswith(underlying) and e[len(underlying):-1] in labels
@@ -946,28 +1026,28 @@ class TZEngine:
         return ev
 
     # ------------------- TZ BUY 2 / BAR 2 / REAR 2 / REAR RE-ENTER 2 --------
-    def _eval_buy2(self, pc, buy: Buy, prev: Day, cur: Day, pre_today_buy_ref=None):
+    def _eval_tzbuy2(self, pc, buy: Buy, prev: Day, cur: Day, pre_today_buy_ref=None):
         """Mirrors _eval_bar2 one tier up: forms off TZ BUY's own reference
         high, only while TZ BUY itself is pre-SL. Gates RED1/RED2 on TZ BUY.
         Has its own independent SL/recovery cycle -- no escalation. UNLIKE
         BAR 2 (which gates whether BAR SL can lead anywhere at all), TZ
-        BUY's own top-level SL is never a dead end regardless of buy2 --
-        see the NEW TZ BUY formation check in _eval_parent, which reads
-        buy2's reference when it exists instead of buy's own peak."""
+        BUY's own top-level SL is never a dead end regardless of TZ BUY 2 --
+        see TZ BUY's own reactivation check in _eval_buy, which reads TZ
+        BUY 2's reference when it exists instead of just TZ BUY's own peak."""
         ev = []
-        if buy.buy2 is None:
+        if buy.tz_buy2 is None:
             if buy.active:
                 ref = pre_today_buy_ref if pre_today_buy_ref is not None else buy.ref_high
                 if (cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS and cur.c >= ref):
-                    buy.buy2 = Bar2(ref_high=cur.h, ref_low=cur.l)
+                    buy.tz_buy2 = Bar2(ref_high=cur.h, ref_low=cur.l)
                     ev.append(f"TZ BUY 2({branch_label(pc.id)})")
             return ev
         if not buy.active:
-            if cur.h > buy.buy2.ref_high and (cur.h - buy.buy2.ref_high) >= ANY:
-                buy.buy2.ref_high = cur.h
+            if cur.h > buy.tz_buy2.ref_high and (cur.h - buy.tz_buy2.ref_high) >= ANY:
+                buy.tz_buy2.ref_high = cur.h
                 ev.append(f"INVALID TZ BUY 2 HH({branch_label(pc.id)})")
             return ev
-        b2 = buy.buy2
+        b2 = buy.tz_buy2
         if b2.sl_active:
             if (cur.l >= prev.l and cur.h > b2.ref_high and (cur.h - b2.ref_high) >= THRESH - EPS
                     and cur.c >= b2.ref_high):

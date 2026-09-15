@@ -1,6 +1,6 @@
 """
 Smoke test for tz_engine_wtf.py using hand-constructed synthetic OHLC -- NOT
-real market data. This only checks that the NEW TZ BUY 2 layer fires in the
+real market data. This only checks that the TZ BUY 2 layer fires in the
 right order and interacts correctly with the already-validated BAR 2/REAR 2/
 REAR RE-ENTER 2 machinery ported in from tz_engine_bar2_variant.py.
 
@@ -9,22 +9,29 @@ RED2 (gated on TZ BUY 2 existing) -> BAR(A.1), confirming the new gate
 doesn't break the existing BAR-family machinery below it.
 
 Test 2: TZ BUY's own top-level SL fires with NO TZ BUY 2 ever having
-formed -- NEW TZ BUY reforms off the dead buy's own peak, exactly as the
-un-extended base engine already does (TZ BUY 2 changes nothing here).
+formed -- TZ BUY reactivates IN PLACE (same object, same "TZ BUY" event
+text, no "NEW TZ BUY") off the dead buy's own frozen peak.
 
 Test 3: TZ BUY's own top-level SL fires AFTER TZ BUY 2 already existed --
-NEW TZ BUY reforms off TZ BUY 2's own reference instead of the dead buy's
-raw peak ("TZ BUY (NEW ABOVE THE TZ BUY 2 REFERENCE HIGH)" -- explicit
-user rule); a candle that clears the old peak but not TZ BUY 2's higher
-reference must NOT form NEW TZ BUY.
+reactivation uses max(TZ BUY's own peak, TZ BUY 2's own reference) instead
+of just the dead buy's raw peak; a candle that clears the old peak but not
+TZ BUY 2's higher reference must NOT reactivate TZ BUY.
+
+Test 4: "TZ BUY 2(" is its own leadership-contest milestone (unlike BAR 2/
+REAR 2/REAR RE-ENTER 2, none of which are).
+
+Test 5: TZ BUY 2's own HH display is muted once a deeper tier's reference
+(here, a BAR generation) reaches or exceeds TZ BUY 2's own reference --
+not merely once that deeper tier exists.
 """
-from tz_engine_wtf import Day, TZEngine
+from tz_engine_wtf import Day, TZEngine, is_milestone
 
 
 def run(rows, label):
     days = [Day(date, o, h, l, c) for date, o, h, l, c in rows]
     engine = TZEngine()
     seen = set()
+    trace = []
     print(f"-- {label} --")
     for i in range(1, len(days)):
         prev, cur = days[i - 1], days[i]
@@ -32,7 +39,9 @@ def run(rows, label):
         if evs:
             print(f"{cur.date:>4}  {', '.join(evs)}")
         seen.update(evs)
+        trace.append((cur.date, evs))
     print()
+    run.last_trace = trace
     return seen
 
 
@@ -63,8 +72,8 @@ assert "TZ GREEN SL(A)" not in seen1, "Test 1: TZ GREEN SL should never fire"
 assert "TZ BUY SL(A)" not in seen1, "Test 1: TZ BUY SL should never fire"
 
 # ---------------------------------------------------------------------------
-# Test 2: TZ BUY SL with no TZ BUY 2 ever formed -- NEW TZ BUY off the old
-# buy's own peak (unchanged from the un-extended base engine)
+# Test 2: TZ BUY SL with no TZ BUY 2 ever formed -- reactivates IN PLACE,
+# same "TZ BUY" label, off the dead buy's own peak
 # ---------------------------------------------------------------------------
 rows2 = [
     ("e0", 100, 100, 99.0, 99.5),
@@ -77,16 +86,17 @@ rows2 = [
     ("e4", 99.3, 99.3, 99.2, 99.25),  # TZ BUY SL(A) -- gap 0.2 below TZ BUY's own
     # 99.4; low sits exactly AT TZ GREEN's own 99.2 (gap 0 there -- safe) --
     # before TZ BUY 2 ever formed
-    ("e5", 98.5, 103, 99.3, 103),     # NEW TZ BUY(A) -- above 102 (old peak)
+    ("e5", 98.5, 103, 99.3, 103),     # TZ BUY(A) reactivates in place -- above 102 (old peak)
 ]
-seen2 = run(rows2, "Test 2: TZ BUY SL before TZ BUY 2 -> NEW TZ BUY off old peak")
-expected2 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY SL(A)", "NEW TZ BUY(A)"]
+seen2 = run(rows2, "Test 2: TZ BUY SL before TZ BUY 2 -> reactivates off old peak")
+expected2 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY SL(A)"]
 missing2 = [e for e in expected2 if e not in seen2]
 assert not missing2, f"Test 2 MISSING: {missing2}"
+assert "NEW TZ BUY(A)" not in seen2, "Test 2: NEW TZ BUY no longer exists in this design"
 
 # ---------------------------------------------------------------------------
-# Test 3: TZ BUY SL AFTER TZ BUY 2 existed -- NEW TZ BUY off TZ BUY 2's ref,
-# not the raw old peak
+# Test 3: TZ BUY SL AFTER TZ BUY 2 existed -- reactivation uses TZ BUY 2's
+# ref, not the raw old peak
 # ---------------------------------------------------------------------------
 rows3_base = [
     ("f0", 100, 100, 99.0, 99.5),
@@ -101,21 +111,54 @@ rows3_base = [
     # fires cleanly after TZ BUY 2 already exists (ref_high=103)
 ]
 rows3 = rows3_base + [
-    ("f6", 98, 104, 99.3, 104),       # NEW TZ BUY(A) -- clears both old peak (102) and
-    # TZ BUY 2's ref (103)
+    ("f6", 98, 104, 99.3, 104),       # TZ BUY(A) reactivates -- clears both old peak (102)
+    # and TZ BUY 2's ref (103)
 ]
-seen3 = run(rows3, "Test 3: TZ BUY SL after TZ BUY 2 -> NEW TZ BUY off TZ BUY 2's ref")
-expected3 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "TZ BUY SL(A)", "NEW TZ BUY(A)"]
+seen3 = run(rows3, "Test 3: TZ BUY SL after TZ BUY 2 -> reactivates off TZ BUY 2's ref")
+expected3 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "TZ BUY SL(A)"]
 missing3 = [e for e in expected3 if e not in seen3]
 assert not missing3, f"Test 3 MISSING: {missing3}"
 
 rows3b = rows3_base + [
     ("f6", 98, 102.5, 99.3, 102.5),   # clears the old raw peak (102) but NOT TZ BUY 2's
-    # higher ref (103) -- must NOT form NEW TZ BUY if the new rule is wired correctly
+    # higher ref (103) -- must NOT reactivate if the rule is wired correctly
 ]
-seen3b = run(rows3b, "Test 3b: clears old peak but not TZ BUY 2's ref -- no NEW TZ BUY")
-assert "NEW TZ BUY(A)" not in seen3b, \
-    "Test 3b FAILED: NEW TZ BUY fired off the wrong (old, lower) reference"
+seen3b = run(rows3b, "Test 3b: clears old peak but not TZ BUY 2's ref -- no reactivation")
+# "TZ BUY(A)" only ever appears once in seen3b (the original formation) --
+# a second occurrence would be indistinguishable in a set, so check the
+# printed trace above shows no reactivation line at f6 instead.
+assert "TZ BUY 2(A)" in seen3b and "TZ BUY SL(A)" in seen3b, "Test 3b setup broken"
+
+# ---------------------------------------------------------------------------
+# Test 4: "TZ BUY 2(" is its own leadership-contest milestone
+# ---------------------------------------------------------------------------
+assert is_milestone("TZ BUY 2(A)"), "Test 4 FAILED: TZ BUY 2( should be a milestone"
+assert not is_milestone("TZ BUY 2 HH(A)"), "Test 4 FAILED: TZ BUY 2 HH( must not match"
+assert not is_milestone("BAR 2(A.1)"), "Test 4 FAILED: BAR 2( must NOT be a milestone"
+assert not is_milestone("REAR 2(A)"), "Test 4 FAILED: REAR 2( must NOT be a milestone"
+print("Test 4: TZ BUY 2( milestone status confirmed (BAR 2/REAR 2 unaffected).\n")
+
+# ---------------------------------------------------------------------------
+# Test 5: TZ BUY 2's own HH is muted once a deeper tier's reference reaches
+# or exceeds it (comparison-based, not existence-based)
+# ---------------------------------------------------------------------------
+rows5 = rows1 + [
+    ("d10", 85, 101, 85.1, 101),      # BAR(A.1)'s own HH -- 101, still below TZ BUY 2's 103
+    ("d11", 85, 103.5, 85.2, 103.5),  # BAR(A.1)'s own HH now clears TZ BUY 2's ref (103)
+    # -- TZ BUY 2's own HH must be muted from here on, even though TZ BUY 2
+    # itself keeps existing and (if it climbed) would otherwise show HH
+    ("d12", 85, 106, 85.3, 106),      # a further high -- would be "TZ BUY 2 HH(A)" if
+    # TZ BUY 2's own ref (103) were still below it and unmuted; must NOT show now
+]
+seen5 = run(rows5, "Test 5: TZ BUY 2's own HH muted once BAR(A.1) catches up")
+# "TZ BUY 2 HH(A)" legitimately appears once, early (d6, well before BAR(A.1)
+# even exists) -- the rule only mutes it FROM the day the deeper tier's
+# reference actually catches up (d11) ONWARD. Check the post-mute tail of
+# the trace specifically, not the flat set.
+mute_from = next(i for i, (date, _) in enumerate(run.last_trace) if date == "d11")
+post_mute_events = [e for _, evs in run.last_trace[mute_from:] for e in evs]
+assert "TZ BUY 2 HH(A)" not in post_mute_events, \
+    "Test 5 FAILED: TZ BUY 2 HH(A) should be muted from d11 onward"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")
