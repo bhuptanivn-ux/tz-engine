@@ -1,57 +1,71 @@
 """
-TZ ENGINE -- New Theory variant, v3: TZ GREEN -> TZ BUY -> BAR (unlimited) ->
-REAR -> REAR RE-ENTER.
+TZ ENGINE -- New Theory variant, v4: TZ GREEN -> TZ BUY -> BAR (unlimited) ->
+REAR -> REAR RE-ENTER, with full multi-branch support.
 
 STATUS: provisional first-pass implementation. NOT yet verified against real
 OHLC data -- no dataset has been supplied for this theory. Every open
 question left unresolved has an explicit, documented default; see
-NEW_THEORY_RULEBOOK.md ("v3" section) for the reasoning behind each one.
+NEW_THEORY_RULEBOOK.md ("v4" section) for the reasoning behind each one.
 Re-check every one of these against real data before trusting this engine's
 output.
 
 Separate from, and independent of, tz_engine_v9.py / tz_engine_bar2_variant.py
 and the DTF/WTF variant on claude/rulebook-logic-interpretation-g3z130.
 
-v3 supersedes v2: TZ BUY / TZ BUY 2 are reinstated (v2 had removed them and
-had BAR form directly off TZ GREEN -- that change is dismissed). RED1/RED2
-attach directly to TZ GREEN (no "TZ GREEN 2"). The escalation:
+v4 supersedes v3's spawn model. v3 treated cycles as sequential/exclusive --
+a fresh sibling could only spawn once the whole prior lineage had decisively
+failed. That's wrong: the theory's own baseline definition of TZ GREEN
+formation says a new branch is eligible whenever an existing active branch
+"has had its RED fire but has no currently-live buy" -- which is true the
+INSTANT RED2 fires, long before TZ BUY ever forms. So multiple TZ GREEN
+lineages can be alive at once, exactly like the base 37-event engine, and
+v4 ports that engine's own multi-branch machinery wholesale:
+
+- Branch-spawn eligibility (base engine section 8): a fresh sibling may spawn
+  once the single newest ACTIVE branch (tip anchor) has had its own RED2
+  fire, isn't dormant, and its buy is nonexistent, top-level-dead (TZ BUY SL
+  before TZ BUY 2 ever formed), or has reached deep failure (any BAR SL2 /
+  REAR SL / REAR RE-ENTER SL, ever) and is not currently live right now.
+- Leadership contest (base engine section 7a): whenever ANY branch produces
+  a milestone (TZ BUY formation, a fresh BAR(n) generation, REAR, REAR
+  RE-ENTER), every OTHER branch is re-judged: older -> dormant; newer ->
+  terminated outright, UNLESS a *continuation* milestone (not a fresh TZ
+  BUY) meets a newer branch that already held an active buy before today
+  (checked via a pre-today snapshot -- a same-day tie goes to the older
+  branch). This single mechanism is what the user described as "the earlier
+  lineage's REAR wins the race, the new lineage is terminated" -- it isn't a
+  separate race system, it's this leadership contest.
+- Dormancy display rule: a dormant branch keeps computing everything
+  normally in the backend every candle, but only SHOWS milestone-formation
+  events and SL/LL-type (decisive breach) events -- HH-type and the whole
+  RED-family stay suppressed while dormant. Dormancy lifts system-wide the
+  instant no branch anywhere currently holds a live buy.
+
+The escalation within one lineage (unchanged from v3):
 
     TZ GREEN -> RED1 -> RED2 (vs TZ GREEN) ->
     TZ BUY (above TZ GREEN's own ref) -> TZ BUY 2 (above TZ BUY's own ref) ->
     RED1 -> RED2 (vs TZ BUY 2) ->
     BAR(1) (above TZ BUY 2's ref) -> BAR 2(1) -> RED1 -> RED2 ->
     BAR(2) -> BAR 2(2) -> ... (unlimited, while TZ BUY 2 stays active) ...
-    -> BAR SL -> BAR SL2 -----------\\
-                                      >--> RACE: REAR (above the current
-    TZ GREEN SL (after its own RED2) /       highest-tier reference reached
-                                              so far) vs. a fresh sibling TZ
-                                              GREEN reaching ITS OWN TZ BUY --
-                                              whichever is earlier wins; a
-                                              same-day tie favors the older
-                                              lineage's REAR.
-    -> REAR -> REAR 2 -> REAR SL -> RACE: REAR RE-ENTER (above REAR's own
-       reference) vs. a fresh sibling reaching its own TZ BUY -- same rule.
+    -> BAR SL -> BAR SL2 -- queues REAR's reference (whichever tier is most
+       advanced so far -- see _current_top_ref())
+    -> REAR -> REAR 2 -> REAR SL -- queues REAR RE-ENTER's reference (REAR's
+       own, unambiguously the most advanced tier once REAR exists)
     -> REAR RE-ENTER (terminal leaf: single-tier SL/recovery, no further tier)
 
-    TZ GREEN SL (before its own RED2 ever fired), or TZ BUY SL (before TZ BUY
-    2 ever formed): immediate fresh sibling, no REAR/RE-ENTER queued at all
-    (nothing established yet to recover from).
+    TZ GREEN SL before its own RED2, or TZ BUY SL before TZ BUY 2 ever
+    formed: no reference queued at all (nothing established yet to recover
+    from) -- this branch is simply done; a sibling was likely already
+    spawn-eligible well before this point anyway.
 
-"Whichever occurred last" (the reference REAR/REAR RE-ENTER queues) always
-reduces to "the current reference of the most advanced tier this lineage has
-reached", because every tier's own reference is, by construction, both
-numerically higher AND chronologically later than the tier before it -- see
-_current_top_ref().
-
-Every "2" tier (TZ BUY 2 / BAR 2) shares one shape:
-    forms while its parent is pre-SL: Low >= PrevLow, High > parent.ref_high
-    by >= THRESH, Close >= parent.ref_high.
-and one single-tier SL/recovery cycle (no escalation of its own):
-    SL: Low breaks its own ref_low by >= THRESH, Close doesn't reclaim.
-    Recovery (same label): High clears sl.ref_high by >= THRESH, Close holds.
+A queued REAR/REAR RE-ENTER reference only confirms via a real recovery
+breakout (Low >= PrevLow, High - ref >= THRESH, Close >= ref) on a later
+candle, exactly like every other tier's formation -- never instantly on the
+triggering candle itself.
 """
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 import csv
 import datetime
 
@@ -157,18 +171,17 @@ class Tier2SL:
 
 @dataclass
 class Tier2:
-    """TZ BUY 2 / BAR 2 -- identical shape and identical single-tier
-    SL/recovery cycle."""
+    """TZ BUY 2 / BAR 2 / REAR RE-ENTER -- identical shape and identical
+    single-tier SL/recovery cycle."""
     ref_high: float
     ref_low: float
     sl: Optional[Tier2SL] = None
-    red: Optional[RedTracker] = None
+    red: Optional[RedTracker] = None  # unused for REAR RE-ENTER (terminal leaf)
 
     @property
     def active(self) -> bool:
         """"BAR - BAR2 can occur if TZ BUY 2 is active": pre-SL, or has since
-        recovered. Only meaningful for TZ BUY 2 (gates new BAR generations);
-        BAR 2's own `.active` isn't consulted by anything."""
+        recovered. Only meaningful for TZ BUY 2 (gates new BAR generations)."""
         return self.sl is None
 
 
@@ -248,41 +261,39 @@ class Tier1SL:
 @dataclass
 class Cycle:
     """One TZ GREEN -> TZ BUY/TZ BUY2 -> BAR/BAR2 (unlimited) -> [REAR ->
-    REAR RE-ENTER] chain."""
+    REAR RE-ENTER] lineage. Multiple cycles can be alive at once (v4) --
+    see the leadership contest in Engine."""
     seq: int
     green_ref_high: float
     green_ref_low: float
     red: Optional[RedTracker] = None   # RED1/RED2 vs TZ GREEN directly
-    dead: bool = False                 # TZ GREEN's own SL fired
+    dead: bool = False                 # branch-level: TZ GREEN's own SL fired
+    # (permanent, cascades -- kills everything for this branch, forever)
     red2_ever: bool = False            # TZ GREEN's own RED2 has fired at least once
 
     buy_ref_high: float = 0.0
     buy_ref_low: float = 0.0
     buy_active: bool = False
-    buy_sl_fired: bool = False
+    buy_sl_fired: bool = False         # buy-level only -- does NOT set `dead`
+    # (mirrors the base engine: buy.active and pc.active are separate flags)
     buy2: Optional[Tier2] = None       # RED1/RED2 vs TZ BUY 2 lives on buy2.red
 
     bar_gens: List[BarGen] = field(default_factory=list)
     bar_sub_counter: int = 0
 
-    terminated: bool = False  # this lineage's forward escalation is over --
-    # TZ GREEN SL (after its own RED2), TZ BUY SL (before TZ BUY 2 ever
-    # formed), or any BAR generation reaching SL2. Opens spawn eligibility
-    # for a fresh sibling immediately.
-
     rear_ref_high: float = 0.0
     rear_ref_low: float = 0.0
     rear_sl: Optional[Tier1SL] = None  # one-way: REAR does not self-recover,
-    # it routes into the REAR RE-ENTER race instead (mirrors the base engine:
-    # recovery from REAR's own SL is a new milestone name, not a same-label
-    # reactivation).
+    # it routes into the REAR RE-ENTER race instead.
     rear2: Optional[Tier2] = None
+    rear_reenter: Optional[Tier2] = None  # terminal leaf, reuses Tier2 wholesale
 
-    # REAR RE-ENTER: terminal leaf, single-tier SL/recovery under the same
-    # label (mirrors the base engine exactly) -- reuses Tier2's HH/LL/SL/
-    # recovery machinery wholesale; its `.red` field is simply never used
-    # (base engine: "No RED1 possible here").
-    rear_reenter: Optional[Tier2] = None
+    pending_ref: Optional[float] = None   # queued REAR / REAR RE-ENTER reference
+    pending_kind: Optional[str] = None    # "REAR" | "REAR_REENTER"
+
+    ever_deep_failure: bool = False  # any BAR SL2 / REAR SL / REAR RE-ENTER
+    # SL, ever -- historical, never un-set (base engine section 8).
+    dormant: bool = False  # branch-level leadership-contest dormancy (7a)
 
 
 def _current_top_ref(c: Cycle) -> float:
@@ -304,26 +315,55 @@ def _current_top_ref(c: Cycle) -> float:
     return c.green_ref_high
 
 
+# Milestones that trigger the leadership contest (base engine section 7a),
+# adapted to this theory's tiers. "TZ_BUY" is a *fresh* milestone (no
+# continuation exemption for a newer sibling); the rest are *continuation*
+# milestones (a newer sibling is exempted if it already held an active buy
+# before today).
+MILESTONE_FRESH = "TZ_BUY"
+MILESTONE_CONTINUATION = "CONTINUATION"
+
+
 class Engine:
     def __init__(self):
         self.cycles: List[Cycle] = []
         self.next_seq = 1
-        # Single-slot "race" state (newest terminating event always wins):
-        # a reference queued by TZ GREEN SL / TZ BUY SL / BAR SL2 (kind
-        # "REAR") or by REAR's own SL (kind "REAR_REENTER"), racing against
-        # whichever fresh sibling cycle reaches its own TZ BUY first.
-        self.pending_ref: Optional[float] = None
-        self.pending_owner: Optional[Cycle] = None
-        self.pending_kind: Optional[str] = None  # "REAR" | "REAR_REENTER"
 
-    # -- spawn eligibility -------------------------------------------------
+    # -- system-wide buy-liveness (base engine section 9, adapted) ----------
+    def _buy_currently_live(self, c: Cycle) -> bool:
+        if not c.buy_active and not c.buy_sl_fired:
+            return False  # buy nonexistent
+        if c.buy_sl_fired:
+            return False  # top-level dead (buy died before TZ BUY 2 ever formed)
+        if c.rear_reenter is not None:
+            return c.rear_reenter.sl is None
+        if c.rear_ref_high:
+            return c.rear_sl is None
+        if c.bar_gens:
+            return any(g.sl is None or not g.sl.sl2 for g in c.bar_gens)
+        if c.buy2 is not None:
+            return c.buy2.sl is None
+        return True  # TZ BUY formed, nothing beyond has failed yet
+
+    # -- spawn eligibility (base engine section 8) ---------------------------
+    def _tip_anchor(self) -> Optional[Cycle]:
+        for c in reversed(self.cycles):
+            if not c.dead:
+                return c
+        return None
+
     def _spawn_eligible(self) -> bool:
-        """A fresh sibling TZ GREEN may spawn once the most recent cycle's
-        own forward escalation is over (`terminated`). Naturally covers
-        recursive re-attempts: a sibling that itself dies early immediately
-        becomes eligible-anchor for yet another attempt, while any pending
-        race keeps running independently in the background."""
-        return not self.cycles or self.cycles[-1].terminated
+        anchor = self._tip_anchor()
+        if anchor is None:
+            return True  # no branches yet, or every branch is dead
+        if not anchor.red2_ever:
+            return False
+        if anchor.dormant:
+            return False
+        buy_nonexistent = not anchor.buy_active and not anchor.buy_sl_fired
+        buy_top_level_dead = anchor.buy_sl_fired
+        deep_and_not_live = anchor.ever_deep_failure and not self._buy_currently_live(anchor)
+        return buy_nonexistent or buy_top_level_dead or deep_and_not_live
 
     def _try_spawn(self, prev: Day, cur: Day):
         if not self._spawn_eligible():
@@ -335,57 +375,47 @@ class Engine:
             return f"TZ GREEN({branch_label(c.seq)})"
         return None
 
-    # -- the REAR/REAR-RE-ENTER-vs-fresh-cycle race -------------------------
-    def _queue_pending(self, owner: Cycle, ref: float, kind: str):
-        """Single slot: the newest terminating event always supersedes
-        whatever was previously queued."""
-        self.pending_ref = ref
-        self.pending_owner = owner
-        self.pending_kind = kind
-
-    def _eval_pending(self, prev: Day, cur: Day, events: list):
-        """Checked once per day, ahead of per-cycle evaluation, so a same-day
-        tie against a sibling reaching TZ BUY resolves in the older
-        lineage's favor (per the user's explicit tie rule)."""
-        if self.pending_ref is None:
+    # -- queued REAR / REAR RE-ENTER confirmation (per cycle) ----------------
+    def _eval_pending(self, c: Cycle, prev: Day, cur: Day, events: list):
+        if c.pending_ref is None:
             return
-        ref = self.pending_ref
-        owner = self.pending_owner
-        label = branch_label(owner.seq)
+        ref = c.pending_ref
+        label = branch_label(c.seq)
         if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
-            if self.pending_kind == "REAR":
-                owner.rear_ref_high = cur.h
-                owner.rear_ref_low = cur.l
+            if c.pending_kind == "REAR":
+                c.rear_ref_high = cur.h
+                c.rear_ref_low = cur.l
                 events.append(f"REAR({label})")
             else:
-                owner.rear_reenter = Tier2(ref_high=cur.h, ref_low=cur.l)
+                c.rear_reenter = Tier2(ref_high=cur.h, ref_low=cur.l)
                 events.append(f"REAR RE-ENTER({label})")
-            self.pending_ref = None
-            self.pending_owner = None
-            self.pending_kind = None
+            c.pending_ref = None
+            c.pending_kind = None
         elif cur.h - ref >= ANY - EPS:
-            self.pending_ref = cur.h
+            c.pending_ref = cur.h
 
-    # -- per-cycle evaluation -----------------------------------------------
+    # -- per-cycle evaluation. Returns (raw_events, milestone_kinds). -------
     def _eval_cycle(self, c: Cycle, prev: Day, cur: Day):
         events = []
+        milestones = []
         label = branch_label(c.seq)
-        if c.terminated and not c.rear_ref_high:
-            return events  # fully resolved, lost its race, nothing further to show
 
-        if not c.dead and not c.buy_sl_fired:
-            # 1. TZ GREEN's own SL -- single-shot. Before its own RED2:
-            # immediate fresh sibling, no REAR queued. After: queue REAR
-            # above the current top reference (almost always still TZ
-            # GREEN's own, since TZ BUY/BAR haven't formed yet in that gap).
+        if c.dead and c.pending_ref is None and not c.rear_ref_high and c.rear_reenter is None:
+            return events, milestones  # nothing left to ever show for this branch
+
+        if not c.dead:
+            # 1. TZ GREEN's own SL -- checked every candle for the branch's
+            # entire life (base engine discipline), single-shot (no SL2 of
+            # its own). Before its own RED2: no reference queued. After:
+            # queue REAR above the current top reference.
             gap = c.green_ref_low - cur.l
             if cur.l <= c.green_ref_low and gap >= THRESH - EPS and cur.c <= c.green_ref_low:
                 c.dead = True
-                c.terminated = True
                 events.append(f"TZ GREEN SL({label})")
                 if c.red2_ever:
-                    self._queue_pending(c, _current_top_ref(c), "REAR")
-                return events
+                    c.pending_ref = _current_top_ref(c)
+                    c.pending_kind = "REAR"
+                return events, milestones
 
             green_ref_pre = c.green_ref_high  # snapshot before today's own HH
 
@@ -413,94 +443,97 @@ class Engine:
                     c.buy_ref_high = cur.h
                     c.buy_ref_low = cur.l
                     events.append(f"TZ BUY({label})")
+                    milestones.append(MILESTONE_FRESH)
 
-        # 5+6. TZ BUY's own tracking (SL only checked before TZ BUY 2 ever
-        # forms -- once TZ BUY 2 exists it takes over as the locus of
-        # control and TZ BUY's own top-level SL stops mattering, mirroring
-        # how the original theory's TZ BUY SL never cascaded into the BAR
-        # family below it -- ASSUMPTION, not explicitly stated for v3).
-        if c.buy_active and c.buy2 is None:
-            gap = c.buy_ref_low - cur.l
-            if cur.l <= c.buy_ref_low and gap >= THRESH - EPS and cur.c <= c.buy_ref_low:
-                c.buy_active = False
-                c.buy_sl_fired = True
-                c.terminated = True
-                events.append(f"TZ BUY SL({label})")
-                # Before TZ BUY 2 ever formed: no REAR queued (mirrors TZ
-                # GREEN's own before-RED2 case) -- this lineage is fully
-                # done, no further tracking below.
-                return events
+            # 5+6. TZ BUY's own tracking (SL only checked before TZ BUY 2
+            # ever forms -- once TZ BUY 2 exists it becomes the locus of
+            # control and TZ BUY's own top-level SL stops mattering,
+            # mirroring how the original theory's TZ BUY SL never cascaded
+            # into the BAR family below it -- does NOT set `dead`: the
+            # branch itself stays active, only the buy is permanently done).
+            if c.buy_active and c.buy2 is None:
+                gap = c.buy_ref_low - cur.l
+                if cur.l <= c.buy_ref_low and gap >= THRESH - EPS and cur.c <= c.buy_ref_low:
+                    c.buy_active = False
+                    c.buy_sl_fired = True
+                    events.append(f"TZ BUY SL({label})")
+                else:
+                    buy_ref_pre = c.buy_ref_high
+                    t2 = try_form_tier2(buy_ref_pre, prev, cur)
+                    if t2 is not None:
+                        c.buy2 = t2
+                        events.append(f"TZ BUY 2({label})")
+                    elif cur.h - buy_ref_pre >= ANY - EPS:
+                        c.buy_ref_high = cur.h
+                        events.append(f"TZ BUY HH({label})")
+                    if cur.l < c.buy_ref_low:
+                        c.buy_ref_low = cur.l
+                        events.append(f"TZ BUY LL({label})")
+            elif c.buy2 is not None:
+                buy2_ref_pre = c.buy2.ref_high
+                for t in eval_tier2_hh_ll(c.buy2, prev, cur):
+                    events.append(f"TZ BUY 2 {t}({label})")
+                for t in eval_tier2_sl_cycle(c.buy2, prev, cur):
+                    events.append(f"TZ BUY 2 {t}({label})")
+                if cur.l < c.buy_ref_low:
+                    c.buy_ref_low = cur.l
+                    events.append(f"TZ BUY LL({label})")
 
-            # TZ BUY 2 formation uses the PRE-today reference (avoids the
-            # same-day self-comparison bug: forming TZ BUY 2 the same day TZ
-            # BUY's own HH ratchets up to today's own High).
-            buy_ref_pre = c.buy_ref_high
-            t2 = try_form_tier2(buy_ref_pre, prev, cur)
-            if t2 is not None:
-                c.buy2 = t2
-                events.append(f"TZ BUY 2({label})")
-            elif cur.h - buy_ref_pre >= ANY - EPS:
-                c.buy_ref_high = cur.h
-                events.append(f"TZ BUY HH({label})")
-            if cur.l < c.buy_ref_low:
-                c.buy_ref_low = cur.l
-                events.append(f"TZ BUY LL({label})")
-        elif c.buy2 is not None:
-            # Snapshot before today's own HH update, for the first-BAR
-            # formation check below (avoids the self-comparison bug).
-            buy2_ref_pre = c.buy2.ref_high
-            for tag in eval_tier2_hh_ll(c.buy2, prev, cur):
-                events.append(f"TZ BUY 2 {tag}({label})")
-            for tag in eval_tier2_sl_cycle(c.buy2, prev, cur):
-                events.append(f"TZ BUY 2 {tag}({label})")
-            if cur.l < c.buy_ref_low:
-                c.buy_ref_low = cur.l
-                events.append(f"TZ BUY LL({label})")
+                # 7. RED1/RED2 against TZ BUY 2, gating the first BAR generation.
+                if not c.bar_gens:
+                    tag = eval_red_tracker(c.buy2, c.buy2.sl is not None, prev, cur)
+                    if tag:
+                        events.append(f"{tag.replace('_', ' ')}({label})")
 
-            # 7. RED1/RED2 against TZ BUY 2, gating the first BAR generation.
-            if not c.bar_gens:
-                tag = eval_red_tracker(c.buy2, c.buy2.sl is not None, prev, cur)
-                if tag:
-                    events.append(f"{tag.replace('_', ' ')}({label})")
+                # 8. First BAR generation -- "as the original theory", only
+                # while TZ BUY 2 is active.
+                if (
+                    not c.bar_gens and c.buy2.active
+                    and c.buy2.red is not None and c.buy2.red.red2_fired
+                ):
+                    ref = buy2_ref_pre
+                    if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
+                        c.bar_sub_counter += 1
+                        gen = BarGen(label=f"{label}.{c.bar_sub_counter}", ref_high=cur.h, ref_low=cur.l)
+                        c.bar_gens.append(gen)
+                        events.append(f"BAR({gen.label})")
+                        milestones.append(MILESTONE_CONTINUATION)
 
-            # 8. First BAR generation -- above TZ BUY 2's own reference,
-            # once TZ BUY 2's own RED2 has fired ("as the original theory"),
-            # only while TZ BUY 2 is active ("BAR - BAR2 can occur if TZ BUY
-            # 2 is active" -- also gates every later generation, in
-            # _eval_bar_chain).
-            if (
-                not c.bar_gens and c.buy2.active
-                and c.buy2.red is not None and c.buy2.red.red2_fired
-            ):
-                ref = buy2_ref_pre
-                if cur.l >= prev.l and cur.h - ref >= THRESH - EPS and cur.c >= ref:
-                    c.bar_sub_counter += 1
-                    gen = BarGen(label=f"{label}.{c.bar_sub_counter}", ref_high=cur.h, ref_low=cur.l)
-                    c.bar_gens.append(gen)
-                    events.append(f"BAR({gen.label})")
+            # 9. Unlimited BAR/BAR2/RED1/RED2 loop.
+            if self._eval_bar_chain(c, prev, cur, events):
+                milestones.append(MILESTONE_CONTINUATION)
 
-        # 9. Unlimited BAR/BAR2/RED1/RED2 loop; BAR SL2 queues REAR.
-        if not c.terminated:
-            self._eval_bar_chain(c, prev, cur, events)
+        # 10. Queued REAR / REAR RE-ENTER confirmation -- checked regardless
+        # of `dead` (a branch can be TZ-GREEN-SL'd yet still racing toward
+        # REAR on a reference queued at the moment it died).
+        pre_pending_rear = bool(c.rear_ref_high)
+        pre_pending_reenter = c.rear_reenter is not None
+        self._eval_pending(c, prev, cur, events)
+        if not pre_pending_rear and c.rear_ref_high:
+            milestones.append(MILESTONE_CONTINUATION)
+        if not pre_pending_reenter and c.rear_reenter is not None:
+            milestones.append(MILESTONE_CONTINUATION)
 
-        # 10. REAR's own HH/LL/SL/2, once REAR has confirmed and hasn't
-        # already been superseded by a confirmed REAR RE-ENTER.
+        # 11. REAR's own HH/LL/SL/2, once confirmed and not yet superseded.
         if c.rear_ref_high and c.rear_reenter is None:
             self._eval_rear_tracking(c, prev, cur, events)
 
-        # 11. REAR RE-ENTER's own HH/LL/SL/recovery, once it has confirmed.
+        # 12. REAR RE-ENTER's own HH/LL/SL/recovery, once confirmed.
         if c.rear_reenter is not None:
-            for tag in eval_tier2_hh_ll(c.rear_reenter, prev, cur):
-                events.append(f"REAR RE-ENTER {tag}({label})")
-            for tag in eval_tier2_sl_cycle(c.rear_reenter, prev, cur):
-                events.append(f"REAR RE-ENTER {tag}({label})")
+            for t in eval_tier2_hh_ll(c.rear_reenter, prev, cur):
+                events.append(f"REAR RE-ENTER {t}({label})")
+            for t in eval_tier2_sl_cycle(c.rear_reenter, prev, cur):
+                events.append(f"REAR RE-ENTER {t}({label})")
 
-        return events
+        return events, milestones
 
-    def _eval_bar_chain(self, c: Cycle, prev: Day, cur: Day, events: list):
+    def _eval_bar_chain(self, c: Cycle, prev: Day, cur: Day, events: list) -> bool:
+        """Returns True if a fresh BAR(n) generation formed this candle
+        (milestone), other than the very first one (already reported by the
+        caller)."""
         active_gens = [g for g in c.bar_gens if not g.superseded]
         if not active_gens:
-            return
+            return False
         gen = active_gens[-1]
 
         if gen.bar2 is not None:
@@ -509,21 +542,22 @@ class Engine:
                 if cur.l <= gen.ref_low and gap >= THRESH - EPS and cur.c <= gen.ref_low:
                     gen.sl = BarSL(ref_high=gen.ref_high, ref_low=cur.l)
                     events.append(f"BAR SL({gen.label})")
-                    return
+                    return False
             elif not gen.sl.sl2:
                 gap2 = gen.sl.ref_low - cur.l
                 if cur.l <= gen.sl.ref_low and gap2 >= THRESH - EPS and cur.c <= gen.sl.ref_low:
                     gen.sl.sl2 = True
-                    c.terminated = True
+                    c.ever_deep_failure = True
                     events.append(f"BAR SL2({gen.label})")
-                    self._queue_pending(c, _current_top_ref(c), "REAR")
-                    return
+                    c.pending_ref = _current_top_ref(c)
+                    c.pending_kind = "REAR"
+                    return False
                 if cur.l < gen.sl.ref_low:
                     gen.sl.ref_low = cur.l
                     events.append(f"BAR SL LL({gen.label})")
 
         if gen.sl is not None:
-            return
+            return False
 
         pre_bar_ref_high = gen.ref_high
         bar2_ref_pre = gen.bar2.ref_high if gen.bar2 is not None else None
@@ -536,10 +570,10 @@ class Engine:
                 gen.ref_high = cur.h
                 events.append(f"BAR HH({gen.label})")
         else:
-            for tag in eval_tier2_hh_ll(gen.bar2, prev, cur):
-                events.append(f"BAR 2 {tag}({gen.label})")
-            for tag in eval_tier2_sl_cycle(gen.bar2, prev, cur):
-                events.append(f"BAR 2 {tag}({gen.label})")
+            for t in eval_tier2_hh_ll(gen.bar2, prev, cur):
+                events.append(f"BAR 2 {t}({gen.label})")
+            for t in eval_tier2_sl_cycle(gen.bar2, prev, cur):
+                events.append(f"BAR 2 {t}({gen.label})")
         if cur.l < gen.ref_low:
             gen.ref_low = cur.l
             events.append(f"BAR LL({gen.label})")
@@ -549,8 +583,7 @@ class Engine:
             if tag:
                 events.append(f"{tag.replace('_', ' ')}({gen.label})")
 
-        # Next generation only while TZ BUY 2 is still active ("BAR - BAR 2
-        # can occur if TZ BUY 2 is active").
+        # Next generation only while TZ BUY 2 is still active.
         if (
             c.buy2 is not None and c.buy2.active
             and gen.bar2 is not None and gen.bar2.red is not None
@@ -566,6 +599,8 @@ class Engine:
                 )
                 c.bar_gens.append(new_gen)
                 events.append(f"BAR({new_gen.label})")
+                return True
+        return False
 
     def _eval_rear_tracking(self, c: Cycle, prev: Day, cur: Day, events: list):
         label = branch_label(c.seq)
@@ -573,8 +608,10 @@ class Engine:
             gap = c.rear_ref_low - cur.l
             if cur.l <= c.rear_ref_low and gap >= THRESH - EPS and cur.c <= c.rear_ref_low:
                 c.rear_sl = Tier1SL(ref_low=cur.l)
+                c.ever_deep_failure = True
                 events.append(f"REAR SL({label})")
-                self._queue_pending(c, c.rear_ref_high, "REAR_REENTER")
+                c.pending_ref = c.rear_ref_high
+                c.pending_kind = "REAR_REENTER"
                 return
             pre_rear_ref_high = c.rear_ref_high
             if c.rear2 is None:
@@ -586,33 +623,22 @@ class Engine:
                     c.rear_ref_high = cur.h
                     events.append(f"REAR HH({label})")
             else:
-                for tag in eval_tier2_hh_ll(c.rear2, prev, cur):
-                    events.append(f"REAR 2 {tag}({label})")
-                for tag in eval_tier2_sl_cycle(c.rear2, prev, cur):
-                    events.append(f"REAR 2 {tag}({label})")
+                for t in eval_tier2_hh_ll(c.rear2, prev, cur):
+                    events.append(f"REAR 2 {t}({label})")
+                for t in eval_tier2_sl_cycle(c.rear2, prev, cur):
+                    events.append(f"REAR 2 {t}({label})")
             if cur.l < c.rear_ref_low:
                 c.rear_ref_low = cur.l
                 events.append(f"REAR LL({label})")
 
-    def _eval_rear_reenter_tracking(self, c: Cycle, prev: Day, cur: Day, events: list):
-        """Terminal leaf: single-tier SL/recovery, no further escalation."""
-        label = branch_label(c.seq)
-        if c.rear_reenter_sl is None:
-            gap = c.rear_reenter_ref_low - cur.l
-            if cur.l <= c.rear_reenter_ref_low and gap >= THRESH - EPS and cur.c <= c.rear_reenter_ref_low:
-                c.rear_reenter_sl = Tier1SL(ref_low=cur.l)
-                events.append(f"REAR RE-ENTER SL({label})")
-                return
-            if cur.h - c.rear_reenter_ref_high >= ANY - EPS:
-                c.rear_reenter_ref_high = cur.h
-                events.append(f"REAR RE-ENTER HH({label})")
-            if cur.l < c.rear_reenter_ref_low:
-                c.rear_reenter_ref_low = cur.l
-                events.append(f"REAR RE-ENTER LL({label})")
-        else:
-            if cur.h - c.rear_reenter_sl.ref_low >= THRESH - EPS and cur.c >= c.rear_reenter_ref_high:
-                pass  # recovery handled uniformly like other single-tier SLs below
-            gap = c.rear_reenter_ref_high - cur.l  # placeholder, refined below
+    # -- dormancy display filtering (base engine section 7a) ---------------
+    @staticmethod
+    def _is_suppressed_while_dormant(event: str) -> bool:
+        if " HH(" in event:
+            return True
+        if event.startswith(("RED1(", "RED2(", "RED1 HH(", "RED1 LL(", "INVALID RED1(")):
+            return True
+        return False
 
     def process(self, days: List[Day]):
         out = []
@@ -620,20 +646,52 @@ class Engine:
             prev, cur = days[i - 1], days[i]
             day_events = []
 
-            self._eval_pending(prev, cur, day_events)
+            # Pre-today snapshot for the leadership-contest exemption rule
+            # (checked before ANY of today's processing, per the base engine).
+            pre_today_buy_active: Dict[int, bool] = {c.seq: c.buy_active for c in self.cycles}
 
             spawn_ev = self._try_spawn(prev, cur)
             if spawn_ev:
                 day_events.append(spawn_ev)
+                pre_today_buy_active[self.cycles[-1].seq] = False
 
+            raw_events: Dict[int, list] = {}
+            milestone_kinds: Dict[int, list] = {}
             for c in list(self.cycles):
-                was_buy_active = c.buy_active
-                events = self._eval_cycle(c, prev, cur)
+                events, milestones = self._eval_cycle(c, prev, cur)
+                raw_events[c.seq] = events
+                if milestones:
+                    milestone_kinds[c.seq] = milestones
+
+            # System-wide dormancy lift: the instant no active branch holds
+            # a live buy, every branch's dormancy clears.
+            if not any(self._buy_currently_live(c) for c in self.cycles if not c.dead):
+                for c in self.cycles:
+                    c.dormant = False
+
+            # Leadership contests, oldest-first (a same-day tie goes to the
+            # older branch, per the base engine's own documented behavior).
+            for c in sorted((cc for cc in self.cycles if cc.seq in milestone_kinds), key=lambda cc: cc.seq):
+                if c.dead:
+                    continue  # already terminated by an earlier same-day contest
+                is_fresh_buy = MILESTONE_FRESH in milestone_kinds[c.seq]
+                for other in self.cycles:
+                    if other.seq == c.seq or other.dead:
+                        continue
+                    if other.seq < c.seq:
+                        other.dormant = True
+                    else:
+                        exempt = (not is_fresh_buy) and pre_today_buy_active.get(other.seq, False)
+                        if not exempt:
+                            other.dead = True
+                            raw_events[other.seq] = []  # collateral damage, same day
+                c.dormant = False  # today's leader
+
+            for c in self.cycles:
+                events = raw_events.get(c.seq, [])
+                if c.dormant:
+                    events = [e for e in events if not self._is_suppressed_while_dormant(e)]
                 day_events.extend(events)
-                if not was_buy_active and c.buy_active and self.pending_ref is not None:
-                    self.pending_ref = None
-                    self.pending_owner = None
-                    self.pending_kind = None
 
             out.append((cur.date, day_events))
         return out
