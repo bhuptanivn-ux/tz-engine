@@ -1,11 +1,12 @@
 """
-TZ ENGINE -- New Theory variant, v5: TZ GREEN -> TZ BUY -> BAR (unlimited) ->
-REAR -> REAR RE-ENTER, each with its own "2" tier, full multi-branch support.
+TZ ENGINE -- New Theory variant, v7: TZ GREEN -> TZ BUY -> BAR (unlimited) ->
+REAR -> REAR RE-ENTER (self-recovering), each with its own "2" tier, full
+multi-branch support.
 
 STATUS: provisional first-pass implementation. NOT yet verified against real
 OHLC data -- no dataset has been supplied for this theory. Every open
 question left unresolved has an explicit, documented default; see
-NEW_THEORY_RULEBOOK.md ("v5" section) for the reasoning behind each one.
+NEW_THEORY_RULEBOOK.md ("v7" section) for the reasoning behind each one.
 Re-check every one of these against real data before trusting this engine's
 output.
 
@@ -68,12 +69,23 @@ The full escalation within one lineage:
          - REAR's own SL (single-tier, one-way) -- directly queues REAR
            RE-ENTER's reference (whichever tier is most advanced at that
            moment).
-    -> REAR RE-ENTER -> REAR RE-ENTER 2 -- the SAME shape one level deeper:
+    -> REAR RE-ENTER -> REAR RE-ENTER 2 -- the SAME shape one level deeper,
+       plus REAR RE-ENTER's own self-recovery (v7):
          - its own RED1->RED2 -> another fresh BAR(1) cascade.
-         - REAR RE-ENTER's own SL (also single-tier) -- terminal: no named
-           structure follows, this lineage's escalation is simply over
-           (counted via `ever_deep_failure`); firing it also freezes REAR
-           RE-ENTER 2 (mirrors how BAR's own SL freezes BAR 2).
+         - REAR RE-ENTER's own SL (single-tier) -- self-recovers: on a later
+           recovery breakout above the SL's own reference, REAR RE-ENTER
+           reactivates under the SAME event text as its formation (not a
+           distinct "RECOVER" suffix like an ordinary "2" tier -- it has
+           nowhere further to route to, so it loops on itself). Also sets
+           `ever_deep_failure = True` the instant it fires, win or lose the
+           eventual race below. REAR RE-ENTER 2 does NOT freeze on this SL --
+           it keeps tracking independently (needed for compound failure).
+         - Compound failure: if REAR RE-ENTER's own SL AND REAR RE-ENTER 2's
+           own SL are both active at once, REAR RE-ENTER can instead
+           reactivate (same event text) above REAR RE-ENTER 2's own
+           reference, racing a fresh sibling TZ GREEN(n+1) reaching its own
+           TZ BUY -- arbitrated entirely by the pre-existing leadership
+           contest, no separate mechanism needed.
 
     TZ GREEN SL before its own RED2, or TZ BUY SL before TZ BUY 2 ever
     formed: no reference queued at all (nothing established yet to recover
@@ -219,27 +231,30 @@ def try_form_tier2(parent_ref_high: float, prev: Day, cur: Day):
     return None
 
 
-def eval_tier2_hh_ll(t2: Tier2, prev: Day, cur: Day):
-    """LL is never suppressed by the "2" existing; HH is (own display rule)."""
+def eval_tier2_advance(t2: Tier2, prev: Day, cur: Day):
+    """HH/SL/LL/recovery for a "2" tier, in one pass. SL is checked BEFORE
+    LL, using the reference low as it stood before today's own update --
+    mirrors TZ GREEN's own SL-before-LL ordering. This matters: if LL were
+    allowed to ratchet ref_low down to today's own Low first (as an earlier,
+    buggy version of this function did by splitting HH/LL and SL/recovery
+    into two separately-called functions), the gap used by the SL check
+    would always come out to exactly 0, and SL could never fire at all --
+    silently making every "2" tier's SL/recovery cycle (and everything
+    downstream that depends on it, like "BAR - BAR 2 can occur if TZ BUY 2
+    is active") permanently unreachable. LL is never suppressed by the "2"
+    existing; HH is (own display rule)."""
     events = []
     if t2.sl is None:
         if cur.h - t2.ref_high >= ANY - EPS:
             t2.ref_high = cur.h
             events.append("HH")
-        if cur.l < t2.ref_low:
-            t2.ref_low = cur.l
-            events.append("LL")
-    return events
-
-
-def eval_tier2_sl_cycle(t2: Tier2, prev: Day, cur: Day):
-    """SL / recovery for a "2" tier. Returns list of event tags fired today."""
-    events = []
-    if t2.sl is None:
         gap = t2.ref_low - cur.l
         if cur.l <= t2.ref_low and gap >= THRESH - EPS and cur.c <= t2.ref_low:
             t2.sl = Tier2SL(ref_high=t2.ref_high, ref_low=cur.l)
             events.append("SL")
+        elif cur.l < t2.ref_low:
+            t2.ref_low = cur.l
+            events.append("LL")
     else:
         if cur.h - t2.sl.ref_high >= THRESH - EPS and cur.c >= t2.sl.ref_high:
             t2.ref_high = cur.h
@@ -314,11 +329,19 @@ class Cycle:
     # it): its own RED1->RED2 unlocks a fresh BAR(1) cascade, mirroring BAR
     # 2's dual role minus the "gates parent's SL2" half.
 
-    rear_reenter_ref_high: float = 0.0
-    rear_reenter_ref_low: float = 0.0
-    rear_reenter_sl: bool = False  # same single-tier shape, one level deeper
-    # -- terminal: nothing named follows it.
-    rear_reenter2: Optional[Tier2] = None  # same role, one level deeper.
+    # REAR RE-ENTER self-recovers under the SAME label/event text on its own
+    # SL (unlike REAR, which routes elsewhere instead of self-recovering --
+    # REAR RE-ENTER has nowhere further to route to). Reuses Tier2 wholesale
+    # for its own ref_high/ref_low/sl; `.red` is unused (no RED1 attaches to
+    # REAR RE-ENTER directly, only to REAR RE-ENTER 2).
+    rear_reenter: Optional[Tier2] = None
+    rear_reenter2: Optional[Tier2] = None  # own RED1->RED2 unlocks a fresh
+    # BAR(1) cascade, same role as rear2, one level deeper. When REAR
+    # RE-ENTER's own SL AND REAR RE-ENTER 2's own SL are BOTH active at once,
+    # REAR RE-ENTER can instead reactivate above REAR RE-ENTER 2's reference
+    # (queued via pending_ref/pending_kind, same convention as everywhere
+    # else) -- clearing rear_reenter2 on that reactivation, same as any
+    # other "needs a brand new '2' from scratch" transition in this family.
 
     pending_ref: Optional[float] = None   # queued REAR / REAR RE-ENTER reference
     pending_kind: Optional[str] = None    # "REAR" | "REAR_REENTER"
@@ -332,23 +355,45 @@ def _current_top_ref(c: Cycle) -> float:
     """"Whichever occurred last": the current reference of the most advanced
     tier this lineage has reached. Every tier's own reference is, by
     construction, both numerically higher AND chronologically later than the
-    tier before it, so this always IS "whichever occurred last" -- no
-    separate bookkeeping needed. BAR generations (regardless of which "2"
-    tier's RED2 unlocked them) are always the deepest when any exist."""
-    for gen in reversed(c.bar_gens):
-        if not gen.superseded:
-            return gen.bar2.ref_high if gen.bar2 is not None else gen.ref_high
-    if c.bar_gens:
-        newest = c.bar_gens[-1]
-        return newest.bar2.ref_high if newest.bar2 is not None else newest.ref_high
+    tier before it -- EXCEPT a BAR generation, which is only "the deepest"
+    while nothing has since formed beyond the "2" tier that opened it
+    (`c.bar_gate`): a buy2-gated generation always predates REAR itself (BAR
+    SL2 is what creates REAR); a rear2-gated one (opened by REAR 2's own dual
+    role) always postdates REAR/REAR 2 but always predates REAR RE-ENTER
+    (REAR 2's dual role stops running the instant REAR RE-ENTER forms -- see
+    the `c.rear_reenter is None` gate on calling REAR's own tracking); a
+    rear_reenter2-gated one is the deepest tier this theory has, full stop.
+    Getting this wrong is exactly the compound-failure bug this function
+    used to have: an old, frozen (SL2-fired) buy2-gated BAR generation would
+    outrank REAR 2 or even REAR RE-ENTER 2's own reference simply because it
+    was still technically "unsuperseded"."""
+    gen = None
+    for g in reversed(c.bar_gens):
+        if not g.superseded:
+            gen = g
+            break
+    gen_ref = None
+    if gen is not None:
+        gen_ref = gen.bar2.ref_high if gen.bar2 is not None else gen.ref_high
+        if c.bar_gate is c.rear_reenter2:
+            return gen_ref
+
     if c.rear_reenter2 is not None:
         return c.rear_reenter2.ref_high
-    if c.rear_reenter_ref_high:
-        return c.rear_reenter_ref_high
+    if c.rear_reenter is not None:
+        return c.rear_reenter.ref_high
+
+    if gen is not None and c.bar_gate is c.rear2:
+        return gen_ref
+
     if c.rear2 is not None:
         return c.rear2.ref_high
     if c.rear_ref_high:
         return c.rear_ref_high
+
+    if gen is not None:
+        return gen_ref  # buy2-gated (or gate unset): predates rear entirely
+
     if c.buy2 is not None:
         return c.buy2.ref_high
     if c.buy_active or c.buy_sl_fired:
@@ -376,8 +421,8 @@ class Engine:
             return False  # buy nonexistent
         if c.buy_sl_fired:
             return False  # top-level dead (buy died before TZ BUY 2 ever formed)
-        if c.rear_reenter_ref_high:
-            return not c.rear_reenter_sl
+        if c.rear_reenter is not None:
+            return c.rear_reenter.sl is None
         if c.rear_ref_high:
             return not c.rear_sl
         if c.bar_gens:
@@ -434,9 +479,11 @@ class Engine:
                 c.rear2 = None
                 events.append(f"REAR({label})")
             else:
-                c.rear_reenter_ref_high = cur.h
-                c.rear_reenter_ref_low = cur.l
-                c.rear_reenter_sl = False
+                # Fresh formation (from REAR's own SL), or the deeper
+                # reactivation above REAR RE-ENTER 2's own reference when
+                # REAR RE-ENTER's own SL and REAR RE-ENTER 2's own SL were
+                # BOTH active at once -- same event text either way.
+                c.rear_reenter = Tier2(ref_high=cur.h, ref_low=cur.l)
                 c.rear_reenter2 = None
                 events.append(f"REAR RE-ENTER({label})")
             c.pending_ref = None
@@ -450,7 +497,7 @@ class Engine:
         milestones = []
         label = branch_label(c.seq)
 
-        if c.dead and c.pending_ref is None and not c.rear_ref_high and not c.rear_reenter_ref_high:
+        if c.dead and c.pending_ref is None and not c.rear_ref_high and c.rear_reenter is None:
             return events, milestones  # nothing left to ever show for this branch
 
         if not c.dead:
@@ -521,9 +568,7 @@ class Engine:
                         events.append(f"TZ BUY LL({label})")
             elif c.buy2 is not None:
                 buy2_ref_pre = c.buy2.ref_high
-                for t in eval_tier2_hh_ll(c.buy2, prev, cur):
-                    events.append(f"TZ BUY 2 {t}({label})")
-                for t in eval_tier2_sl_cycle(c.buy2, prev, cur):
+                for t in eval_tier2_advance(c.buy2, prev, cur):
                     events.append(f"TZ BUY 2 {t}({label})")
                 if cur.l < c.buy_ref_low:
                     c.buy_ref_low = cur.l
@@ -558,23 +603,25 @@ class Engine:
         # of `dead` (a branch can be TZ-GREEN-SL'd yet still racing toward
         # REAR on a reference queued at the moment it died).
         pre_pending_rear = bool(c.rear_ref_high)
-        pre_pending_reenter = bool(c.rear_reenter_ref_high)
+        pre_pending_reenter = c.rear_reenter is not None
         self._eval_pending(c, prev, cur, events)
         if not pre_pending_rear and c.rear_ref_high:
             milestones.append(MILESTONE_CONTINUATION)
-        if not pre_pending_reenter and c.rear_reenter_ref_high:
+        if not pre_pending_reenter and c.rear_reenter is not None:
             milestones.append(MILESTONE_CONTINUATION)
 
         # 11. REAR's own HH/LL/SL, plus REAR 2's own HH/LL/SL/2, once
         # confirmed and not yet superseded by a confirmed REAR RE-ENTER.
         # REAR 2's RED1/RED2 can separately open a fresh BAR cascade -- a
         # milestone if it does.
-        if c.rear_ref_high and not c.rear_reenter_ref_high:
+        if c.rear_ref_high and c.rear_reenter is None:
             if self._eval_rear_tracking(c, prev, cur, events):
                 milestones.append(MILESTONE_CONTINUATION)
 
-        # 12. Same shape one level deeper for REAR RE-ENTER / REAR RE-ENTER 2.
-        if c.rear_reenter_ref_high:
+        # 12. REAR RE-ENTER's own HH/LL/SL/recovery (same event text on
+        # reactivation -- also a milestone), plus REAR RE-ENTER 2's own
+        # HH/LL/SL/2 and RED1/RED2 (fresh BAR cascade trigger).
+        if c.rear_reenter is not None:
             if self._eval_rear_reenter_tracking(c, prev, cur, events):
                 milestones.append(MILESTONE_CONTINUATION)
 
@@ -623,9 +670,7 @@ class Engine:
                 gen.ref_high = cur.h
                 events.append(f"BAR HH({gen.label})")
         else:
-            for t in eval_tier2_hh_ll(gen.bar2, prev, cur):
-                events.append(f"BAR 2 {t}({gen.label})")
-            for t in eval_tier2_sl_cycle(gen.bar2, prev, cur):
+            for t in eval_tier2_advance(gen.bar2, prev, cur):
                 events.append(f"BAR 2 {t}({gen.label})")
         if cur.l < gen.ref_low:
             gen.ref_low = cur.l
@@ -689,9 +734,7 @@ class Engine:
                 c.rear_ref_high = cur.h
                 events.append(f"REAR HH({label})")
         else:
-            for t in eval_tier2_hh_ll(c.rear2, prev, cur):
-                events.append(f"REAR 2 {t}({label})")
-            for t in eval_tier2_sl_cycle(c.rear2, prev, cur):
+            for t in eval_tier2_advance(c.rear2, prev, cur):
                 events.append(f"REAR 2 {t}({label})")
         if cur.l < c.rear_ref_low:
             c.rear_ref_low = cur.l
@@ -722,46 +765,70 @@ class Engine:
         return False
 
     def _eval_rear_reenter_tracking(self, c: Cycle, prev: Day, cur: Day, events: list) -> bool:
-        """Same shape one level deeper. REAR RE-ENTER's own SL is also
-        single-tier ("likewise for REAR RE-ENTER") -- no SL2, ungated by
-        REAR RE-ENTER 2. Once it fires, this lineage's escalation is simply
-        over: terminal, no named structure follows (already counted via
-        `ever_deep_failure`)."""
+        """REAR RE-ENTER's own HH/LL/SL/recovery -- self-recovers under the
+        SAME event text on reactivation (unlike REAR, which routes to REAR
+        RE-ENTER instead of self-recovering; REAR RE-ENTER has nowhere
+        further to route to, so it loops on itself). Reactivation is itself
+        a milestone, same as the original formation. Plus REAR RE-ENTER 2's
+        own HH/LL/SL/recovery and RED1/RED2 (fresh BAR cascade trigger, same
+        role as rear2 one level deeper). Returns True on any milestone
+        (reactivation, or a fresh BAR cascade opening)."""
         label = branch_label(c.seq)
+        milestone = False
+        rear_reenter_pre_sl = c.rear_reenter.sl is None  # snapshot before
+        # today's own processing, for REAR RE-ENTER 2's formation gate below
+        # ("forms while parent is pre-SL", same rule as every other "2" tier)
+        pre_ref_high = c.rear_reenter.ref_high  # snapshot before today's own
+        # HH update, to avoid the same-day self-comparison bug when REAR
+        # RE-ENTER 2 tries to form off this same value
 
-        if c.rear_reenter_sl:
-            return False
-        gap = c.rear_reenter_ref_low - cur.l
-        if cur.l <= c.rear_reenter_ref_low and gap >= THRESH - EPS and cur.c <= c.rear_reenter_ref_low:
-            c.rear_reenter_sl = True
-            c.ever_deep_failure = True
-            events.append(f"REAR RE-ENTER SL({label})")
-            return False
+        if c.rear_reenter.sl is None:
+            gap = c.rear_reenter.ref_low - cur.l
+            if cur.l <= c.rear_reenter.ref_low and gap >= THRESH - EPS and cur.c <= c.rear_reenter.ref_low:
+                c.rear_reenter.sl = Tier2SL(ref_high=c.rear_reenter.ref_high, ref_low=cur.l)
+                c.ever_deep_failure = True
+                events.append(f"REAR RE-ENTER SL({label})")
+            else:
+                if cur.h - pre_ref_high >= ANY - EPS:
+                    c.rear_reenter.ref_high = cur.h
+                    events.append(f"REAR RE-ENTER HH({label})")
+                if cur.l < c.rear_reenter.ref_low:
+                    c.rear_reenter.ref_low = cur.l
+                    events.append(f"REAR RE-ENTER LL({label})")
+        else:
+            if cur.h - c.rear_reenter.sl.ref_high >= THRESH - EPS and cur.c >= c.rear_reenter.sl.ref_high:
+                # Reactivation under the SAME event text as formation.
+                c.rear_reenter.ref_high = cur.h
+                c.rear_reenter.ref_low = cur.l
+                c.rear_reenter.sl = None
+                c.rear_reenter2 = None  # a brand new "2" is needed from scratch
+                events.append(f"REAR RE-ENTER({label})")
+                milestone = True
+            elif cur.l < c.rear_reenter.sl.ref_low:
+                c.rear_reenter.sl.ref_low = cur.l
+                events.append(f"REAR RE-ENTER SL LL({label})")
 
-        pre_ref_high = c.rear_reenter_ref_high
+        # REAR RE-ENTER 2's own formation (only while REAR RE-ENTER is
+        # pre-SL, per the standard "2"-tier formation rule) / HH/LL/SL/
+        # recovery (continues independently of REAR RE-ENTER's own SL once
+        # formed -- the "compound failure" state below needs both trackable
+        # at once, unlike BAR/BAR 2 where the parent's SL freezes the "2").
         reenter2_ref_pre = c.rear_reenter2.ref_high if c.rear_reenter2 is not None else None
         if c.rear_reenter2 is None:
-            t2 = try_form_tier2(pre_ref_high, prev, cur)
+            t2 = try_form_tier2(pre_ref_high, prev, cur) if rear_reenter_pre_sl else None
             if t2 is not None:
                 c.rear_reenter2 = t2
                 events.append(f"REAR RE-ENTER 2({label})")
-            elif cur.h - pre_ref_high >= ANY - EPS:
-                c.rear_reenter_ref_high = cur.h
-                events.append(f"REAR RE-ENTER HH({label})")
         else:
-            for t in eval_tier2_hh_ll(c.rear_reenter2, prev, cur):
+            for t in eval_tier2_advance(c.rear_reenter2, prev, cur):
                 events.append(f"REAR RE-ENTER 2 {t}({label})")
-            for t in eval_tier2_sl_cycle(c.rear_reenter2, prev, cur):
-                events.append(f"REAR RE-ENTER 2 {t}({label})")
-        if cur.l < c.rear_reenter_ref_low:
-            c.rear_reenter_ref_low = cur.l
-            events.append(f"REAR RE-ENTER LL({label})")
 
         if c.rear_reenter2 is not None:
             tag = eval_red_tracker(c.rear_reenter2, c.rear_reenter2.sl is not None, prev, cur)
             if tag:
                 events.append(f"{tag.replace('_', ' ')}({label})")
 
+        # Fresh BAR(1) cascade, once REAR RE-ENTER 2's own RED2 fires.
         cascade_open = self._bar_cascade_concluded(c)
         if (
             cascade_open and c.rear_reenter2 is not None and c.rear_reenter2.active
@@ -775,8 +842,22 @@ class Engine:
                 c.bar_gens.append(new_gen)
                 c.bar_gate = c.rear_reenter2
                 events.append(f"BAR({new_gen.label})")
-                return True
-        return False
+                milestone = True
+
+        # Compound failure: REAR RE-ENTER's own SL AND REAR RE-ENTER 2's own
+        # SL both active at once -> REAR RE-ENTER can instead reactivate
+        # above REAR RE-ENTER 2's own reference, racing a fresh sibling
+        # reaching its own TZ BUY (the leadership contest arbitrates: this
+        # branch stays dormant if the sibling wins).
+        if (
+            c.pending_ref is None and c.rear_reenter.sl is not None
+            and c.rear_reenter2 is not None and c.rear_reenter2.sl is not None
+        ):
+            c.ever_deep_failure = True
+            c.pending_ref = _current_top_ref(c)
+            c.pending_kind = "REAR_REENTER"
+
+        return milestone
 
     @staticmethod
     def _bar_cascade_concluded(c: Cycle) -> bool:

@@ -1,4 +1,4 @@
-# New Theory — v6: full multi-branch, TZ GREEN → TZ BUY → BAR (unlimited) → REAR → REAR RE-ENTER, each with its own "2"
+# New Theory — v7: full multi-branch, TZ GREEN → TZ BUY → BAR (unlimited) → REAR → REAR RE-ENTER (self-recovering), each with its own "2"
 
 **Status:** provisional design + implementation (`tz_engine_new_theory.py`).
 **Not yet verified against real OHLC data** — no dataset has been supplied
@@ -15,7 +15,7 @@ borrow the base 37-event engine's own **multi-branch machinery** (sections
 **"2"-tier template** (`tz_engine_bar2_variant.py`) as explicit building
 blocks — see "Version history" below for exactly what came from where.
 
-## The flow (v6)
+## The flow (v7)
 
 ```
 TZ GREEN → RED1 → RED2 (vs TZ GREEN) →
@@ -35,17 +35,33 @@ BAR(2) → BAR 2(2) → ... (unlimited, while the current gate stays active) ...
        RE-ENTER's reference (whichever tier is most advanced at that
        moment — REAR 2's own, in the simple case where no fresh cascade
        has opened yet).
-→ REAR RE-ENTER → REAR RE-ENTER 2 — the SAME shape one level deeper:
-     • its own RED1→RED2 → another fresh BAR(1) cascade; or
-     • REAR RE-ENTER's own SL (also single-tier, "likewise for REAR
-       RE-ENTER") → terminal: nothing named follows, the lineage's
-       escalation is simply over.
+→ REAR RE-ENTER → REAR RE-ENTER 2 — the SAME shape one level deeper, PLUS
+  REAR RE-ENTER's own self-recovery (v7, see below):
+     • its own RED1→RED2 → another fresh BAR(1) cascade, exactly like REAR
+       2's own role one level up.
+     • REAR RE-ENTER's own SL (single-tier) → self-recovers: on a later
+       recovery breakout above its own SL's reference, REAR RE-ENTER
+       reactivates under the SAME event text as its original formation
+       (unlike an ordinary "2" tier's SL, which shows a distinct "RECOVER"
+       suffix — REAR RE-ENTER has nowhere further to route to, so it loops
+       on itself instead). REAR RE-ENTER 2 does NOT freeze on this SL —
+       it keeps tracking independently (needed for the compound-failure
+       state below to be reachable at all).
+     • Compound failure: if REAR RE-ENTER's own SL AND REAR RE-ENTER 2's
+       own SL are BOTH active at the same time, REAR RE-ENTER can instead
+       reactivate (same event text again) above REAR RE-ENTER 2's own
+       reference — a strictly higher bar than the ordinary self-recovery
+       case — racing a fresh sibling TZ GREEN(n+1) reaching its own TZ BUY.
+       No separate mechanism needed: the pre-existing leadership contest
+       arbitrates the race exactly as it does everywhere else (this branch
+       stays dormant if the sibling wins first).
 
-REAR RE-ENTER confirms via the ordinary recovery-breakout check (Low ≥
-PrevLow, High − ref ≥ 0.20, Close ≥ ref) — "in case new TZ GREEN does not
-reach TZ BUY" describes the multi-branch leadership contest, not a separate
-condition on the confirmation itself: if a competing sibling reaches its own
-TZ BUY before REAR RE-ENTER confirms, that sibling becomes the leader
+REAR RE-ENTER confirms (both the original formation and every subsequent
+reactivation) via the ordinary recovery-breakout check (Low ≥ PrevLow, High
+− ref ≥ 0.20, Close ≥ ref) — "in case new TZ GREEN does not reach TZ BUY"
+describes the multi-branch leadership contest, not a separate condition on
+the confirmation itself: if a competing sibling reaches its own TZ BUY
+before REAR RE-ENTER confirms, that sibling becomes the leader
 (dormant/terminated per the contest rules below); REAR RE-ENTER can still
 go on to confirm afterward on its own schedule, and firing it re-triggers
 the contest with today's leadership snapshot.
@@ -179,14 +195,23 @@ above them, for the entire life of the branch (this is independent of, and
 not affected by, dormancy display filtering, which suppresses HH/RED-family
 only).
 
-**F. REAR RE-ENTER's own SL is genuinely terminal** — no further named
-structure, consistent with the base engine's framing of REAR RE-ENTER as
-"the deepest, terminal leaf of the entire hierarchy." It does not
-self-recover, and (mirroring how BAR's own SL freezes BAR 2's independent
-tracking, and REAR's own SL freezes REAR 2's) firing it also freezes REAR
-RE-ENTER 2 — no further HH/LL/SL/RED/cascade-trigger evaluation for this
-branch at all once it fires. `ever_deep_failure = True` is the only lasting
-effect (opens spawn eligibility for a fresh sibling elsewhere).
+**F. REAR RE-ENTER's own SL self-recovers (revised in v7)** — superseded:
+earlier said to be genuinely terminal (no self-recovery, freezes REAR
+RE-ENTER 2). Explicit user correction: REAR RE-ENTER has its own
+SL → REAR RE-ENTER cycle, same event text on reactivation (not a distinct
+"RECOVER" suffix, since it has nowhere further to route to and loops on
+itself instead), and REAR RE-ENTER 2 does NOT freeze on this SL — it keeps
+tracking independently. `ever_deep_failure = True` still fires the instant
+the SL fires (opens spawn eligibility for a fresh sibling elsewhere),
+regardless of whether this branch later self-recovers.
+
+**G. Compound failure (added in v7)** — when REAR RE-ENTER's own SL AND
+REAR RE-ENTER 2's own SL are simultaneously active, REAR RE-ENTER can
+instead reactivate above REAR RE-ENTER 2's own (higher) reference, racing a
+fresh sibling TZ GREEN(n+1) reaching its own TZ BUY — arbitrated entirely by
+the pre-existing leadership contest (§7a), no separate mechanism needed.
+Same single-slot `pending_ref`/`pending_kind` convention as every other
+queued reference; same event text as ordinary self-recovery.
 
 ## Not yet modeled / open
 
@@ -229,10 +254,42 @@ effect (opens spawn eligibility for a fresh sibling elsewhere).
   for REAR RE-ENTER." REAR's own SL and REAR RE-ENTER's own SL are both
   single-tier again, ungated by their "2" tier. REAR 2 / REAR RE-ENTER 2
   keep only the fresh-BAR-cascade trigger role.
+- **v7**: REAR RE-ENTER's own SL now self-recovers (same event text on
+  reactivation) instead of being terminal; REAR RE-ENTER 2 keeps tracking
+  independently through that SL rather than freezing; added the
+  compound-failure reactivation path (both SLs active at once → reactivate
+  above REAR RE-ENTER 2's own reference, racing a fresh sibling per the
+  leadership contest). Also fixed two bugs surfaced while building the test
+  for this:
+  - `eval_tier2_advance` (formerly two separately-called functions,
+    `eval_tier2_hh_ll` + `eval_tier2_sl_cycle`): LL always ran before SL and
+    always ratcheted `ref_low` down to today's own Low first, so the SL
+    check's gap was always exactly 0 — SL was completely unreachable for
+    every "2" tier (TZ BUY 2, BAR 2, REAR 2, REAR RE-ENTER 2) in every prior
+    version. Fixed by merging into one function with SL checked before LL,
+    using the reference as it stood before today's own update (mirrors TZ
+    GREEN's own already-correct SL-before-LL ordering).
+  - `_current_top_ref`: treated any non-`superseded` BAR generation as
+    unconditionally "the deepest," even once it had long since concluded
+    (its own SL2 fired) and the branch had since progressed into REAR / REAR
+    2 / REAR RE-ENTER / REAR RE-ENTER 2 territory without ever reopening a
+    fresh cascade above it. A frozen, buy2-gated BAR generation would then
+    outrank REAR 2's or REAR RE-ENTER 2's own (numerically higher,
+    chronologically later) reference simply because nothing had marked it
+    `superseded`. Fixed using `Cycle.bar_gate` (which "2" tier opened the
+    *current* BAR generation) to determine what that generation actually
+    postdates: a buy2-gated generation predates REAR entirely; a
+    rear2-gated one predates REAR RE-ENTER (REAR 2's dual role stops running
+    the instant REAR RE-ENTER forms, so this ordering is guaranteed); a
+    rear_reenter2-gated one is unconditionally the deepest tier that exists.
+    This was latent in v4-v6 too (e.g. REAR's own SL queuing REAR RE-ENTER's
+    reference off a stale frozen BAR generation instead of REAR 2's own) but
+    never surfaced a wrong answer until the compound-failure test needed to
+    distinguish REAR RE-ENTER 2's reference from an old BAR generation's.
 
 ## Testing so far
 
-`test_new_theory_smoke.py` runs three independent synthetic OHLC sequences
+`test_new_theory_smoke.py` runs four independent synthetic OHLC sequences
 (kept as separate `Engine()` instances — a spawned sibling shares every
 subsequent candle with the lineage that spawned it, which makes hand-picking
 collision-free numbers for a single continuous multi-lineage scenario
@@ -249,6 +306,14 @@ intractable):
    does NOT fire in this scenario (SL beats RED1/RED2 is a *per-candle*
    priority, not a claim that RED1/RED2 can never coexist with an eventually-
    separate SL path).
+4. Reuses Run 1's sequence through REAR RE-ENTER(B) confirming, then
+   continues: REAR RE-ENTER's own SL fires and self-recovers uncontested
+   (same event text on reactivation); REAR RE-ENTER 2 then reforms; a later
+   candle fires REAR RE-ENTER's own SL and REAR RE-ENTER 2's own SL on the
+   SAME candle (the compound-failure state), which queues REAR RE-ENTER's
+   reactivation above REAR RE-ENTER 2's own reference; confirms on the next
+   qualifying candle. This is the test that surfaced both bugs documented
+   under v7 above.
 
 This only proves the state machine's plumbing is internally consistent on
 data built to exercise it — it is **not** a substitute for verification
