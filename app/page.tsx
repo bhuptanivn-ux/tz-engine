@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { GLOBAL_INDICES } from "@/lib/indices";
 
 interface SymbolMatch {
   symbol: string;
@@ -16,6 +17,8 @@ interface HistoryRow {
   close: number | null;
 }
 
+type Mode = "stock" | "index";
+
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -25,11 +28,19 @@ function fmt(n: number | null): string {
 }
 
 export default function Home() {
+  const [mode, setMode] = useState<Mode>("stock");
+
+  // Stock-tab state
+  const [marketFilter, setMarketFilter] = useState(""); // "" = all markets
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<SymbolMatch[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [selected, setSelected] = useState<SymbolMatch | null>(null);
 
+  // Index-tab state
+  const [indexSymbol, setIndexSymbol] = useState(GLOBAL_INDICES[0].symbol);
+
+  // Shared selection + range
+  const [selected, setSelected] = useState<SymbolMatch | null>(null);
   const [start, setStart] = useState("2021-03-28");
   const [end, setEnd] = useState(todayISO());
   const [interval, setIntervalValue] = useState("1d");
@@ -41,6 +52,7 @@ export default function Home() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (mode !== "stock") return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (query.trim().length < 1 || selected?.symbol === query) {
       setSuggestions([]);
@@ -48,7 +60,9 @@ export default function Home() {
     }
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const params = new URLSearchParams({ q: query });
+        if (marketFilter) params.set("region", marketFilter);
+        const res = await fetch(`/api/search?${params.toString()}`);
         const data = await res.json();
         setSuggestions(data.results || []);
       } catch {
@@ -58,7 +72,7 @@ export default function Home() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, selected]);
+  }, [query, selected, marketFilter, mode]);
 
   function pickSuggestion(match: SymbolMatch) {
     setSelected(match);
@@ -67,12 +81,35 @@ export default function Home() {
     setShowSuggestions(false);
   }
 
+  function switchMode(next: Mode) {
+    setMode(next);
+    setRows([]);
+    setError("");
+    if (next === "index") {
+      const idx = GLOBAL_INDICES.find((i) => i.symbol === indexSymbol) || GLOBAL_INDICES[0];
+      setSelected({ symbol: idx.symbol, name: idx.label, exchange: idx.market });
+    } else {
+      setSelected(null);
+      setQuery("");
+    }
+  }
+
+  function handleIndexChange(symbol: string) {
+    setIndexSymbol(symbol);
+    const idx = GLOBAL_INDICES.find((i) => i.symbol === symbol);
+    if (idx) {
+      setSelected({ symbol: idx.symbol, name: idx.label, exchange: idx.market });
+    }
+  }
+
   async function handleFetch() {
     setError("");
     setRows([]);
 
     if (!selected) {
-      setError("Pick a stock from the search suggestions first.");
+      setError(
+        mode === "stock" ? "Pick a stock from the search suggestions first." : "Pick an index first."
+      );
       return;
     }
     if (!start || !end) {
@@ -124,41 +161,95 @@ export default function Home() {
 
   return (
     <main className="container">
-      <h1>NSE Historical Data</h1>
-      <p className="subtitle">Search any NSE-listed stock and pull OHLC data for a date range.</p>
+      <h1>Global Market Historical Data</h1>
+      <p className="subtitle">
+        Pull OHLC data for a major world index, or search any stock across global markets.
+      </p>
 
       <div className="card">
-        <div className="field">
-          <label htmlFor="stock-search">Stock</label>
-          <input
-            id="stock-search"
-            type="text"
-            placeholder="e.g. Kalyan Jewellers, Reliance, TCS…"
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setSelected(null);
-              setShowSuggestions(true);
-            }}
-            onFocus={() => setShowSuggestions(true)}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-            autoComplete="off"
-          />
-          {showSuggestions && suggestions.length > 0 && (
-            <div className="suggestions">
-              {suggestions.map((s) => (
-                <div
-                  key={s.symbol}
-                  className="suggestion-item"
-                  onMouseDown={() => pickSuggestion(s)}
-                >
-                  <div>{s.symbol}</div>
-                  <div className="name">{s.name}</div>
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="tabs">
+          <button
+            className={mode === "stock" ? "tab active" : "tab"}
+            onClick={() => switchMode("stock")}
+          >
+            Stock
+          </button>
+          <button
+            className={mode === "index" ? "tab active" : "tab"}
+            onClick={() => switchMode("index")}
+          >
+            Index
+          </button>
         </div>
+
+        {mode === "index" ? (
+          <div className="field">
+            <label htmlFor="index-select">Index</label>
+            <select
+              id="index-select"
+              value={indexSymbol}
+              onChange={(e) => handleIndexChange(e.target.value)}
+            >
+              {GLOBAL_INDICES.map((idx) => (
+                <option key={idx.symbol} value={idx.symbol}>
+                  {idx.label} — {idx.market}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <>
+            <div className="field">
+              <label htmlFor="market-select">Market (optional, narrows search)</label>
+              <select
+                id="market-select"
+                value={marketFilter}
+                onChange={(e) => setMarketFilter(e.target.value)}
+              >
+                <option value="">All markets</option>
+                {GLOBAL_INDICES.map((idx) => (
+                  <option key={idx.region + idx.market} value={idx.region}>
+                    {idx.market}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field">
+              <label htmlFor="stock-search">Scrip / stock name</label>
+              <input
+                id="stock-search"
+                type="text"
+                placeholder="e.g. Kalyan Jewellers, Apple, Reliance, Toyota…"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSelected(null);
+                  setShowSuggestions(true);
+                }}
+                onFocus={() => setShowSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                autoComplete="off"
+              />
+              {showSuggestions && suggestions.length > 0 && (
+                <div className="suggestions">
+                  {suggestions.map((s) => (
+                    <div
+                      key={s.symbol}
+                      className="suggestion-item"
+                      onMouseDown={() => pickSuggestion(s)}
+                    >
+                      <div>
+                        {s.symbol} <span className="name">{s.exchange}</span>
+                      </div>
+                      <div className="name">{s.name}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
 
         <div className="row">
           <div className="field">

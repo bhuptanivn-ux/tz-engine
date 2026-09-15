@@ -30,17 +30,22 @@ function toUnixSeconds(dateStr: string): number {
   return Math.floor(ms / 1000);
 }
 
+const EXCLUDED_QUOTE_TYPES = new Set(["CRYPTOCURRENCY", "MUTUALFUND", "OPTION", "FUTURE"]);
+
 /**
- * Search Yahoo Finance for NSE-listed equities matching `query`.
- * Yahoo tags NSE India symbols with exchange code "NSI" and suffixes them ".NS".
+ * Search Yahoo Finance for stocks (and indices) matching `query`, globally.
+ * `region` is an optional hint (e.g. "IN", "US", "GB") that nudges Yahoo to
+ * prioritize results from that market — it narrows relevance, not a hard
+ * filter, since Yahoo's exchange codes for non-US markets aren't reliably
+ * documented enough to filter on exactly.
  */
-export async function searchNseSymbols(query: string): Promise<SymbolMatch[]> {
+export async function searchSymbols(query: string, region?: string): Promise<SymbolMatch[]> {
   const url = new URL(SEARCH_BASE);
   url.searchParams.set("q", query);
   url.searchParams.set("quotesCount", "10");
   url.searchParams.set("newsCount", "0");
-  url.searchParams.set("region", "IN");
-  url.searchParams.set("lang", "en-IN");
+  url.searchParams.set("region", region || "US");
+  url.searchParams.set("lang", "en-US");
 
   const res = await fetch(url.toString(), {
     headers: { "User-Agent": "Mozilla/5.0" },
@@ -55,11 +60,14 @@ export async function searchNseSymbols(query: string): Promise<SymbolMatch[]> {
   const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
 
   return quotes
-    .filter((q: any) => q.exchange === "NSI" && typeof q.symbol === "string")
+    .filter(
+      (q: any) =>
+        typeof q.symbol === "string" && !EXCLUDED_QUOTE_TYPES.has(q.quoteType)
+    )
     .map((q: any) => ({
       symbol: q.symbol as string,
       name: (q.shortname || q.longname || q.symbol) as string,
-      exchange: q.exchange as string,
+      exchange: (q.exchange || q.exchDisp || "") as string,
     }));
 }
 
