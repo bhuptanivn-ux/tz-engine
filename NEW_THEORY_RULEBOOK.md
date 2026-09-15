@@ -1,4 +1,4 @@
-# New Theory — v5: full multi-branch, TZ GREEN → TZ BUY → BAR (unlimited) → REAR → REAR RE-ENTER, each with its own "2"
+# New Theory — v6: full multi-branch, TZ GREEN → TZ BUY → BAR (unlimited) → REAR → REAR RE-ENTER, each with its own "2"
 
 **Status:** provisional design + implementation (`tz_engine_new_theory.py`).
 **Not yet verified against real OHLC data** — no dataset has been supplied
@@ -15,7 +15,7 @@ borrow the base 37-event engine's own **multi-branch machinery** (sections
 **"2"-tier template** (`tz_engine_bar2_variant.py`) as explicit building
 blocks — see "Version history" below for exactly what came from where.
 
-## The flow (v5)
+## The flow (v6)
 
 ```
 TZ GREEN → RED1 → RED2 (vs TZ GREEN) →
@@ -24,19 +24,31 @@ RED1 → RED2 (vs TZ BUY 2) →
 BAR(1) (above TZ BUY 2's ref) → BAR 2(1) → RED1 → RED2 →
 BAR(2) → BAR 2(2) → ... (unlimited, while the current gate stays active) ...
 → BAR SL → BAR SL2 — queues REAR's reference (§ "whichever occurred last")
-→ REAR → REAR 2 — forks two ways:
-     (a) REAR 2's own RED1→RED2 → a FRESH BAR(1)→BAR 2(1) cascade, unlimited
-         again, gated on REAR 2 staying active — dual role, mirrors BAR 2
-         exactly, NOT TZ BUY 2's single role. If that cascade later reaches
-         its own BAR SL2, it re-queues REAR's reference (reactivating REAR
-         under the same label if it still exists).
-     (b) REAR's own SL → SL2 (gated on REAR 2 existing — a dead end
-         otherwise, mirrors BAR/BAR 2 exactly) → queues REAR RE-ENTER's
-         reference (REAR 2's own — the most advanced tier at that point).
-→ REAR RE-ENTER → REAR RE-ENTER 2 — the SAME fork, one level deeper:
-     (a) its own RED1→RED2 → another fresh BAR(1) cascade; or
-     (b) REAR RE-ENTER's own SL → SL2 (gated on REAR RE-ENTER 2) —
-         terminal: nothing named follows, the lineage's escalation is over.
+→ REAR → REAR 2 — two SEPARATE, independent things can happen from here
+(neither gates the other):
+     • REAR 2's own RED1→RED2 → a FRESH BAR(1)→BAR 2(1) cascade, unlimited
+       again, gated on REAR 2 staying active. If that cascade later reaches
+       its own BAR SL2, it re-queues REAR's reference (reactivating REAR
+       under the same label if it still exists).
+     • REAR's own SL (single-tier — "REAR SL is enough as earlier, nothing
+       like REAR SL2", NOT gated on REAR 2 existing) → directly queues REAR
+       RE-ENTER's reference (whichever tier is most advanced at that
+       moment — REAR 2's own, in the simple case where no fresh cascade
+       has opened yet).
+→ REAR RE-ENTER → REAR RE-ENTER 2 — the SAME shape one level deeper:
+     • its own RED1→RED2 → another fresh BAR(1) cascade; or
+     • REAR RE-ENTER's own SL (also single-tier, "likewise for REAR
+       RE-ENTER") → terminal: nothing named follows, the lineage's
+       escalation is simply over.
+
+REAR RE-ENTER confirms via the ordinary recovery-breakout check (Low ≥
+PrevLow, High − ref ≥ 0.20, Close ≥ ref) — "in case new TZ GREEN does not
+reach TZ BUY" describes the multi-branch leadership contest, not a separate
+condition on the confirmation itself: if a competing sibling reaches its own
+TZ BUY before REAR RE-ENTER confirms, that sibling becomes the leader
+(dormant/terminated per the contest rules below); REAR RE-ENTER can still
+go on to confirm afterward on its own schedule, and firing it re-triggers
+the contest with today's leadership snapshot.
 
 TZ GREEN SL (before its own RED2 ever fired), or TZ BUY SL (before TZ BUY 2
 ever formed): no reference queued at all — nothing established yet to
@@ -68,13 +80,21 @@ Multiple TZ GREEN lineages can be alive **simultaneously** (v4) — see below.
   whichever tier is most advanced supplies the reference, regardless of
   which specific event (TZ GREEN SL, BAR SL2, REAR SL, REAR RE-ENTER SL)
   triggered the queueing.
-- **REAR 2 / REAR RE-ENTER 2, added in v5**: both play the *dual* role BAR 2
-  already plays — own RED1→RED2 unlocks a fresh BAR(1) cascade; own
-  existence gates whether the *parent's* SL can escalate to SL2 at all.
-  Confirmed explicitly by the user: "BAR 1 and BAR 2 can occur after REAR 2
-  and REAR RE-ENTER 2" — triggered by REAR 2's/REAR RE-ENTER 2's own
-  RED1→RED2, exactly mirroring how TZ BUY 2's RED1→RED2 triggers the first
-  BAR (not gated on the parent's own SL failing first — a parallel path).
+- **REAR 2 / REAR RE-ENTER 2, added in v5**: own RED1→RED2 unlocks a fresh
+  BAR(1) cascade. Confirmed explicitly by the user: "BAR 1 and BAR 2 can
+  occur after REAR 2 and REAR RE-ENTER 2" — triggered by REAR 2's/REAR
+  RE-ENTER 2's own RED1→RED2, exactly mirroring how TZ BUY 2's RED1→RED2
+  triggers the first BAR (a parallel path, not gated on the parent's own SL
+  failing first).
+- **REAR SL / REAR RE-ENTER SL, corrected in v6**: v5 had also made these
+  gate a deeper SL2 (mirroring BAR/BAR 2 exactly, since REAR 2/REAR RE-ENTER
+  2 mirror BAR 2). **Reverted** — explicit user correction: "REAR SL is
+  enough as earlier. Nothing like REAR SL2. likewise for REAR RE-ENTER."
+  Both are single-tier, one-way, and NOT gated on their "2" tier existing —
+  REAR's SL fires and directly queues REAR RE-ENTER's reference; REAR
+  RE-ENTER's SL fires and is terminal. REAR 2 / REAR RE-ENTER 2 keep only
+  their fresh-BAR-cascade role from v5 — they no longer gate anything on
+  their parent.
 - **Multi-branch spawn eligibility, corrected in v4**: the theory's own
   baseline TZ GREEN formation rule says a new branch is eligible whenever an
   existing active branch "has had its RED fire but has no currently-live
@@ -104,7 +124,9 @@ GREEN. No separate "last touched" timestamp bookkeeping is needed.
 - **`_buy_currently_live(c)`**: mirrors base engine §9 — False if the buy
   never formed or died before TZ BUY 2 ever formed; otherwise cascades
   through REAR RE-ENTER → REAR → BAR generations → TZ BUY 2, live if the
-  deepest-reached structure hasn't hit its own SL2 (or has recovered).
+  deepest-reached structure's own SL hasn't fired (REAR/REAR RE-ENTER are
+  single-tier, so this is a plain "has its SL fired" check; BAR generations
+  and TZ BUY 2 still check their own SL2/SL as applicable).
 - **`_spawn_eligible()`**: the *tip anchor* (newest branch whose own TZ GREEN
   SL hasn't fired) must have had its own RED2 fire, not be dormant, and its
   buy must be nonexistent, top-level-dead (TZ BUY SL before TZ BUY 2), or
@@ -157,10 +179,14 @@ above them, for the entire life of the branch (this is independent of, and
 not affected by, dormancy display filtering, which suppresses HH/RED-family
 only).
 
-**F. REAR RE-ENTER's own SL2 is terminal** — no further named structure,
-consistent with the base engine's framing of REAR RE-ENTER as "the deepest,
-terminal leaf of the entire hierarchy." Only its own recovery (single-tier,
-same label) exists past that point — there is no "REAR RE-ENTER RE-ENTER."
+**F. REAR RE-ENTER's own SL is genuinely terminal** — no further named
+structure, consistent with the base engine's framing of REAR RE-ENTER as
+"the deepest, terminal leaf of the entire hierarchy." It does not
+self-recover, and (mirroring how BAR's own SL freezes BAR 2's independent
+tracking, and REAR's own SL freezes REAR 2's) firing it also freezes REAR
+RE-ENTER 2 — no further HH/LL/SL/RED/cascade-trigger evaluation for this
+branch at all once it fires. `ever_deep_failure = True` is the only lasting
+effect (opens spawn eligibility for a fresh sibling elsewhere).
 
 ## Not yet modeled / open
 
@@ -198,6 +224,11 @@ same label) exists past that point — there is no "REAR RE-ENTER RE-ENTER."
   dormancy lift) — replaces v3's ad-hoc race entirely.
 - **v5**: added REAR 2 and REAR RE-ENTER 2, each with BAR 2's dual role
   (fresh-cascade trigger + parent-SL-escalation gate).
+- **v6**: reverted the "parent-SL-escalation gate" half of v5. Explicit user
+  correction: "REAR SL is enough as earlier. Nothing like REAR SL2. likewise
+  for REAR RE-ENTER." REAR's own SL and REAR RE-ENTER's own SL are both
+  single-tier again, ungated by their "2" tier. REAR 2 / REAR RE-ENTER 2
+  keep only the fresh-BAR-cascade trigger role.
 
 ## Testing so far
 
@@ -209,12 +240,13 @@ intractable):
 
 1. Early death (TZ GREEN SL before RED2) → immediate fresh sibling, then a
    full escalation through TZ BUY → TZ BUY 2 → BAR → BAR 2 → a second BAR
-   generation → BAR SL → BAR SL2 → REAR → REAR 2 → REAR SL → REAR SL2 →
-   REAR RE-ENTER, all confirming uncontested.
+   generation → BAR SL → BAR SL2 → REAR → REAR 2 → REAR SL (single-tier,
+   directly queues REAR RE-ENTER's reference) → REAR RE-ENTER, all
+   confirming uncontested. Asserts REAR SL2 / REAR RE-ENTER SL2 never fire.
 2. TZ BUY SL before TZ BUY 2 ever formed → immediate fresh sibling, no REAR.
 3. REAR 2's dual role specifically: after REAR 2 forms, RED1→RED2 against it
-   (not REAR's own SL) opens a fresh BAR generation — asserts REAR's own
-   SL/SL2 do NOT fire in this scenario (SL beats RED1/RED2 is a *per-candle*
+   (not REAR's own SL) opens a fresh BAR generation — asserts REAR's own SL
+   does NOT fire in this scenario (SL beats RED1/RED2 is a *per-candle*
    priority, not a claim that RED1/RED2 can never coexist with an eventually-
    separate SL path).
 

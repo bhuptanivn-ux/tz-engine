@@ -1,5 +1,5 @@
 """
-Smoke test for tz_engine_new_theory.py (v3) using hand-constructed synthetic
+Smoke test for tz_engine_new_theory.py (v5) using hand-constructed synthetic
 OHLC -- NOT real market data (none has been supplied for this theory yet).
 This only checks that each mechanic fires in the right order on data built
 to exercise it; it is not a substitute for verification against real OHLC.
@@ -7,7 +7,7 @@ to exercise it; it is not a substitute for verification against real OHLC.
 Run 1 (Parts 1-2, one continuous day sequence):
   Part 1 (d1-d2):   TZ GREEN(A) forms, then its own SL fires BEFORE RED2 ever
                      fired -- no REAR queued, immediate fresh sibling.
-  Part 2 (d3-d26):  TZ GREEN(B) -> RED1 -> RED2 -> TZ BUY(B) -> TZ BUY 2(B) ->
+  Part 2 (d3-d27):  TZ GREEN(B) -> RED1 -> RED2 -> TZ BUY(B) -> TZ BUY 2(B) ->
                      RED1 -> RED2 -> BAR(B.1) -> BAR2(B.1) -> RED1 -> RED2 ->
                      BAR(B.2) -> BAR2(B.2) -> BAR SL -> BAR SL2 (queues REAR)
                      -> REAR(B) confirms on the very next qualifying candle
@@ -15,14 +15,21 @@ Run 1 (Parts 1-2, one continuous day sequence):
                      a fresh sibling TZ GREEN(C) also spawns the same day, as
                      a side effect of B terminating -- expected, not a race
                      loss, since it hasn't come anywhere near its own TZ BUY)
-                     -> REAR 2(B) -> REAR SL(B) (queues REAR RE-ENTER) ->
-                     REAR RE-ENTER(B) confirms immediately.
+                     -> REAR 2(B) -> REAR SL(B) -- single-tier, no SL2 --
+                     queues REAR RE-ENTER's reference directly (REAR 2's own)
+                     -> REAR RE-ENTER(B) confirms immediately. Asserts REAR
+                     SL2 / REAR RE-ENTER SL2 never fire (removed: "REAR SL is
+                     enough as earlier. Nothing like REAR SL2.").
 
 Run 2 (independent day sequence, its own Engine -- avoids interference with
 Run 1's still-live sibling C):
   TZ GREEN(X) -> RED1 -> RED2 -> TZ BUY(X) -> TZ BUY's own SL fires BEFORE
   TZ BUY 2 ever formed -- no REAR queued, immediate fresh sibling (mirrors
   Part 1 one tier down).
+
+Run 3 (independent day sequence): REAR 2's dual role -- once REAR 2 forms,
+its own RED1->RED2 opens a fresh BAR(1) cascade, independent of (and without
+triggering) REAR's own single-tier SL.
 """
 from tz_engine_new_theory import Day, Engine
 
@@ -75,11 +82,11 @@ run1_rows = [
     ("d23", 98, 111, 98.5, 111),     # REAR(B) confirms (TZ GREEN(C) also spawns)
     ("d24", 98, 100, 95.0, 98.6),    # modest dip+reclaim -- buffers rear_ref_low(B) to 95
     ("d25", 95, 113, 98.7, 113),     # rally -- REAR 2(B) forms
-    ("d26", 96, 96, 94.5, 94.5),     # REAR SL(B) -- gated by REAR 2, two-tier now
+    ("d26", 96, 96, 94.5, 94.5),     # REAR SL(B) -- single-tier, queues REAR
+    # RE-ENTER ref directly (= REAR 2's own reference, 113)
     # (incidentally also breaches TZ GREEN(C)'s ref_low, since it shares B's
     # rear_ref_low value from the d24 update -- harmless, not asserted here)
-    ("d27", 95, 95, 94.2, 94.2),     # REAR SL2(B) -- queues REAR RE-ENTER ref (113, = REAR 2's own)
-    ("d28", 94, 114, 94.5, 114),     # REAR RE-ENTER(B) confirms
+    ("d27", 94, 114, 94.6, 114),     # REAR RE-ENTER(B) confirms
 ]
 run1_expected = [
     "TZ GREEN(A)", "TZ GREEN SL(A)",
@@ -87,9 +94,12 @@ run1_expected = [
     "TZ BUY(B)", "TZ BUY 2(B)",
     "BAR(B.1)", "BAR 2(B.1)", "RED1(B.1)", "RED2(B.1)",
     "BAR(B.2)", "BAR 2(B.2)", "BAR SL(B.2)", "BAR SL2(B.2)",
-    "REAR(B)", "REAR 2(B)", "REAR SL(B)", "REAR SL2(B)", "REAR RE-ENTER(B)",
+    "REAR(B)", "REAR 2(B)", "REAR SL(B)", "REAR RE-ENTER(B)",
     "TZ GREEN(C)",
 ]
+run1_unexpected = ["REAR SL2(B)", "REAR RE-ENTER SL2(B)"]  # no SL2 for
+# either REAR or REAR RE-ENTER -- both are single-tier ("REAR SL is enough
+# as earlier. Nothing like REAR SL2. likewise for REAR RE-ENTER.")
 
 run2_rows = [
     ("e0", 100, 100, 99.0, 99.5),
@@ -139,8 +149,8 @@ run3_expected = [
     "REAR(A)", "REAR 2(A)",
     "BAR(A.2)",
 ]
-run3_unexpected = ["REAR SL(A)", "REAR SL2(A)"]  # must NOT fire -- SL beats RED1/RED2,
-# and this test exercises the RED1/RED2 path specifically, not REAR's own SL
+run3_unexpected = ["REAR SL(A)"]  # must NOT fire -- SL beats RED1/RED2, and
+# this test exercises the RED1/RED2 path specifically, not REAR's own SL
 
 
 def run_and_check_absent(rows, expected_present, expected_absent, label):
@@ -164,7 +174,8 @@ def run_and_check_absent(rows, expected_present, expected_absent, label):
     print()
 
 
-run_and_check(run1_rows, run1_expected, "Run 1: Parts 1-2 (early death / full REAR->REAR RE-ENTER)")
+run_and_check_absent(run1_rows, run1_expected, run1_unexpected,
+                      "Run 1: Parts 1-2 (early death / full REAR->REAR RE-ENTER)")
 run_and_check(run2_rows, run2_expected, "Run 2: TZ BUY SL before TZ BUY 2 -- no REAR")
 run_and_check_absent(run3_rows, run3_expected, run3_unexpected,
                       "Run 3: REAR 2's dual role -- RED1/RED2 opens a fresh BAR cascade")
