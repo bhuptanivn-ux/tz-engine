@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { GLOBAL_INDICES } from "@/lib/indices";
 import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
+import { computeBar2VariantEvents } from "@/lib/tzEngineBar2Variant";
 
 interface SymbolMatch {
   symbol: string;
@@ -19,6 +20,7 @@ interface HistoryRow {
 }
 
 type Mode = "stock" | "index";
+type EngineChoice = "bar2" | "newtheory";
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -46,6 +48,7 @@ export default function Home() {
   const [end, setEnd] = useState(todayISO());
   const [interval, setIntervalValue] = useState("1d");
 
+  const [engineChoice, setEngineChoice] = useState<EngineChoice>("bar2");
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [events, setEvents] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(false);
@@ -139,7 +142,11 @@ export default function Home() {
       }
       const fetchedRows: HistoryRow[] = data.rows || [];
       setRows(fetchedRows);
-      setEvents(computeNewTheoryEvents(fetchedRows));
+      setEvents(
+        engineChoice === "bar2"
+          ? computeBar2VariantEvents(fetchedRows)
+          : computeNewTheoryEvents(fetchedRows)
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch history");
     } finally {
@@ -295,6 +302,18 @@ export default function Home() {
           </div>
         </div>
 
+        <div className="field">
+          <label htmlFor="engine-select">Signal engine (for the Event column)</label>
+          <select
+            id="engine-select"
+            value={engineChoice}
+            onChange={(e) => setEngineChoice(e.target.value as EngineChoice)}
+          >
+            <option value="bar2">BAR 2 / REAR 2 / REAR RE-ENTER 2 + TZ BUY 2 (validated against real 2020 data)</option>
+            <option value="newtheory">New Theory v3 (experimental, unverified)</option>
+          </select>
+        </div>
+
         <button onClick={handleFetch} disabled={loading}>
           {loading ? "Fetching…" : "Fetch data"}
         </button>
@@ -312,10 +331,22 @@ export default function Home() {
             </button>
           </div>
           <p className="muted event-disclaimer">
-            The Event column runs a provisional, unverified trading-signal theory over this
-            data (see NEW_THEORY_RULEBOOK.md) — treat it as a hypothesis, not a confirmed
-            signal. The first row never shows an event: each day is only evaluated against
-            the one before it.
+            {engineChoice === "bar2" ? (
+              <>
+                The Event column runs the BAR 2 / REAR 2 / REAR RE-ENTER 2 engine, with TZ BUY 2 —
+                the BAR/REAR tiers were verified end-to-end against real 2020 OHLC data (see
+                TZ_ENGINE_RULEBOOK_REFERENCE.md); TZ BUY 2 is newer and less independently checked.
+                Still a technical-analysis heuristic, not investment advice.
+              </>
+            ) : (
+              <>
+                The Event column runs New Theory v3, a provisional, unverified trading-signal
+                theory (see NEW_THEORY_RULEBOOK.md) — treat it as a hypothesis, not a confirmed
+                signal.
+              </>
+            )}{" "}
+            The first row never shows an event: each day is only evaluated against the one
+            before it.
           </p>
           <div className="table-wrap">
             <table>
