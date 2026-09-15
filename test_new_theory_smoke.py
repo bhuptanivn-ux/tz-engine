@@ -75,10 +75,11 @@ run1_rows = [
     ("d23", 98, 111, 98.5, 111),     # REAR(B) confirms (TZ GREEN(C) also spawns)
     ("d24", 98, 100, 95.0, 98.6),    # modest dip+reclaim -- buffers rear_ref_low(B) to 95
     ("d25", 95, 113, 98.7, 113),     # rally -- REAR 2(B) forms
-    ("d26", 96, 96, 94.5, 94.5),     # REAR SL(B) -- queues REAR RE-ENTER ref (111).
+    ("d26", 96, 96, 94.5, 94.5),     # REAR SL(B) -- gated by REAR 2, two-tier now
     # (incidentally also breaches TZ GREEN(C)'s ref_low, since it shares B's
     # rear_ref_low value from the d24 update -- harmless, not asserted here)
-    ("d27", 94, 112, 94.8, 112),     # REAR RE-ENTER(B) confirms
+    ("d27", 95, 95, 94.2, 94.2),     # REAR SL2(B) -- queues REAR RE-ENTER ref (113, = REAR 2's own)
+    ("d28", 94, 114, 94.5, 114),     # REAR RE-ENTER(B) confirms
 ]
 run1_expected = [
     "TZ GREEN(A)", "TZ GREEN SL(A)",
@@ -86,7 +87,7 @@ run1_expected = [
     "TZ BUY(B)", "TZ BUY 2(B)",
     "BAR(B.1)", "BAR 2(B.1)", "RED1(B.1)", "RED2(B.1)",
     "BAR(B.2)", "BAR 2(B.2)", "BAR SL(B.2)", "BAR SL2(B.2)",
-    "REAR(B)", "REAR 2(B)", "REAR SL(B)", "REAR RE-ENTER(B)",
+    "REAR(B)", "REAR 2(B)", "REAR SL(B)", "REAR SL2(B)", "REAR RE-ENTER(B)",
     "TZ GREEN(C)",
 ]
 
@@ -104,8 +105,69 @@ run2_expected = [
     "TZ GREEN(A)", "RED1(A)", "RED2(A)", "TZ BUY(A)", "TZ BUY SL(A)",
 ]
 
+run3_rows = [
+    ("f0", 100, 100, 99.0, 99.5),
+    ("f1", 100, 101, 99.2, 101),      # TZ GREEN(A)
+    ("f2", 100, 100, 50.0, 99.3),     # deep dip+reclaim -- buffers A's ref_low far
+    # below anything the rest of this sequence touches (TZ GREEN's own SL
+    # stays checked forever, so it must never collide with a later buffer)
+    ("f3", 50, 103, 99.5, 103),       # rally
+    ("f4", 100, 102, 99.2, 99.2),     # RED1(A) [vs TZ GREEN]
+    ("f5", 99, 101, 98.9, 98.9),      # RED2(A)
+    ("f6", 99, 104, 99.0, 104),       # TZ BUY(A)
+    ("f7", 99, 105, 99.3, 105),       # TZ BUY 2(A)
+    ("f8", 99, 104, 90.0, 99.2),      # deep dip+reclaim -- buffers TZ BUY's ref_low
+    ("f9", 90, 106, 99.5, 106),       # rally
+    ("f10", 100, 105, 99.2, 99.2),    # RED1(A) [vs TZ BUY2]
+    ("f11", 99, 104, 98.9, 98.9),     # RED2(A)
+    ("f12", 99, 107, 99.0, 107),      # BAR(A.1)
+    ("f13", 100, 101, 90.0, 90.5),    # deep dip pre-BAR2 (SL ungated, safe)
+    ("f14", 91, 108, 90.5, 108),      # BAR 2(A.1)
+    ("f15", 90, 91, 89.7, 89.7),      # BAR SL(A.1)
+    ("f16", 89, 90, 89.4, 89.4),      # BAR SL2(A.1) -- queues REAR ref (108)
+    ("f17", 89, 109, 89.5, 109),      # REAR(A) confirms
+    ("f18", 89, 110, 89.8, 110),      # REAR 2(A) forms
+    ("f19", 89, 100, 80.0, 89.6),     # deep dip+reclaim -- buffers rear_ref_low(A) to 80
+    ("f20", 80, 111, 89.9, 111),      # rally -- fresh local high/low for RED1 vs REAR2
+    ("f21", 89, 110, 89.6, 89.6),     # RED1(A) [vs REAR2]
+    ("f22", 89, 109, 89.3, 89.3),     # RED2(A) [vs REAR2]
+    ("f23", 89, 112, 89.5, 112),      # BAR(A.2) -- REAR 2's dual role: fresh cascade opens
+]
+run3_expected = [
+    "TZ GREEN(A)", "RED1(A)", "RED2(A)", "TZ BUY(A)", "TZ BUY 2(A)",
+    "BAR(A.1)", "BAR 2(A.1)", "BAR SL(A.1)", "BAR SL2(A.1)",
+    "REAR(A)", "REAR 2(A)",
+    "BAR(A.2)",
+]
+run3_unexpected = ["REAR SL(A)", "REAR SL2(A)"]  # must NOT fire -- SL beats RED1/RED2,
+# and this test exercises the RED1/RED2 path specifically, not REAR's own SL
+
+
+def run_and_check_absent(rows, expected_present, expected_absent, label):
+    days = [Day(date, o, h, l, c) for date, o, h, l, c in rows]
+    engine = Engine()
+    seen = set()
+    print(f"-- {label} --")
+    print(f"{'date':>4}  events")
+    for date, events in engine.process(days):
+        if events:
+            print(f"{date:>4}  {', '.join(events)}")
+        seen.update(events)
+    missing = [e for e in expected_present if e not in seen]
+    unexpected = [e for e in expected_absent if e in seen]
+    if missing or unexpected:
+        if missing:
+            print(f"\nMISSING in {label} (smoke test FAILED):", missing)
+        if unexpected:
+            print(f"\nUNEXPECTED in {label} (smoke test FAILED):", unexpected)
+        raise SystemExit(1)
+    print()
+
+
 run_and_check(run1_rows, run1_expected, "Run 1: Parts 1-2 (early death / full REAR->REAR RE-ENTER)")
 run_and_check(run2_rows, run2_expected, "Run 2: TZ BUY SL before TZ BUY 2 -- no REAR")
+run_and_check_absent(run3_rows, run3_expected, run3_unexpected,
+                      "Run 3: REAR 2's dual role -- RED1/RED2 opens a fresh BAR cascade")
 
-print("All expected events fired in both runs.")
+print("All expected events fired in all runs.")
 print("Smoke test passed. Reminder: synthetic data only -- still needs verification against real OHLC.")
