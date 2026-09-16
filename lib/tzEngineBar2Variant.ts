@@ -342,6 +342,7 @@ export class TZEngine {
     for (const pid of Array.from(this.branches.keys())) {
       const pc = this.branches.get(pid) as ParentCycle;
       if (!pc.active) continue;
+      const buyWasNone = pc.buy === null;
       const allEvents = this.evalParent(pc, prev, cur, anyLiveBuy);
       perBranchEvents.set(pid, allEvents);
 
@@ -351,12 +352,21 @@ export class TZEngine {
 
       for (const e of allEvents) {
         if (isMilestone(e)) {
-          // "TZ BUY(" reactivating in place is still the same fresh-
-          // milestone text as first formation (no "NEW TZ BUY"
-          // distinction). "TZ BUY 2(" does NOT match this prefix (space
-          // before the digit), so it's a *continuation* milestone -- the
-          // newer-branch-with-an-existing-live-buy exemption applies.
-          const isFreshBuy = e.startsWith("TZ BUY(");
+          // "TZ BUY(" reactivating in place uses the SAME event text as
+          // first formation (no "NEW TZ BUY" distinction) -- but for the
+          // purposes of THIS termination-vs-exemption check, a
+          // reactivation must be treated as a *continuation* milestone,
+          // not a fresh one, or it would unconditionally terminate a
+          // newer sibling's currently-live, ongoing buy outright instead
+          // of merely dormanting it. `buyWasNone` (captured BEFORE this
+          // candle's own evalParent/evalBuy call) distinguishes a genuine
+          // first-ever formation (buy didn't exist a moment ago) from an
+          // in-place reactivation (buy object already existed, just
+          // inactive) -- only the former is "fresh" enough to
+          // unconditionally terminate. "TZ BUY 2(" never matches this
+          // prefix at all (space before the digit), so it was already
+          // exempt regardless.
+          const isFreshBuy = e.startsWith("TZ BUY(") && buyWasNone;
           milestoneAchievers.push([pc, isFreshBuy]);
         }
       }
@@ -445,9 +455,31 @@ export class TZEngine {
     const nonDormant = activePcs.filter((pc) => !pc.dormant);
     if (nonDormant.length === 1) {
       const leader = nonDormant[0];
+      const leaderTopRef = leader.buy !== null ? this.currentTopRef(leader.buy) : leader.refHigh;
       for (const pc of activePcs) {
         if (pc !== leader && pc.dormant && leader.refHigh > pc.refHigh) {
           pc.refHigh = leader.refHigh;
+        }
+        // A dormant sibling's OWN frozen top-level reactivation threshold
+        // (buy.reentryThreshold, set once when ITS OWN TZ BUY SL fired)
+        // must keep getting pulled up to at least match the sole leader's
+        // own current top reference, for as long as it stays dormant --
+        // otherwise a comparatively small bounce could clear this
+        // sibling's OLD, much lower frozen threshold and reactivate it
+        // even while the leader is still very much alive and racing far
+        // above that level. Only ever raises the threshold (never lowers
+        // it) and only while this sibling's own buy is genuinely inactive
+        // (sitting on that frozen value) -- a still-active dormant buy
+        // already tracks every candle's real price action on its own.
+        if (
+          pc !== leader &&
+          pc.dormant &&
+          pc.buy !== null &&
+          !pc.buy.active &&
+          pc.buy.reentryThreshold !== null &&
+          leaderTopRef > pc.buy.reentryThreshold
+        ) {
+          pc.buy.reentryThreshold = leaderTopRef;
         }
       }
     }
