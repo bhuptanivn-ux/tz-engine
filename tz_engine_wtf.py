@@ -1555,8 +1555,20 @@ class TZEngine:
         # already gave up (invalidated, dormant) gets dropped when a fresh
         # one forms -- and ONLY a dead-end (no BAR 2 ever formed) drop
         # frees its number for reuse; one that had BAR 2 stays retired.
+        #
+        # EXCLUDES a lineage that has ALREADY reached its own SL2
+        # (`newest.sl.sl2`) -- confirmed bug, found against real data
+        # (BBOX.NS): once BAR SL2 fires, that lineage is done, and the
+        # ONLY three things that can happen next are TZ BUY's own SL,
+        # REAR (this same lineage's own breakout above its BAR 2's
+        # reference, handled separately below), or a fresh sibling TZ
+        # GREEN(n+1) spawning. A fresh, unrelated BAR(n+1) must NOT be
+        # able to jump in ahead of/instead of REAR just because a generic
+        # breakout happened to occur first -- this mechanism exists for
+        # the genuinely-dead-or-still-racing case, not the already-SL2'd
+        # one, which has its own dedicated path below.
         newest = buy.bar_lineages[-1] if buy.bar_lineages else None
-        newest_is_dead = newest is None or newest.sl is not None
+        newest_is_dead = newest is None or (newest.sl is not None and not newest.sl.sl2)
         fresh_bar_ready = newest_is_dead or buy.bar_pending
         if not reactivated_this_candle and buy.active and fresh_bar_ready and self._bar_entry_shape(prev, cur):
             surviving, dropped = [], []
