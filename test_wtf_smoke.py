@@ -40,11 +40,15 @@ BAR(3) SL + BAR(2) SL2"): the newer lineage breaching its own SL on the
 very same candle the older one confirms SL2 -- only the SL2 event shows.
 
 Test 8: TZ BUY's own top-level SL, firing after the branch has already
-reached BAR 2, wipes everything below it and reactivates above "whichever
-occurred last" (BAR 2's own reference) -- not TZ BUY's own frozen peak, and
-not TZ BUY 2's own frozen peak either, both of which are numerically HIGHER
-at that point (confirms the reactivation threshold tracks the
-structurally deepest tier, not simply the maximum of any frozen values).
+reached BAR 2, wipes everything below it and reactivates above the MAXIMUM
+of every tier's own current reference (TZ BUY's own peak, TZ BUY 2's own
+peak, BAR/BAR 2's ref) -- confirmed via two runs: clearing only BAR 2's ref
+(101) does NOT reactivate when TZ BUY 2's own peak (104) is higher; clearing
+104 does. TZ BUY 2 keeps climbing independently of whatever forms beneath
+it, so the reactivation threshold cannot simply defer to the deepest tier
+unconditionally -- it must take the max across everything (explicit user
+correction, worked example given for REAR 2's own SL reforming above
+"REAR 2's own ref or BAR 2's ref, whichever is higher").
 
 Test 9: TZ BUY 2's own SL is decisive -- it wipes the whole BAR family
 below it (even one that already has its own BAR 2) and, per an explicit
@@ -62,10 +66,21 @@ Test 11 / 12: REAR 2's own SL, and REAR RE-ENTER 2's own SL, are decisive
 (mirror TZ BUY 2's own SL, one/two tiers down) -- they wipe RED1 and
 bar_pending, close the gate on RED1 re-attaching to REAR/REAR RE-ENTER
 until they reform, and recover under the same event text. Fired
-deliberately BEFORE their own "fresh cascade" BAR would have formed: once
-that fresh BAR actually forms, REAR/REAR RE-ENTER (and their own "2") go
-dormant and stop being checked for their own SL via the normal path, so
-this is the only place in the flow where that SL is actually reachable.
+deliberately BEFORE their own "fresh cascade" BAR confirms, to sidestep a
+routing quirk fixed for Test 13 below (see there).
+
+Test 13 / 13b: corrects an actual bug found while explaining Tests 11/12
+to the user -- REAR 2's own SL must remain reachable even AFTER its own
+"fresh cascade" BAR/BAR 2 has formed (worked example given: "REAR - REAR 2
+- RED1 - RED2 - BAR - BAR 2 - BAR 2 SL + REAR 2 SL - REAR SL... this is
+possible"), and its reactivation threshold is the MAXIMUM of REAR 2's own
+reference and BAR 2's reference, whichever is higher -- not simply
+"defer to the deepest tier" the way an earlier draft of _current_top_ref
+assumed (this also corrected Test 8's premise -- see there). Test 13b
+additionally confirms REAR 2's own SL opens spawn eligibility for a fresh
+sibling TZ GREEN(n+1), mirroring TZ BUY 2's own SL (explicit user
+addition: "similarly TZ GREEN cycle can start after REAR 2 SL/REAR RE
+ENTER 2 SL as well").
 """
 from tz_engine_wtf import Day, TZEngine, is_milestone
 
@@ -279,9 +294,11 @@ assert set(j13_events) == {"BAR HH(A.2)", "BAR SL HH(A.1)"}, \
 
 # ---------------------------------------------------------------------------
 # Test 8: TZ BUY's own SL, firing after BAR 2 has already formed, reactivates
-# above BAR 2's own reference ("whichever occurred last") -- NOT TZ BUY's own
-# frozen peak or TZ BUY 2's own frozen peak, both numerically higher at that
-# point
+# above the MAXIMUM of every tier's own current reference (TZ BUY's own peak,
+# TZ BUY 2's own peak, BAR/BAR 2's ref) -- NOT unconditionally the deepest
+# tier's ref. Here TZ BUY 2's own peak (104) is numerically HIGHER than BAR
+# 2's ref (101) despite being structurally shallower, since TZ BUY 2 keeps
+# climbing independently of whatever forms beneath it -- so 104 must win.
 # ---------------------------------------------------------------------------
 rows8 = [
     ("k0", 100, 100, 99.0, 99.5),
@@ -298,18 +315,30 @@ rows8 = [
     ("k8", 99.5, 100, 99.5, 100),     # BAR(A.1) ref_high=100 ref_low=99.5
     ("k9", 99.6, 101, 99.6, 101),     # BAR 2(A.1) ref_high=101 ref_low=99.6
     ("k10", 99.3, 99.5, 99.1, 99.2),  # TZ BUY SL(A) -- wipes TZ BUY 2/BAR/BAR 2;
-    # reentry_threshold should be BAR 2's own ref (101), not 104
-    ("k11", 99.2, 102, 99.2, 102),    # reactivates at 102 -- clears 101 but NOT 104,
-    # proving the threshold used was BAR 2's ref, not the (higher) frozen peaks
+    # reentry_threshold should be max(104, 101) = 104
 ]
-seen8 = run(rows8, "Test 8: TZ BUY SL reactivates above BAR 2's ref, not the higher frozen peaks")
+rows8_neg = rows8 + [
+    ("k11", 99.2, 102, 99.2, 102),    # clears BAR 2's ref (101) but NOT 104 -- must
+    # NOT reactivate TZ BUY; spawn eligibility (TZ BUY's own SL) is open instead,
+    # so a fresh TZ GREEN(B) forms
+]
+seen8_neg = run(rows8_neg, "Test 8a: clears BAR 2's ref but not the higher TZ BUY 2 peak -- no reactivation")
+assert "TZ GREEN(B)" in seen8_neg, "Test 8a FAILED: should spawn a fresh sibling, not reactivate TZ BUY"
+k11_neg_events = next(evs for date, evs in run.last_trace if date == "k11")
+assert "TZ BUY(A)" not in k11_neg_events, \
+    f"Test 8a FAILED: TZ BUY must NOT reactivate at 102 (below the true threshold of 104), got {k11_neg_events}"
+
+rows8_pos = rows8 + [
+    ("k11", 99.2, 104.5, 99.2, 104.5),  # clears 104 (TZ BUY 2's own peak) -- reactivates
+]
+seen8_pos = run(rows8_pos, "Test 8b: clears the higher TZ BUY 2 peak (104) -- reactivates")
 expected8 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "RED1(A)", "RED2(A)",
              "BAR(A.1)", "BAR 2(A.1)", "TZ BUY SL(A)"]
-missing8 = [e for e in expected8 if e not in seen8]
-assert not missing8, f"Test 8 MISSING: {missing8}"
-k11_events = next(evs for date, evs in run.last_trace if date == "k11")
-assert k11_events == ["TZ BUY(A)"], \
-    f"Test 8 FAILED: TZ BUY should reactivate at k11 (above BAR 2's ref 101), got {k11_events}"
+missing8 = [e for e in expected8 if e not in seen8_pos]
+assert not missing8, f"Test 8b MISSING: {missing8}"
+k11_pos_events = next(evs for date, evs in run.last_trace if date == "k11")
+assert k11_pos_events == ["TZ BUY(A)"], \
+    f"Test 8b FAILED: TZ BUY should reactivate at k11 (above max(104, 101)=104), got {k11_pos_events}"
 
 # ---------------------------------------------------------------------------
 # Test 9: TZ BUY 2's own SL wipes the BAR family below it (even with BAR 2
@@ -356,9 +385,13 @@ assert "TZ BUY SL(A)" not in seen9, "Test 9 setup: TZ BUY itself must stay activ
 # ---------------------------------------------------------------------------
 rows10 = rows7 + [
     ("j16", 93.4, 93.5, 93.0, 93.2),   # REAR SL(A) -- no REAR 2 ever formed
-    ("j17", 93.1, 99, 93.1, 99),       # REAR RE-ENTER(A) above 98 -- not a dead end
+    ("j17", 93.2, 105, 93.2, 105),     # REAR RE-ENTER(A) -- not a dead end. Threshold is
+    # max(REAR's own ref 98, TZ BUY 2's own peak 104) = 104, since TZ BUY 2 (still alive,
+    # never wiped by REAR forming) climbed higher independently -- so this must clear 104,
+    # not just 98
     ("j18", 93.0, 93.2, 92.6, 92.8),   # REAR RE-ENTER SL(A) -- no REAR RE-ENTER 2 either
-    ("j19", 92.7, 100, 92.7, 100),     # REAR RE-ENTER(A) self-recovers above 99, same text
+    ("j19", 92.7, 106, 92.7, 106),     # REAR RE-ENTER(A) self-recovers, same text --
+    # threshold is now max(TZ BUY 2's peak 104, REAR RE-ENTER's own peak 105) = 105
 ]
 seen10 = run(rows10, "Test 10: REAR SL / REAR RE-ENTER SL never dead ends")
 expected10 = ["REAR(A)", "REAR SL(A)", "REAR RE-ENTER(A)", "REAR RE-ENTER SL(A)"]
@@ -411,15 +444,17 @@ assert "REAR SL(A)" not in seen11, "Test 11 setup: REAR itself must not fail her
 # ---------------------------------------------------------------------------
 rows12 = rows10 + [
     ("j20", 92.5, 100, 70, 99),        # REAR RE-ENTER LL(A) -- buffers rre.ref_low to 70
-    ("j21", 92, 101, 92, 101),         # REAR RE-ENTER 2(A) ref_high=101 ref_low=92
-    ("j22", 92.5, 102, 92.5, 102),     # rally -- REAR RE-ENTER 2 HH -> 102
+    ("j21", 92, 107, 92, 107),         # REAR RE-ENTER 2(A) -- forms off rre's own ref
+    # (106, from Test 10's own corrected reactivation) -- ref_high=107 ref_low=92
+    ("j22", 92.5, 108, 92.5, 108),     # rally -- REAR RE-ENTER 2 HH -> 108
     ("j23", 92.8, 93, 92.3, 92.3),     # RED1(A) [gated on REAR RE-ENTER 2 existing]
     ("j24", 92.8, 92.8, 92.1, 92.1),   # RED2(A) -- bar_pending=True
     ("j25", 92, 92, 91.7, 91.9),       # REAR RE-ENTER 2 SL(A) -- fires before the fresh
     # BAR cascade ever confirms; wipes RED1/bar_pending
     ("j26", 91.6, 91.6, 91.4, 91.4),   # RED1-shaped day -- gate closed, must produce
     # NOTHING
-    ("j27", 91.5, 103, 91.5, 103),     # REAR RE-ENTER 2(A) recovers, same label
+    ("j27", 91.5, 109, 91.5, 109),     # REAR RE-ENTER 2(A) recovers, same label -- must
+    # clear 108, its own peak set at j22
 ]
 seen12 = run(rows12, "Test 12: REAR RE-ENTER 2's own SL wipe + gate + recovery")
 expected12 = ["REAR RE-ENTER(A)", "REAR RE-ENTER 2(A)", "RED1(A)", "RED2(A)",
@@ -429,6 +464,64 @@ assert not missing12, f"Test 12 MISSING: {missing12}"
 j26_events = next(evs for date, evs in run.last_trace if date == "j26")
 assert j26_events == [], \
     f"Test 12 FAILED: RED1 must not reattach while REAR RE-ENTER 2's own SL is active, got {j26_events}"
+
+# ---------------------------------------------------------------------------
+# Test 13: REAR 2's own SL fires AFTER its own fresh-cascade BAR/BAR 2 has
+# already formed (the exact scenario the user gave -- "BAR 2 SL + REAR 2 SL"
+# firing together the same candle) -- proving a real dormancy bug is fixed
+# (previously, once that BAR formed, _supersede_rear_for_new_bar wrongly
+# marked REAR/REAR 2 dormant, permanently blocking REAR 2's own SL check).
+# Reactivation threshold is max(REAR 2's own ref, BAR 2's ref) -- here REAR
+# 2's OWN reference (107) wins over the deeper BAR 2 tier (100), the
+# opposite of Test 8's TZ BUY example, proving it's a genuine comparison.
+# ---------------------------------------------------------------------------
+rows13 = rows7 + [
+    ("j15b", 93, 98, 80, 97),           # REAR LL(A) -- buffers rear.ref_low to 80
+    ("j16", 93.6, 106, 93.6, 106),      # REAR 2(A) ref_high=106 -- already above TZ
+    # BUY 2's own peak (104), so this test isolates REAR 2 vs BAR 2 specifically
+    ("j17", 94.2, 107, 94.2, 107),      # rally -- REAR 2 HH -> 107
+    ("j18", 94.5, 94.5, 94.0, 94.0),    # RED1(A)
+    ("j19", 94.3, 94.3, 93.8, 93.8),    # RED2(A) -- bar_pending=True
+    ("j20", 93.9, 94.6, 93.9, 94.6),    # BAR(A.1) -- REAR 2's own dual-role cascade
+    ("j21", 94, 100, 94, 100),          # BAR 2(A.1) ref_high=100 ref_low=94 -- LOWER
+    # than REAR 2's own 107
+    ("j22", 93.5, 93.5, 93.3, 93.5),    # BAR 2 SL(A.1) + REAR 2 SL(A) -- SAME candle,
+    # exactly the coincidence the user described. REAR 2's own SL wipes the BAR
+    # family entirely (bar_lineages=[])
+    ("j23", 93.2, 93.2, 93.0, 93.0),    # RED1-shaped day -- gate closed, must produce
+    # NOTHING
+    ("j24", 93.1, 108, 93.1, 108),      # REAR 2(A) recovers -- must clear max(107, 100)
+    # = 107, not just BAR 2's 100
+]
+seen13 = run(rows13, "Test 13: REAR 2 SL reachable after its own BAR/BAR 2 cascade forms")
+expected13 = ["REAR(A)", "REAR 2(A)", "RED1(A)", "RED2(A)", "BAR(A.1)", "BAR 2(A.1)",
+              "BAR 2 SL(A.1)", "REAR 2 SL(A)"]
+missing13 = [e for e in expected13 if e not in seen13]
+assert not missing13, f"Test 13 MISSING: {missing13}"
+j22_events = next(evs for date, evs in run.last_trace if date == "j22")
+assert set(j22_events) == {"BAR 2 SL(A.1)", "REAR 2 SL(A)"}, \
+    f"Test 13 FAILED: both SLs must fire together the same candle, got {j22_events}"
+j23_events = next(evs for date, evs in run.last_trace if date == "j23")
+assert j23_events == [], \
+    f"Test 13 FAILED: RED1 must not reattach while REAR 2's own SL is active, got {j23_events}"
+j24_events = next(evs for date, evs in run.last_trace if date == "j24")
+assert j24_events == ["REAR 2(A)"], \
+    f"Test 13 FAILED: REAR 2 should recover at j24 (above max(107,100)=107), got {j24_events}"
+
+# ---------------------------------------------------------------------------
+# Test 13b: REAR 2's own SL also opens spawn eligibility for a fresh sibling
+# TZ GREEN(n+1) -- same principle as TZ BUY 2's own SL (Test 9), one tier
+# down. Diverges from Test 13 right after the SL fires.
+# ---------------------------------------------------------------------------
+rows13_spawn = rows13[:-2] + [
+    ("j23b", 93.3, 94, 93.3, 94),       # doesn't clear 107 -- but qualifies as a fresh
+    # TZ GREEN breakout -- should spawn TZ GREEN(B) since REAR 2's own SL is active
+]
+seen13b = run(rows13_spawn, "Test 13b: spawn eligibility opens after REAR 2's own SL")
+assert "TZ GREEN(B)" in seen13b, "Test 13b FAILED: should spawn a fresh sibling"
+j23b_events = next(evs for date, evs in run.last_trace if date == "j23b")
+assert j23b_events == ["TZ GREEN(B)"], \
+    f"Test 13b FAILED: expected only TZ GREEN(B) to spawn, got {j23b_events}"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

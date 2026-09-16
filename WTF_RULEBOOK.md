@@ -55,32 +55,33 @@ REAR RE-ENTER, REAR RE-ENTER 2.** Every one of these:
   elsewhere in the same buy** the moment the current newest lineage is no
   longer pre-SL -- see "Fresh BAR formation" below.
 
-## "Whichever occurred last" -- the reactivation threshold
+## "Whichever is higher" -- the reactivation threshold
 
 Implemented as `Engine._current_top_ref(buy)`. Whenever a Family-1 tier's
 own SL fires (or REAR RE-ENTER self-recovers), the reactivation/re-entry
-threshold is NOT just that tier's own frozen reference -- it's the current
-reference of the deepest structure the buy had actually reached, snapshotted
-BEFORE the wipe:
+threshold is NOT just that tier's own frozen reference -- it's the
+**maximum** of every tier's current reference across the whole chain
+(TZ BUY's own ref, TZ BUY 2's ref, every BAR lineage's ref and its own BAR
+2 ref, REAR's ref and REAR 2's ref, REAR RE-ENTER's ref and REAR RE-ENTER
+2's ref -- whichever of these currently hold state), snapshotted BEFORE
+the wipe.
 
-- If `bar_lineages` is non-empty: the newest lineage's own BAR 2 reference
-  (or the lineage's own reference, if it never got a BAR 2). `bar_lineages`
-  is checked FIRST inside whichever REAR-family branch applies, because
-  forming REAR/REAR RE-ENTER always wipes it immediately -- so a non-empty
-  list can never be a stale leftover from before the current REAR-family
-  tier existed.
-- Else if REAR RE-ENTER exists: its own "2"'s reference, or its own.
-- Else if REAR exists: its own "2"'s reference, or its own.
-- Else if TZ BUY 2 exists: its reference.
-- Else: TZ BUY's own frozen reference.
-
-This can be numerically LOWER than a shallower tier's own frozen peak (TZ
-BUY's or TZ BUY 2's own HH tracking keeps climbing independently and isn't
-guaranteed to stay below whatever BAR/BAR 2 eventually reach) -- the
-deepest tier's value governs regardless, because it is structurally the
-most recent. Confirmed by explicit worked examples from the user, and by
-Test 8 in `test_wtf_smoke.py` (TZ BUY's own SL reactivates above BAR 2's
-ref of 101, not the numerically higher frozen peaks of 104).
+**Correction from an earlier draft**: this method originally deferred
+UNCONDITIONALLY to the deepest/most-recently-formed tier (e.g. always
+BAR 2's ref over TZ BUY 2's own ref, on the theory that "structurally most
+recent" always wins). That was wrong. A shallower tier's own reference can
+climb HIGHER than what forms beneath it -- only TZ BUY 2 has an explicit
+HH-mute rule, and even that only suppresses the DISPLAY text, never the
+underlying value, which keeps climbing on every new high regardless of
+mute state. The user gave an explicit worked example forcing the
+distinction: REAR 2 reforming after its own SL (with a BAR/BAR 2 cascade
+racing underneath it) must use "REAR 2's own ref high OR BAR 2's ref high,
+WHICHEVER IS HIGHER" -- an explicit max, not a hand-off. `test_wtf_smoke.py`
+now has both directions covered: Test 8 (the deeper tier, BAR 2 at 101, is
+LOWER than the shallower TZ BUY 2's own peak of 104 -- 104 wins) and Test
+13 (the shallower tier, REAR 2 at 107, is HIGHER than the deeper BAR 2's
+100 -- REAR 2's own ref wins). Whichever is actually higher governs, full
+stop -- there is no structural precedence.
 
 ## Rules, tier by tier
 
@@ -171,9 +172,10 @@ beyond this).
 
 ## Multi-branch / spawn eligibility / leadership
 
-Spawn eligibility for a fresh sibling TZ GREEN(n+1) opens on EITHER TZ
-BUY's own top-level SL OR TZ BUY 2's own SL (the latter an explicit
-addition/reversal -- see above). Leadership contest, dormancy, and
+Spawn eligibility for a fresh sibling TZ GREEN(n+1) opens on TZ BUY's own
+top-level SL, TZ BUY 2's own SL, REAR 2's own SL, or REAR RE-ENTER 2's own
+SL (all but the first are explicit additions/reversals -- see above).
+Leadership contest, dormancy, and
 reference inheritance across sibling branches needed **no new code** --
 already correctly handled by the base engine's existing
 `_milestone_blocked` / dormancy / `lowest_free_id` machinery; only the
@@ -189,7 +191,7 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
 
 ## Testing
 
-`test_wtf_smoke.py` -- 9 synthetic scenarios (`python3 test_wtf_smoke.py`):
+`test_wtf_smoke.py` -- 15 synthetic scenarios (`python3 test_wtf_smoke.py`):
 
 1. Full escalation TZ BUY → TZ BUY 2 → RED1 → RED2 → BAR(A.1).
 2. TZ BUY SL with no TZ BUY 2 ever formed → reactivates in place off the
@@ -207,10 +209,10 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
    case the user flagged directly ("a single candle can trigger BAR(3) SL
    + BAR(2) SL2"): the newer lineage's own SL coinciding with the older
    one's SL2 on the same candle -- only the SL2 event shows.
-8. TZ BUY's own SL, firing after BAR 2 has formed, reactivates above BAR
-   2's reference specifically -- not the numerically higher frozen peaks
-   of TZ BUY/TZ BUY 2 (proves "whichever occurred last" is structural, not
-   simply `max()`).
+8 (a/b). TZ BUY's own SL, firing after BAR 2 has formed, reactivates above
+   the MAXIMUM of every tier's own reference -- here TZ BUY 2's own peak
+   (104) is higher than BAR 2's ref (101), so 104 wins; clearing only 101
+   does not reactivate (8a), clearing 104 does (8b).
 9. TZ BUY 2's own SL wipes the BAR family (even with BAR 2 already formed)
    and opens spawn eligibility for a fresh sibling TZ GREEN(n+1), while TZ
    BUY itself stays active throughout.
@@ -222,24 +224,48 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
 11 / 12. REAR 2's own SL, and REAR RE-ENTER 2's own SL, wipe RED1/
     bar_pending, close the RED1 gate on REAR/REAR RE-ENTER until they
     reform, and recover under the same event text -- mirroring TZ BUY 2's
-    own SL one/two tiers down. Triggered deliberately BEFORE their own
-    "fresh cascade" BAR ever confirms -- see the note below.
+    own SL one/two tiers down. Triggered BEFORE their own "fresh cascade"
+    BAR confirms, ahead of the fix below.
+13 (/ 13b). REAR 2's own SL fires AFTER its own fresh-cascade BAR/BAR 2
+    has already formed (`BAR 2 SL(A.1)` + `REAR 2 SL(A)` together on the
+    same candle, exactly the scenario the user gave) -- proving the
+    dormancy bug (below) is fixed -- and reforms above `max(REAR 2's own
+    ref, BAR 2's ref)`, with REAR 2's own (higher) reference winning this
+    time, the opposite of Test 8. 13b confirms this also opens spawn
+    eligibility for a fresh sibling TZ GREEN(n+1).
 
-**Note on REAR 2 / REAR RE-ENTER 2's own SL reachability**: once their own
-fresh-cascade BAR actually forms (`_check_bar_pending` firing under
-`bar_confirms_today`), `_supersede_rear_for_new_bar` marks REAR/REAR
-RE-ENTER (and their own "2") **dormant** -- at that point `_eval_rear2` /
-`_eval_rre2` return immediately (`if rear2.dormant: return ev`) and never
-check their own SL again for as long as that BAR cascade races. From then
-on, only REAR's/REAR RE-ENTER's own top-level SL (still fully live, per
-Family 1) can still terminate everything, including that BAR cascade.
-This means REAR 2's/REAR RE-ENTER 2's own SL is only actually reachable in
-the window between RED1/RED2 setting `bar_pending` and that fresh BAR's
-own breakout confirming -- which is exactly where Tests 11/12 trigger it.
-Whether a fresh BAR should ALSO be able to form via a "no RED1/RED2
-needed" mechanism at this tier (mirroring the BAR-family fix) once that
-window is missed is an open question the user has not yet addressed --
-not fixed here, since it wasn't part of any confirmed rule.
+**Bug found and fixed this pass: REAR 2 / REAR RE-ENTER 2's own SL was
+wrongly unreachable after their own fresh-cascade BAR formed.** Once that
+BAR actually confirmed (`_check_bar_pending` firing under
+`bar_confirms_today`), `_supersede_rear_for_new_bar` was unconditionally
+marking REAR/REAR RE-ENTER (and their own "2") **dormant** -- at which
+point `_eval_rear2`/`_eval_rre2` returned immediately
+(`if rear2.dormant: return ev`) and never checked their own SL again for
+as long as that BAR cascade raced. This directly contradicted the
+`Rear.dormant`/`RearReenter.dormant` field's own documented intent
+("suppresses HH display... not routing/re-attachment") and was caught by
+the user via a worked example: `REAR - REAR 2 - RED1 - RED2 - BAR - BAR 2
+- BAR 2 SL + REAR 2 SL - REAR SL` -- "this is possible," meaning REAR 2's
+own SL must still fire even with a live BAR/BAR 2 underneath it. Root
+cause: `_supersede_rear_for_new_bar` is only ever meaningfully needed to
+retire a genuinely OLD, leftover ancestor -- never the CURRENT REAR/REAR
+RE-ENTER whose own "2" just spawned this exact BAR as its own dual-role
+cascade. Fixed by giving `_check_bar_pending` a `supersede_rear` flag,
+defaulting True for the top-level call site (where it turns out to always
+be a no-op in practice, since that site is unreachable while a live
+non-dormant REAR/REAR RE-ENTER exists) and passed `False` explicitly from
+the `bar_confirms_today` call site. Covered by Test 13/13b in
+`test_wtf_smoke.py`, which reproduces the user's exact scenario (`BAR 2
+SL(A.1) + REAR 2 SL(A)` firing together on the same candle) and confirms
+REAR 2 reforms above `max(REAR 2's own ref, BAR 2's ref)`.
+
+**Spawn eligibility, extended again**: per the same principle as TZ BUY
+2's own SL, REAR 2's own SL and REAR RE-ENTER 2's own SL ALSO open spawn
+eligibility for a fresh sibling TZ GREEN(n+1) ("Just like New TZ GREEN
+cycle can start after TZ BUY 2 SL, similarly TZ GREEN cycle can start
+after REAR 2 SL/REAR RE ENTER 2 SL as well" -- explicit user addition).
+Implemented as `tip_rear2_sl`/`tip_rre2_sl` in `process()`, alongside the
+existing `tip_tzbuy2_sl`. Test 13b confirms this for REAR 2's own SL.
 
 ## Open items
 
