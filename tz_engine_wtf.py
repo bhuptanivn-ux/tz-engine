@@ -66,12 +66,17 @@ Specifics:
   NEWEST lineage's own BAR 2 confirms.
 - Fresh BAR formation -- two independent triggers: (1) buy.bar_pending
   (fresh RED2) plus a qualifying breakout; (2) whenever the newest lineage
-  is no longer pre-SL, a qualifying breakout ALONE forms a fresh BAR --
-  NO RED1/RED2 needed. (2) is the real-data-motivated fix: without it, a
-  BAR SL with no BAR 2 left bar_pending permanently unset-able, and an
-  engine run went silent for 84 weeks after exactly that (KALYANKJIL.NS,
-  2025-02-23 onward). A dead-end lineage's (no BAR 2) sub-label is freed
-  for reuse when this happens; one that got BAR 2 stays retired forever.
+  is no longer pre-SL BUT HAS NOT YET REACHED ITS OWN SL2, a qualifying
+  breakout ALONE forms a fresh BAR -- NO RED1/RED2 needed. (2) is the
+  real-data-motivated fix: without it, a BAR SL with no BAR 2 left
+  bar_pending permanently unset-able, and an engine run went silent for
+  84 weeks after exactly that (KALYANKJIL.NS, 2025-02-23 onward). A
+  dead-end lineage's (no BAR 2) sub-label is freed for reuse when this
+  happens; one that got BAR 2 stays retired forever. EXCLUDES a lineage
+  that already reached its own SL2 -- a second real-data bug
+  (BBOX.NS): once SL2 fires, the only three valid next events are TZ
+  BUY's own SL, REAR, or a fresh sibling TZ GREEN(n+1); a generic
+  breakout must not let an unrelated BAR(n+1) jump in ahead of REAR.
 - A BAR's own SL2 ALWAYS produces a fresh REAR off that BAR's own
   reference -- never a reactivation of some old dormant ancestor.
 - REAR 2 / REAR RE-ENTER 2 mirror BAR 2's shape but are Family 1: their

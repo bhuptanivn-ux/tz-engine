@@ -86,6 +86,15 @@ Test 14 / 14b: same as Test 13/13b, one tier deeper -- REAR RE-ENTER 2's
 own SL stays reachable after its own fresh-cascade BAR/BAR 2 has formed,
 reactivates above max(REAR RE-ENTER 2's own ref, BAR 2's ref), and its own
 SL also opens spawn eligibility for a fresh sibling TZ GREEN(n+1).
+
+Test 15: corrects a real bug found against real data (BBOX.NS) -- once a
+BAR lineage reaches its own SL2, the fresh-BAR-without-RED1/RED2 mechanism
+(Test 6) must NOT let an unrelated new BAR jump in on a merely generic
+breakout. The only three valid outcomes after BAR SL2 are TZ BUY's own
+SL, REAR (this same lineage's own breakout above its BAR 2's reference),
+or a fresh sibling TZ GREEN(n+1) -- confirmed explicitly by the user. A
+breakout that clears only the previous day's high, not BAR 2's own
+reference, must produce neither a bogus BAR nor REAR.
 """
 from tz_engine_wtf import Day, TZEngine, is_milestone
 
@@ -579,6 +588,26 @@ assert "TZ GREEN(B)" in seen14b, "Test 14b FAILED: should spawn a fresh sibling"
 j28b_events = next(evs for date, evs in run.last_trace if date == "j28b")
 assert j28b_events == ["TZ GREEN(B)"], \
     f"Test 14b FAILED: expected only TZ GREEN(B) to spawn, got {j28b_events}"
+
+# ---------------------------------------------------------------------------
+# Test 15: once a BAR lineage reaches its own SL2, the fresh-BAR-without-
+# RED1/RED2 mechanism (Test 6) must NOT fire on a merely generic breakout --
+# only TZ BUY's own SL, REAR, or a fresh sibling TZ GREEN(n+1) may follow.
+# Built on rows7 minus its final row (which forms REAR via the SPECIFIC
+# breakout above BAR 2's own ref) -- diverges with a breakout that clears
+# only the previous day's high, not BAR 2's higher reference.
+# ---------------------------------------------------------------------------
+rows15 = rows7[:-1] + [
+    ("j15", 93.4, 93.9, 93.4, 93.9),  # clears prev day's high (a generic
+    # breakout) but NOT BAR 2(A.1)'s own ref (97) -- must NOT spawn a bogus
+    # fresh BAR(A.2); TZ GREEN(B) spawning instead (spawn eligibility opened
+    # by the lineage's own SL2) is a valid outcome, a bogus BAR is not
+]
+seen15 = run(rows15, "Test 15: no fresh BAR after SL2 on a merely-generic breakout")
+j15_events = next(evs for date, evs in run.last_trace if date == "j15")
+assert not any(e.startswith("BAR(") for e in j15_events), \
+    f"Test 15 FAILED: a fresh BAR must not form once the newest lineage has reached its own SL2, got {j15_events}"
+assert "REAR(A)" not in seen15, "Test 15 setup: this breakout must not clear BAR 2's own ref either"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

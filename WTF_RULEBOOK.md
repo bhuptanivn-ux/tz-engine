@@ -127,15 +127,27 @@ all.
 1. The original mechanism: `buy.bar_pending` (a fresh RED2 fired) plus a
    qualifying breakout shape.
 2. **Added this pass, real-data-motivated**: whenever the current newest
-   lineage is no longer pre-SL (dead-ended or otherwise), a qualifying
-   breakout ALONE forms a fresh BAR immediately -- **no RED1/RED2 needed**.
-   Without this, a BAR SL firing with no BAR 2 ever having formed left
-   `bar_pending` permanently unset-able (nothing could ever trigger a fresh
-   RED2 again), which produced a genuine bug against real data: an engine
-   run went completely silent for 84 weeks after exactly this happened
-   (KALYANKJIL.NS, BAR SL fired 2025-02-23 with no BAR 2, zero further
-   events through 2026-09-06). Confirmed by the user: "CAN A NEW BAR OCCUR
-   after BAR SL: YES... In this case NO NEED TO HAVE A RED 1 - RED 2."
+   lineage is no longer pre-SL (dead-ended or otherwise) but has **not**
+   yet reached its own SL2, a qualifying breakout ALONE forms a fresh BAR
+   immediately -- **no RED1/RED2 needed**. Without this, a BAR SL firing
+   with no BAR 2 ever having formed left `bar_pending` permanently
+   unset-able (nothing could ever trigger a fresh RED2 again), which
+   produced a genuine bug against real data: an engine run went completely
+   silent for 84 weeks after exactly this happened (KALYANKJIL.NS, BAR SL
+   fired 2025-02-23 with no BAR 2, zero further events through
+   2026-09-06). Confirmed by the user: "CAN A NEW BAR OCCUR after BAR SL:
+   YES... In this case NO NEED TO HAVE A RED 1 - RED 2."
+   **Corrected again this pass** (a second real-data bug, BBOX.NS): this
+   trigger must NOT fire once the newest lineage has already reached its
+   own SL2 -- at that point the only three valid outcomes are TZ BUY's
+   own SL, REAR (this lineage's own breakout above its BAR 2's reference),
+   or a fresh sibling TZ GREEN(n+1). The original condition
+   (`newest.sl is not None`) didn't check `sl.sl2`, so a merely generic
+   breakout could let an unrelated BAR(n+1) jump in ahead of REAR. Fixed
+   by excluding `newest.sl.sl2` from the "dead" check. Impact on
+   BBOX.NS was severe: a single wrong `BAR(A.4)` at 2006-06-18 kept that
+   dead branch alive for the rest of the dataset (through 2023),
+   suppressing the correct `TZ GREEN(B)`/`(C)` progression the whole time.
 
 **BAR sub-label reuse**: a dead lineage's numeric sub-label (e.g. the `1`
 in `"A.1"`) is freed for reuse ONLY if it was a **complete dead end** (its
@@ -191,7 +203,7 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
 
 ## Testing
 
-`test_wtf_smoke.py` -- 17 synthetic scenarios (`python3 test_wtf_smoke.py`):
+`test_wtf_smoke.py` -- 18 synthetic scenarios (`python3 test_wtf_smoke.py`):
 
 1. Full escalation TZ BUY → TZ BUY 2 → RED1 → RED2 → BAR(A.1).
 2. TZ BUY SL with no TZ BUY 2 ever formed → reactivates in place off the
@@ -238,6 +250,13 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
     SL(A.1)` + `REAR RE-ENTER 2 SL(A)` together), reforms above
     `max(REAR RE-ENTER 2's own ref, BAR 2's ref)`, and also opens spawn
     eligibility for a fresh sibling TZ GREEN(n+1).
+15. Bug fix found against real data (BBOX.NS): once a BAR lineage reaches
+    its own SL2, the fresh-BAR-without-RED1/RED2 mechanism (Test 6) must
+    NOT let an unrelated new BAR jump in on a merely generic breakout --
+    only TZ BUY's own SL, REAR, or a fresh sibling TZ GREEN(n+1) may
+    follow. Impact was severe: a single wrong `BAR(A.4)` kept a dead
+    branch alive for 17 years of the BBOX.NS dataset, suppressing the
+    correct branch progression the whole time.
 
 **Bug found and fixed this pass: REAR 2 / REAR RE-ENTER 2's own SL was
 wrongly unreachable after their own fresh-cascade BAR formed.** Once that
