@@ -1,0 +1,3 @@
+# api/run.py and the core engine (tz_engine_wtf.py) use only the Python
+# standard library. openpyxl is an optional, lazily-imported dependency of
+# load_days_xlsx() (local .xlsx loading only) -- not needed for the API.

@@ -106,7 +106,6 @@ branches needed no new code -- already generic in the base engine.
 """
 from dataclasses import dataclass, field
 from typing import Optional
-import openpyxl
 import datetime
 
 THRESH = 0.20
@@ -135,6 +134,10 @@ class Day:
 
 
 def load_days_xlsx(path):
+    import openpyxl  # optional dependency -- only needed for .xlsx loading,
+    # not for the core engine (Day/TZEngine), so it's kept out of the
+    # module-level imports for lightweight callers (e.g. the Vercel API
+    # wrapper in api/run.py, which only needs JSON in/out).
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb['Sheet1']
     days = []
@@ -1692,6 +1695,29 @@ class TZEngine:
             # has to form from scratch before RED1/RED2 can attach again.
             return ev
         return ev
+
+
+def run_series(days_in):
+    """Runs a fresh TZEngine over a list of OHLC rows and returns
+    [{"date": ..., "events": [...]}, ...] for every candle after the
+    first (which only ever serves as the initial "prev" reference, per
+    process()'s own (prev, cur) signature). Each row in `days_in` may
+    already be a `Day`, or a dict/mapping with date/o/h/l/c keys (as
+    JSON decodes to). Pure, dependency-free (no file I/O) -- shared by
+    the CLI entrypoint below and the Vercel API wrapper in api/run.py,
+    so the API doesn't need to import openpyxl."""
+    days = [d if isinstance(d, Day) else
+            Day(d["date"], float(d["o"]), float(d["h"]), float(d["l"]), float(d["c"]))
+            for d in days_in]
+    if len(days) < 2:
+        raise ValueError("Need at least 2 OHLC rows (a prev + cur pair) to process any events.")
+    engine = TZEngine()
+    results = []
+    for i in range(1, len(days)):
+        prev, cur = days[i - 1], days[i]
+        events = engine.process(prev, cur)
+        results.append({"date": cur.date, "events": events})
+    return results
 
 
 def main(path, out_path):
