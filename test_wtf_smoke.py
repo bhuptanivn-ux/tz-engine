@@ -81,6 +81,11 @@ additionally confirms REAR 2's own SL opens spawn eligibility for a fresh
 sibling TZ GREEN(n+1), mirroring TZ BUY 2's own SL (explicit user
 addition: "similarly TZ GREEN cycle can start after REAR 2 SL/REAR RE
 ENTER 2 SL as well").
+
+Test 14 / 14b: same as Test 13/13b, one tier deeper -- REAR RE-ENTER 2's
+own SL stays reachable after its own fresh-cascade BAR/BAR 2 has formed,
+reactivates above max(REAR RE-ENTER 2's own ref, BAR 2's ref), and its own
+SL also opens spawn eligibility for a fresh sibling TZ GREEN(n+1).
 """
 from tz_engine_wtf import Day, TZEngine, is_milestone
 
@@ -522,6 +527,58 @@ assert "TZ GREEN(B)" in seen13b, "Test 13b FAILED: should spawn a fresh sibling"
 j23b_events = next(evs for date, evs in run.last_trace if date == "j23b")
 assert j23b_events == ["TZ GREEN(B)"], \
     f"Test 13b FAILED: expected only TZ GREEN(B) to spawn, got {j23b_events}"
+
+# ---------------------------------------------------------------------------
+# Test 14: REAR RE-ENTER 2's own SL -- same pattern as Test 13, one tier
+# deeper. Built on rows10 (Test 10's REAR RE-ENTER, already defined above).
+# Here REAR RE-ENTER 2's own reference (110) is the highest of the chain
+# (above both TZ BUY 2's 104 and BAR 2's 99), so it wins the max().
+# ---------------------------------------------------------------------------
+rows14 = rows10 + [
+    ("j20", 92.5, 100, 70, 99),        # REAR RE-ENTER LL(A) -- buffers rre.ref_low to 70
+    ("j21", 92, 109, 92, 109),         # REAR RE-ENTER 2(A) ref_high=109 -- above TZ
+    # BUY 2's own peak (104)
+    ("j22", 92.5, 110, 92.5, 110),     # rally -- REAR RE-ENTER 2 HH -> 110
+    ("j23", 92.8, 93, 92.3, 92.3),     # RED1(A)
+    ("j24", 92.8, 92.8, 92.1, 92.1),   # RED2(A) -- bar_pending=True
+    ("j25", 92.2, 93.3, 92.2, 93.3),   # BAR(A.1) -- REAR RE-ENTER 2's own dual-role cascade
+    ("j26", 92.3, 99, 92.3, 99),       # BAR 2(A.1) ref_high=99 ref_low=92.3 -- LOWER
+    # than REAR RE-ENTER 2's own 110
+    ("j27", 91.8, 91.8, 91.7, 91.9),   # BAR 2 SL(A.1) + REAR RE-ENTER 2 SL(A) -- SAME
+    # candle -- proves the dormancy fix applies here too
+    ("j28", 91.6, 91.6, 91.4, 91.4),   # RED1-shaped day -- gate closed, must produce
+    # NOTHING
+    ("j29", 91.5, 111, 91.5, 111),     # REAR RE-ENTER 2(A) recovers -- must clear
+    # max(110, 99) = 110
+]
+seen14 = run(rows14, "Test 14: REAR RE-ENTER 2 SL reachable after its own BAR/BAR 2 cascade forms")
+expected14 = ["REAR RE-ENTER(A)", "REAR RE-ENTER 2(A)", "RED1(A)", "RED2(A)", "BAR(A.1)",
+              "BAR 2(A.1)", "BAR 2 SL(A.1)", "REAR RE-ENTER 2 SL(A)"]
+missing14 = [e for e in expected14 if e not in seen14]
+assert not missing14, f"Test 14 MISSING: {missing14}"
+j27_events = next(evs for date, evs in run.last_trace if date == "j27")
+assert set(j27_events) == {"BAR 2 SL(A.1)", "REAR RE-ENTER 2 SL(A)"}, \
+    f"Test 14 FAILED: both SLs must fire together the same candle, got {j27_events}"
+j28_events = next(evs for date, evs in run.last_trace if date == "j28")
+assert j28_events == [], \
+    f"Test 14 FAILED: RED1 must not reattach while REAR RE-ENTER 2's own SL is active, got {j28_events}"
+j29_events = next(evs for date, evs in run.last_trace if date == "j29")
+assert j29_events == ["REAR RE-ENTER 2(A)"], \
+    f"Test 14 FAILED: REAR RE-ENTER 2 should recover at j29 (above max(110,99)=110), got {j29_events}"
+
+# ---------------------------------------------------------------------------
+# Test 14b: REAR RE-ENTER 2's own SL also opens spawn eligibility for a
+# fresh sibling TZ GREEN(n+1). Diverges from Test 14 right after the SL fires.
+# ---------------------------------------------------------------------------
+rows14_spawn = rows14[:-2] + [
+    ("j28b", 91.8, 92.5, 91.8, 92.5),  # doesn't clear 110 -- but qualifies as a fresh
+    # TZ GREEN breakout -- should spawn TZ GREEN(B) since REAR RE-ENTER 2's own SL is active
+]
+seen14b = run(rows14_spawn, "Test 14b: spawn eligibility opens after REAR RE-ENTER 2's own SL")
+assert "TZ GREEN(B)" in seen14b, "Test 14b FAILED: should spawn a fresh sibling"
+j28b_events = next(evs for date, evs in run.last_trace if date == "j28b")
+assert j28b_events == ["TZ GREEN(B)"], \
+    f"Test 14b FAILED: expected only TZ GREEN(B) to spawn, got {j28b_events}"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

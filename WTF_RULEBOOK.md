@@ -191,7 +191,7 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
 
 ## Testing
 
-`test_wtf_smoke.py` -- 15 synthetic scenarios (`python3 test_wtf_smoke.py`):
+`test_wtf_smoke.py` -- 17 synthetic scenarios (`python3 test_wtf_smoke.py`):
 
 1. Full escalation TZ BUY → TZ BUY 2 → RED1 → RED2 → BAR(A.1).
 2. TZ BUY SL with no TZ BUY 2 ever formed → reactivates in place off the
@@ -232,6 +232,11 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
     dormancy bug (below) is fixed -- and reforms above `max(REAR 2's own
     ref, BAR 2's ref)`, with REAR 2's own (higher) reference winning this
     time, the opposite of Test 8. 13b confirms this also opens spawn
+    eligibility for a fresh sibling TZ GREEN(n+1).
+14 (/ 14b). Same as 13/13b, one tier deeper: REAR RE-ENTER 2's own SL
+    fires AFTER its own fresh-cascade BAR/BAR 2 has formed (`BAR 2
+    SL(A.1)` + `REAR RE-ENTER 2 SL(A)` together), reforms above
+    `max(REAR RE-ENTER 2's own ref, BAR 2's ref)`, and also opens spawn
     eligibility for a fresh sibling TZ GREEN(n+1).
 
 **Bug found and fixed this pass: REAR 2 / REAR RE-ENTER 2's own SL was
