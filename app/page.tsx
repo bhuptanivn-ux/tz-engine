@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { GLOBAL_INDICES } from "@/lib/indices";
 import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
 import { computeBar2VariantEvents } from "@/lib/tzEngineBar2Variant";
@@ -30,6 +30,17 @@ function fmt(n: number | null): string {
   return n === null ? "—" : n.toFixed(2);
 }
 
+// A day's combined event string joins multiple events with " + " (bar2
+// engine) or ", " (New Theory engine). Neither individual event tag ever
+// contains a plus or comma itself, so splitting on either separator is safe
+// regardless of which engine produced the string.
+function splitEventTokens(eventStr: string): string[] {
+  return eventStr
+    .split(/\s*\+\s*|,\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("stock");
 
@@ -53,8 +64,22 @@ export default function Home() {
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("bar2");
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [events, setEvents] = useState<Map<string, string>>(new Map());
+  const [eventFilter, setEventFilter] = useState(""); // "" = show all events
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const allEventTypes = useMemo(() => {
+    const set = new Set<string>();
+    for (const v of events.values()) {
+      for (const tok of splitEventTokens(v)) set.add(tok);
+    }
+    return Array.from(set).sort();
+  }, [events]);
+
+  const filteredRows = useMemo(() => {
+    if (!eventFilter) return rows;
+    return rows.filter((r) => splitEventTokens(events.get(r.date) || "").includes(eventFilter));
+  }, [rows, events, eventFilter]);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -141,6 +166,7 @@ export default function Home() {
     setError("");
     setRows([]);
     setEvents(new Map());
+    setEventFilter("");
 
     if (!selected) {
       setError(
@@ -189,9 +215,9 @@ export default function Home() {
   }
 
   function downloadCSV() {
-    if (rows.length === 0) return;
+    if (filteredRows.length === 0) return;
     const header = "Date,Open,High,Low,Close,Event";
-    const body = rows
+    const body = filteredRows
       .map((r) =>
         [r.date, r.open, r.high, r.low, r.close, csvEscape(events.get(r.date) || "")].join(",")
       )
@@ -364,12 +390,29 @@ export default function Home() {
         <div className="card">
           <div className="actions">
             <span className="muted">
-              {rows.length} rows for {selected?.symbol}
+              {filteredRows.length} of {rows.length} rows for {selected?.symbol}
             </span>
             <button className="secondary" onClick={downloadCSV}>
               Download CSV
             </button>
           </div>
+          {allEventTypes.length > 0 && (
+            <div className="field event-filter-field">
+              <label htmlFor="event-filter">Filter by event</label>
+              <select
+                id="event-filter"
+                value={eventFilter}
+                onChange={(e) => setEventFilter(e.target.value)}
+              >
+                <option value="">All events ({rows.length} rows)</option>
+                {allEventTypes.map((tok) => (
+                  <option key={tok} value={tok}>
+                    {tok}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <p className="muted event-disclaimer">
             {engineChoice === "bar2" ? (
               <>
@@ -401,7 +444,7 @@ export default function Home() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {filteredRows.map((r) => (
                   <tr key={r.date}>
                     <td>{r.date}</td>
                     <td>{fmt(r.open)}</td>
