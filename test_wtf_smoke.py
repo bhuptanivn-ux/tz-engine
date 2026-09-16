@@ -57,6 +57,15 @@ unlike BAR's own SL -- regardless of whether REAR 2 / REAR RE-ENTER 2 ever
 formed. REAR's own SL always leads to REAR RE-ENTER; REAR RE-ENTER's own
 SL always self-recovers under the same event text. Both mirror TZ BUY's
 own "never a dead end" pattern, not BAR's.
+
+Test 11 / 12: REAR 2's own SL, and REAR RE-ENTER 2's own SL, are decisive
+(mirror TZ BUY 2's own SL, one/two tiers down) -- they wipe RED1 and
+bar_pending, close the gate on RED1 re-attaching to REAR/REAR RE-ENTER
+until they reform, and recover under the same event text. Fired
+deliberately BEFORE their own "fresh cascade" BAR would have formed: once
+that fresh BAR actually forms, REAR/REAR RE-ENTER (and their own "2") go
+dormant and stop being checked for their own SL via the normal path, so
+this is the only place in the flow where that SL is actually reachable.
 """
 from tz_engine_wtf import Day, TZEngine, is_milestone
 
@@ -363,6 +372,63 @@ assert j19_events == ["REAR RE-ENTER(A)"], \
     f"Test 10 FAILED: REAR RE-ENTER SL should self-recover under the same text, got {j19_events}"
 assert "REAR RE-ENTER 2(A)" not in seen10, "Test 10 setup: REAR RE-ENTER 2 should never form"
 assert "REAR 2(A)" not in seen10, "Test 10 setup: REAR 2 should never form"
+
+# ---------------------------------------------------------------------------
+# Test 11: REAR 2's own SL is decisive (mirrors TZ BUY 2's own SL, one tier
+# down) -- wipes RED1/bar_pending, closes the RED1 gate on REAR until REAR 2
+# reforms, and recovers under the same "REAR 2(label)" text. Triggered
+# deliberately BEFORE its own fresh-cascade BAR ever confirms -- once that
+# BAR forms, REAR/REAR 2 go dormant (superseded machinery) and REAR 2's own
+# SL check is skipped entirely from then on, so this is the only reachable
+# window for this SL.
+# ---------------------------------------------------------------------------
+rows11 = rows7 + [
+    ("j15b", 93, 98, 80, 97),          # REAR LL(A) -- buffers rear.ref_low to 80,
+    # well clear of where REAR 2 will track
+    ("j16", 93.6, 99, 93.6, 99),       # REAR 2(A) ref_high=99 ref_low=93.6
+    ("j17", 94.2, 100, 94.2, 100),     # rally -- REAR 2 HH -> 100
+    ("j18", 94.5, 94.5, 94.0, 94.0),   # RED1(A) [gated on REAR 2 existing]
+    ("j19", 94.3, 94.3, 93.8, 93.8),   # RED2(A) -- bar_pending=True
+    ("j20", 93.5, 93.5, 93.3, 93.4),   # REAR 2 SL(A) -- fires before the fresh BAR
+    # cascade ever confirms; wipes RED1/bar_pending
+    ("j21", 93.2, 93.2, 93.0, 93.0),   # RED1-shaped day -- gate closed (REAR 2's own
+    # SL active), must produce NOTHING
+    ("j22", 93.1, 101, 93.1, 101),     # REAR 2(A) recovers, same label
+]
+seen11 = run(rows11, "Test 11: REAR 2's own SL wipe + gate + recovery")
+expected11 = ["REAR(A)", "REAR 2(A)", "RED1(A)", "RED2(A)", "REAR 2 SL(A)"]
+missing11 = [e for e in expected11 if e not in seen11]
+assert not missing11, f"Test 11 MISSING: {missing11}"
+j21_events = next(evs for date, evs in run.last_trace if date == "j21")
+assert j21_events == [], \
+    f"Test 11 FAILED: RED1 must not reattach while REAR 2's own SL is active, got {j21_events}"
+assert "REAR SL(A)" not in seen11, "Test 11 setup: REAR itself must not fail here"
+
+# ---------------------------------------------------------------------------
+# Test 12: REAR RE-ENTER 2's own SL -- same pattern one tier deeper, built
+# on top of Test 10's REAR RE-ENTER (which formed with no REAR RE-ENTER 2
+# at all, proving that path independently) -- reuses rows10 defined above.
+# ---------------------------------------------------------------------------
+rows12 = rows10 + [
+    ("j20", 92.5, 100, 70, 99),        # REAR RE-ENTER LL(A) -- buffers rre.ref_low to 70
+    ("j21", 92, 101, 92, 101),         # REAR RE-ENTER 2(A) ref_high=101 ref_low=92
+    ("j22", 92.5, 102, 92.5, 102),     # rally -- REAR RE-ENTER 2 HH -> 102
+    ("j23", 92.8, 93, 92.3, 92.3),     # RED1(A) [gated on REAR RE-ENTER 2 existing]
+    ("j24", 92.8, 92.8, 92.1, 92.1),   # RED2(A) -- bar_pending=True
+    ("j25", 92, 92, 91.7, 91.9),       # REAR RE-ENTER 2 SL(A) -- fires before the fresh
+    # BAR cascade ever confirms; wipes RED1/bar_pending
+    ("j26", 91.6, 91.6, 91.4, 91.4),   # RED1-shaped day -- gate closed, must produce
+    # NOTHING
+    ("j27", 91.5, 103, 91.5, 103),     # REAR RE-ENTER 2(A) recovers, same label
+]
+seen12 = run(rows12, "Test 12: REAR RE-ENTER 2's own SL wipe + gate + recovery")
+expected12 = ["REAR RE-ENTER(A)", "REAR RE-ENTER 2(A)", "RED1(A)", "RED2(A)",
+              "REAR RE-ENTER 2 SL(A)"]
+missing12 = [e for e in expected12 if e not in seen12]
+assert not missing12, f"Test 12 MISSING: {missing12}"
+j26_events = next(evs for date, evs in run.last_trace if date == "j26")
+assert j26_events == [], \
+    f"Test 12 FAILED: RED1 must not reattach while REAR RE-ENTER 2's own SL is active, got {j26_events}"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

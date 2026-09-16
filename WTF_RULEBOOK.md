@@ -219,12 +219,27 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
     either) self-recovers under the same event text -- also never a dead
     end. Both mirror TZ BUY's pattern, not BAR's Family-2 dead-end
     pattern.
+11 / 12. REAR 2's own SL, and REAR RE-ENTER 2's own SL, wipe RED1/
+    bar_pending, close the RED1 gate on REAR/REAR RE-ENTER until they
+    reform, and recover under the same event text -- mirroring TZ BUY 2's
+    own SL one/two tiers down. Triggered deliberately BEFORE their own
+    "fresh cascade" BAR ever confirms -- see the note below.
 
-Not yet independently covered by a dedicated synthetic test (lower
-priority -- the same `_current_top_ref` machinery is exercised end-to-end
-by Tests 8 and 10, and real-data validation already exists for the flow
-overall): REAR 2/REAR RE-ENTER 2's own SL wiping RED1/bar_lineages below
-it and requiring reformation before RED1/RED2 reattaches.
+**Note on REAR 2 / REAR RE-ENTER 2's own SL reachability**: once their own
+fresh-cascade BAR actually forms (`_check_bar_pending` firing under
+`bar_confirms_today`), `_supersede_rear_for_new_bar` marks REAR/REAR
+RE-ENTER (and their own "2") **dormant** -- at that point `_eval_rear2` /
+`_eval_rre2` return immediately (`if rear2.dormant: return ev`) and never
+check their own SL again for as long as that BAR cascade races. From then
+on, only REAR's/REAR RE-ENTER's own top-level SL (still fully live, per
+Family 1) can still terminate everything, including that BAR cascade.
+This means REAR 2's/REAR RE-ENTER 2's own SL is only actually reachable in
+the window between RED1/RED2 setting `bar_pending` and that fresh BAR's
+own breakout confirming -- which is exactly where Tests 11/12 trigger it.
+Whether a fresh BAR should ALSO be able to form via a "no RED1/RED2
+needed" mechanism at this tier (mirroring the BAR-family fix) once that
+window is missed is an open question the user has not yet addressed --
+not fixed here, since it wasn't part of any confirmed rule.
 
 ## Open items
 
