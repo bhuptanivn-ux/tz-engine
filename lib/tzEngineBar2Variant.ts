@@ -1,18 +1,42 @@
-// Direct TypeScript port of tz_engine_bar2_variant.py, as it exists on
-// `main`. Ported faithfully line-for-line, not reinterpreted — every
-// condition, ordering, and judgment call matches the Python original
-// exactly. This is the validated engine: BAR 2 / REAR 2 / REAR RE-ENTER 2
-// were verified end-to-end against a real 01-01-2020 through 08-08-2020
-// OHLC dataset (see data/tz_2020_verification_dataset.csv and
-// verify_bar2_variant_2020.py). This port was cross-checked against that
-// same dataset by running both the Python original and this TS port over
-// it and diffing every line of output — byte-identical.
+// TypeScript port of tz_engine_wtf.py -- the TZ BUY engine (TZ ENGINE
+// extended with TZ BUY 2 / BAR 2 / REAR 2 / REAR RE-ENTER 2). Ported
+// faithfully, method-for-method, from the corrected Python source after an
+// exhaustive one-topic-at-a-time rule review -- every condition, ordering,
+// and judgment call matches the Python original. See WTF_RULEBOOK.md in
+// the tz-engine repo for the full, consolidated rule set this implements.
 //
-// NOT ported: the `extra_reentry_floor` parameter on `_eval_buy` and the
-// `load_days_xlsx` / `main` CLI entry point. `extra_reentry_floor` is a
-// hook for the separate DTF/WTF layer (tz_engine_dtf_wtf.py) that this
-// site doesn't use; the CLI entry point is Python-only I/O with no
-// equivalent needed here (this site feeds it live-fetched OHLC directly).
+// Every tier falls into one of two families:
+//
+// FAMILY 1 -- "escalating gate" (TZ BUY, TZ BUY 2, REAR, REAR 2, REAR
+// RE-ENTER, REAR RE-ENTER 2): own SL is NEVER a dead end; own SL is
+// DECISIVE (wipes everything structurally below it -- its own "2", the
+// whole BAR family, RED1 in flight); reactivates/self-recovers above
+// "whichever is higher" (`currentTopRef` -- the MAXIMUM current reference
+// across every tier this buy holds state for, snapshotted before the
+// wipe). This is a genuine max, not "defer to the deepest tier" -- a
+// shallower tier's own reference can climb higher than whatever forms
+// beneath it (only TZ BUY 2 has an HH-mute rule, and even that only
+// suppresses display, never the underlying value), so either side can win
+// depending on the actual numbers.
+//
+// FAMILY 2 -- "one-shot" (BAR, BAR 2): BAR's own SL with NO BAR 2 ever
+// formed for that lineage is a genuine permanent dead end for that lineage
+// (no INVALID BAR SL, no SL2, ever). BAR 2 itself never needs to "reform"
+// -- once frozen at its own SL it just keeps quietly climbing as INVALID
+// BAR HH. Regardless of dead-end status, a brand-new BAR(n+1) can always
+// start elsewhere the moment the current newest lineage is no longer
+// pre-SL.
+//
+// Real-data fix: a BAR SL with no BAR 2 used to leave bar_pending
+// permanently unset-able, silencing the engine indefinitely once the
+// newest lineage was a no-BAR-2 dead end. Fixed by letting a qualifying
+// breakout ALONE start a fresh BAR whenever the newest lineage is no
+// longer pre-SL -- see the fresh-BAR mechanism in evalBarLineagesProgress.
+//
+// NOT ported: `load_days_xlsx` / the CLI `main` entry point (Python-only
+// file I/O; this site feeds it live-fetched OHLC directly) and the
+// `extra_reentry_floor` DTF/WTF cross-theory hook (not implemented in the
+// Python source this was ported from either -- deferred).
 
 const THRESH = 0.2;
 const ANY = 0.01;
@@ -43,9 +67,20 @@ class Red1 {
   constructor(public refHigh: number, public refLow: number) {}
 }
 
+// The "2" confirmation gate, reused identically at every tier: BAR 2
+// (lineage.bar2), REAR 2 (rear.rear2), REAR RE-ENTER 2 (rre.rre2), TZ
+// BUY 2 (buy.tzBuy2).
 class Bar2 {
   slActive = false;
-  dormant = false;
+  dormant = false; // REAR 2 / REAR RE-ENTER 2 only, and ONLY ever set when
+  // the PARENT (Rear/RearReenter) is permanently retired (REAR's own SL
+  // leading to REAR RE-ENTER) -- never when this tier's own dual-role BAR
+  // cascade forms (that used to be a real bug -- see supersedeRearForNewBar).
+  reentryThreshold: number | null = null; // "whichever is higher" across
+  // every tier, snapshotted at the moment THIS tier's own SL fires (before
+  // everything below it gets wiped) -- its own SL/recovery cycle climbs
+  // back above THIS, not just its own frozen refHigh. Unused by BAR 2,
+  // which never needs to reform once frozen at its own SL.
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -65,21 +100,27 @@ class BarLineage {
 }
 
 class RearSL {
-  constructor(public refLow: number) {}
+  // "Whichever is higher" at the moment REAR's own SL fired -- REAR
+  // RE-ENTER always forms above this (REAR's own SL is never a dead end,
+  // regardless of whether REAR 2 ever formed).
+  constructor(public refLow: number, public entryThreshold: number) {}
 }
 
 class Rear {
   red1Since = false;
   refHighAtRed1 = 0;
   sl: RearSL | null = null;
-  dormant = false;
+  dormant = false; // True once REAR's own SL leads to REAR RE-ENTER --
+  // permanently retired from that point on. NOT set merely because REAR
+  // 2's own dual-role BAR cascade formed (fixed bug -- see
+  // supersedeRearForNewBar).
   red2Ever = false;
   rear2: Bar2 | null = null;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
 class RearReenterSL {
-  constructor(public refLow: number) {}
+  constructor(public refLow: number, public entryThreshold: number) {}
 }
 
 class RearReenter {
@@ -97,14 +138,29 @@ class Buy {
   red1Ever = false;
   refHighAtRed1 = 0;
   red1: Red1 | null = null;
-  barLineages: BarLineage[] = [];
-  barSubCounter = 0;
-  barPending = false;
-  rear: Rear | null = null;
-  rearReenter: RearReenter | null = null;
+  tzBuy2: Bar2 | null = null; // one tier above BAR 2 -- same shape, same
+  // independent SL/recovery, gates RED1/RED2 attaching to TZ BUY itself.
+  // Does NOT persist through TZ BUY's own reactivation.
+  tzBuy2HhMuted = false; // TZ BUY 2's own HH keeps showing only until some
+  // deeper tier's own reference actually reaches or exceeds it -- a live
+  // comparison, not a mere existence check (TZ BUY 2 isn't guaranteed
+  // lower than what forms below it). Permanent and one-directional once
+  // tripped; TZ BUY 2 itself keeps tracking internally regardless.
+  barLineages: BarLineage[] = []; // ordered oldest-first
+  barSubCounter = 0; // for allocating "A.1", "A.2", ... sub-labels
+  barDeadLabels = new Set<number>(); // sub-numbers freed for reuse -- ONLY
+  // by a generation that was a complete dead end (its own SL fired with no
+  // BAR 2 ever having formed for it). A generation that DID get its own
+  // BAR 2 keeps its number retired forever, even if later superseded.
+  barPending = false; // RED2 fired; awaiting BAR's own entry-shape confirmation
+  rear: Rear | null = null; // single persistent slot -- a fresh REAR/REAR
+  rearReenter: RearReenter | null = null; // RE-ENTER formation always
+  // wipes whichever older dormant one currently exists.
   barHighPool = 0;
-  tzBuy2: Bar2 | null = null;
-  tzBuy2HhMuted = false;
+  reentryThreshold: number | null = null; // "whichever is higher",
+  // snapshotted the moment TZ BUY's own SL fires (before everything below
+  // it gets wiped) -- TZ BUY reactivates above THIS, never just its own
+  // frozen peak once something deeper had formed.
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -117,6 +173,8 @@ class ParentCycle {
   constructor(public id: number, public seq: number, public refHigh: number, public refLow: number) {}
 }
 
+// "TZ BUY 2(" is explicitly its own milestone -- unlike BAR 2/REAR 2/REAR
+// RE-ENTER 2 (none of which trigger the leadership contest).
 const MILESTONE_KEYS = ["TZ BUY(", "TZ BUY 2(", "BAR(", "REAR(", "REAR RE-ENTER("];
 
 const SL_LL_KEYS = [
@@ -144,7 +202,7 @@ function isSlOrLl(ev: string): boolean {
 
 // Union of the four object kinds that can hold a "red1 regime"
 // (red1Since/refHighAtRed1, or Buy's red1Ever/refHighAtRed1), used
-// generically by _eval_red1_generic / _attach_fresh_red1 / _reset_red1_regime
+// generically by evalRed1Generic / attachFreshRed1 / resetRed1Regime
 // exactly like Python's duck-typed `stage_obj`.
 type RedRegimeHolder = Buy | BarLineage | Rear | RearReenter;
 
@@ -191,6 +249,10 @@ export class TZEngine {
       if (!buy.rear.dormant) return true;
     }
     if (buy.barLineages.length > 0) {
+      // A lineage whose own SL fired with no BAR 2 ever having formed is a
+      // permanent dead end -- sl.sl2 can never become true for it, so
+      // without this it would count as "still racing toward SL2" forever
+      // and wrongly keep the whole buy live.
       return buy.barLineages.some((lin) => lin.sl === null || (lin.bar2 !== null && !lin.sl.sl2));
     }
     return true;
@@ -208,6 +270,51 @@ export class TZEngine {
   private rearAncestorTerminated(buy: Buy): boolean {
     const target = buy.rearReenter !== null ? buy.rearReenter : buy.rear;
     return target !== null && target.sl !== null;
+  }
+
+  // "Whichever is higher": the MAXIMUM current reference across every tier
+  // this buy currently holds state for. Used whenever a tier's own SL
+  // wipes everything below it and needs a reactivation threshold that
+  // isn't just its own frozen peak (TZ BUY's own SL, TZ BUY 2's own SL,
+  // REAR's own SL -> REAR RE-ENTER, REAR 2's own SL, REAR RE-ENTER's own
+  // self-recovery, REAR RE-ENTER 2's own SL).
+  //
+  // NOT simply "defer to the deepest/most-recent tier" -- a shallower
+  // tier's own reference can keep climbing independently of whatever forms
+  // beneath it (only TZ BUY 2 has an explicit HH-mute rule, and even that
+  // only suppresses DISPLAY, never the underlying value tracking), so it
+  // can end up numerically HIGHER than a deeper tier's reference despite
+  // being structurally earlier.
+  private currentTopRef(buy: Buy): number {
+    const refs: number[] = [buy.refHigh];
+    if (buy.tzBuy2 !== null) refs.push(buy.tzBuy2.refHigh);
+    for (const lin of buy.barLineages) {
+      refs.push(lin.refHigh);
+      if (lin.bar2 !== null) refs.push(lin.bar2.refHigh);
+    }
+    if (buy.rear !== null) {
+      refs.push(buy.rear.refHigh);
+      if (buy.rear.rear2 !== null) refs.push(buy.rear.rear2.refHigh);
+    }
+    if (buy.rearReenter !== null) {
+      refs.push(buy.rearReenter.refHigh);
+      if (buy.rearReenter.rre2 !== null) refs.push(buy.rearReenter.rre2.refHigh);
+    }
+    return Math.max(...refs);
+  }
+
+  // Reuses the lowest freed dead-end number if one is available, else
+  // allocates the next never-used number.
+  private nextBarLabel(buy: Buy, labelId: string): string {
+    let n: number;
+    if (buy.barDeadLabels.size > 0) {
+      n = Math.min(...buy.barDeadLabels);
+      buy.barDeadLabels.delete(n);
+    } else {
+      buy.barSubCounter += 1;
+      n = buy.barSubCounter;
+    }
+    return `${labelId}.${n}`;
   }
 
   process(prev: Day, cur: Day): string[] {
@@ -244,6 +351,11 @@ export class TZEngine {
 
       for (const e of allEvents) {
         if (isMilestone(e)) {
+          // "TZ BUY(" reactivating in place is still the same fresh-
+          // milestone text as first formation (no "NEW TZ BUY"
+          // distinction). "TZ BUY 2(" does NOT match this prefix (space
+          // before the digit), so it's a *continuation* milestone -- the
+          // newer-branch-with-an-existing-live-buy exemption applies.
           const isFreshBuy = e.startsWith("TZ BUY(");
           milestoneAchievers.push([pc, isFreshBuy]);
         }
@@ -257,13 +369,31 @@ export class TZEngine {
         : null;
     const tipDeepFailure =
       tip !== null && tip.buy !== null && this.deepFailureReached(tip.buy) && !this.buyCurrentlyLive(tip.buy);
-    const tipTzBuy2SlActive =
+    // TZ BUY 2's own SL ALSO opens spawn eligibility, same as TZ BUY's own
+    // SL. Lifts the moment TZ BUY 2 recovers (slActive back to false),
+    // same live-check style as `!tip.buy.active` above, not a historical
+    // flag.
+    const tipTzBuy2Sl =
       tip !== null && tip.buy !== null && tip.buy.tzBuy2 !== null && tip.buy.tzBuy2.slActive;
+    // REAR 2's own SL and REAR RE-ENTER 2's own SL ALSO open spawn
+    // eligibility, same principle one/two tiers down.
+    const tipRear2Sl =
+      tip !== null &&
+      tip.buy !== null &&
+      tip.buy.rear !== null &&
+      tip.buy.rear.rear2 !== null &&
+      tip.buy.rear.rear2.slActive;
+    const tipRre2Sl =
+      tip !== null &&
+      tip.buy !== null &&
+      tip.buy.rearReenter !== null &&
+      tip.buy.rearReenter.rre2 !== null &&
+      tip.buy.rearReenter.rre2.slActive;
     const eligibleAnchor =
       tip !== null &&
       !tip.dormant &&
       tip.redEver &&
-      (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzBuy2SlActive);
+      (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzBuy2Sl || tipRear2Sl || tipRre2Sl);
     const canSpawn = eligibleAnchor || tip === null;
     let newBranchId: number | null = null;
     if (
@@ -373,10 +503,12 @@ export class TZEngine {
       pc.refHigh = pc.buy.refHigh;
     }
 
+    // Both TZ GREEN's own HH and LL are only shown while no buy is
+    // currently live for this branch.
     if (hh && !hasLiveBuy && !isSl) {
       ev.push(`TZ GREEN HH(${branchLabel(pc.id)})`);
     }
-    if (ll) {
+    if (ll && !hasLiveBuy) {
       ev.push(`TZ GREEN LL(${branchLabel(pc.id)})`);
     }
 
@@ -394,6 +526,10 @@ export class TZEngine {
       }
     }
 
+    // This only ever handles the very FIRST TZ BUY this branch ever forms.
+    // Once pc.buy exists, every subsequent reactivation (after TZ BUY's
+    // own SL) happens IN PLACE inside evalBuy -- there is no "create a
+    // brand-new Buy object" path and no "NEW TZ BUY" label.
     if (pc.redEver && pc.buy === null && !anyLiveBuy) {
       const refHigh = Math.max(pc.refHigh, pc.refHighAtRed);
       if (cur.l >= prev.l && cur.h > refHigh && cur.h - refHigh >= THRESH - EPS && cur.c >= refHigh) {
@@ -409,17 +545,19 @@ export class TZEngine {
     return ev;
   }
 
-  private evalBuy(pc: ParentCycle, buy: Buy, prev: Day, cur: Day, extraReentryFloor: number | null = null): string[] {
+  private evalBuy(pc: ParentCycle, buy: Buy, prev: Day, cur: Day): string[] {
     let ev: string[] = [];
     const label = "TZ BUY";
     const slLabel = "TZ BUY SL";
 
-    const hasDeeperActive = buy.barLineages.length > 0 || buy.barPending || buy.rear !== null || buy.rearReenter !== null;
+    const hasDeeperActive =
+      buy.barLineages.length > 0 || buy.barPending || buy.rear !== null || buy.rearReenter !== null;
     const noBarYet = !hasDeeperActive;
     const red1PreexistingAtBuyLevel = buy.active && noBarYet && buy.red1 !== null && buy.red1.active;
-
+    // Snapshotted BEFORE today's own tracking below (or evalTzbuy2's own
+    // forever-climbing branch, called later this same candle) can mutate
+    // it.
     const preTodayBuyRef = buy.refHigh;
-    const preTodayTzbuy2Ref = buy.tzBuy2 !== null ? buy.tzBuy2.refHigh : null;
 
     let reactivatedToday = false;
     if (buy.active) {
@@ -454,6 +592,9 @@ export class TZEngine {
         }
       }
 
+      // TZ BUY's own HH permanently suppressed from display once TZ BUY 2
+      // exists -- value keeps updating internally regardless. LL is never
+      // suppressed.
       if (hh && buy.tzBuy2 === null) {
         ev.push(`${label} HH(${branchLabel(pc.id)})`);
       }
@@ -463,47 +604,72 @@ export class TZEngine {
 
       if (isSl) {
         ev.push(`${slLabel}(${branchLabel(pc.id)})`);
+        // TZ BUY's own SL is DECISIVE -- it wipes out everything below it
+        // (TZ BUY 2, the whole BAR family, REAR/REAR RE-ENTER, if any of
+        // that had formed), regardless of any RED1/RED2 already in flight
+        // down there. Snapshot "whichever is higher" BEFORE wiping --
+        // that's what TZ BUY reactivates above, never just its own frozen
+        // peak once something deeper had formed.
+        buy.reentryThreshold = this.currentTopRef(buy);
         buy.active = false;
         buy.barPending = false;
         buy.red1 = null;
+        buy.barLineages = [];
+        buy.barSubCounter = 0;
+        buy.barDeadLabels = new Set();
+        buy.rear = null;
+        buy.rearReenter = null;
+        buy.tzBuy2 = null;
+        buy.tzBuy2HhMuted = false;
       }
     } else {
-      let ref = preTodayBuyRef;
-      if (preTodayTzbuy2Ref !== null) {
-        ref = Math.max(ref, preTodayTzbuy2Ref);
-      }
-      if (extraReentryFloor !== null) {
-        ref = Math.max(ref, extraReentryFloor);
-      }
+      // TZ BUY's own SL has no escalation and never leads to REAR by
+      // itself (REAR stays reachable exclusively via BAR SL2) -- it just
+      // reactivates directly, always under the SAME "TZ BUY" label,
+      // retrying above "whichever is higher" as it stood at the moment the
+      // SL fired (buy.reentryThreshold).
+      const ref = buy.reentryThreshold !== null ? buy.reentryThreshold : preTodayBuyRef;
       if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         buy.active = true;
         buy.refHigh = cur.h;
         buy.refLow = cur.l;
         buy.red1Ever = false;
         buy.red1 = null;
+        // TZ BUY 2 does NOT persist through TZ BUY's own reactivation -- a
+        // fresh one has to form from scratch.
         buy.tzBuy2 = null;
+        buy.tzBuy2HhMuted = false;
+        buy.reentryThreshold = null;
         ev.push(`${label}(${branchLabel(pc.id)})`);
         reactivatedToday = true;
       }
     }
 
+    // Forms off TZ BUY's own reference, tracks/recovers independently for
+    // as long as buy.active stays true. Skipped on the exact day TZ BUY
+    // itself just reactivated -- preTodayBuyRef is stale and a fresh TZ
+    // BUY 2 needs tomorrow's candle at the earliest.
     if (!reactivatedToday) {
       ev.push(...this.evalTzbuy2(pc, buy, prev, cur, preTodayBuyRef));
     }
 
+    // Pre-today snapshots, taken BEFORE any of today's own tracking below
+    // can mutate the values they need to compare against.
     const preTodayLinRef = new Map(buy.barLineages.map((lin) => [lin.label, lin.refHigh]));
     const preTodayBar2Ref = new Map(
       buy.barLineages.map((lin) => [lin.label, lin.bar2 !== null ? lin.bar2.refHigh : null])
     );
     const preTodayRearRef = buy.rear !== null ? buy.rear.refHigh : null;
-    const preTodayRear2Ref = buy.rear !== null && buy.rear.rear2 !== null ? buy.rear.rear2.refHigh : null;
     const preTodayRreRef = buy.rearReenter !== null ? buy.rearReenter.refHigh : null;
-    const preTodayRre2Ref =
-      buy.rearReenter !== null && buy.rearReenter.rre2 !== null ? buy.rearReenter.rre2.refHigh : null;
 
+    // BAR's own HH keeps tracking/showing for as long as it's the NEWEST
+    // lineage in the chain. LL only tracks/shows while a lineage is still
+    // pre-SL.
     const newestLin = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
     if (newestLin !== null && !this.barHhSuppressedToday(buy, newestLin, prev, cur)) {
       const linHhEv = this.evalBarLineageHh(pc, buy, newestLin, prev, cur);
+      // BAR's own HH is permanently suppressed from display once this
+      // lineage has its own BAR 2. BAR's own LL is NEVER suppressed.
       if (newestLin.bar2 === null) {
         ev.push(...linHhEv);
       } else {
@@ -511,11 +677,24 @@ export class TZEngine {
       }
     }
 
+    // Formation check + forever-ungoverned HH/LL/SL tracking for EVERY
+    // lineage currently in buy.barLineages -- not scoped to newestLin,
+    // since an older lineage keeps racing in parallel until the newest
+    // one's own BAR 2 confirms (see below), and BAR 2 keeps tracking even
+    // after its own lineage's BAR SL2 has fired.
     const bar2EvByLabel = new Map<string, string[]>();
     for (const lin of buy.barLineages) {
       bar2EvByLabel.set(lin.label, this.evalBar2(pc, buy, lin, prev, cur, preTodayLinRef.get(lin.label) ?? null));
     }
 
+    // Once a new BAR 2 is confirmed, the earlier BAR becomes irrelevant --
+    // REAR's eventual reference is now governed by the newest lineage's
+    // own BAR 2 regardless of what its own SL/SL2 does later. This only
+    // cuts short an OLDER lineage still sitting pre-SL and merely racing
+    // in parallel while the newer generation's own BAR 2 had not yet
+    // confirmed -- it does NOT apply once that older lineage has ALREADY
+    // reached its own BAR SL2 (a lineage that's post-SL2 races toward REAR
+    // independently via its own INVALID BAR HH tracking).
     if (newestLin !== null && newestLin.bar2 !== null) {
       const surviving = buy.barLineages.filter((l) => l === newestLin || l.sl !== null);
       buy.barLineages = surviving;
@@ -528,20 +707,24 @@ export class TZEngine {
       }
     }
 
+    // REAR's own HH/LL only track/show while REAR hasn't hit its own SL
+    // yet. Dormancy only silences ADVANCEMENT tracking (HH), not LL.
     if (buy.rear !== null) {
       if (buy.rear.sl === null) {
         let rearEv = this.evalRearHhLl(pc, buy, buy.rear, prev, cur);
         if (buy.rear.dormant) {
           rearEv = rearEv.filter((e) => e.includes("LL("));
         }
+        // REAR's own HH permanently suppressed once REAR 2 exists.
         if (buy.rear.rear2 !== null) {
           rearEv = rearEv.filter((e) => !e.startsWith("REAR HH("));
         }
         ev.push(...rearEv);
       }
-      ev.push(...this.evalRear2(pc, buy, buy.rear, prev, cur, preTodayRearRef, preTodayRear2Ref));
+      ev.push(...this.evalRear2(pc, buy, buy.rear, prev, cur, preTodayRearRef));
     }
 
+    // Same rule for REAR RE-ENTER.
     if (buy.rearReenter !== null) {
       if (buy.rearReenter.sl === null) {
         let rreEv = this.evalRearReenterHhLl(pc, buy, buy.rearReenter, prev, cur);
@@ -553,7 +736,7 @@ export class TZEngine {
         }
         ev.push(...rreEv);
       }
-      ev.push(...this.evalRre2(pc, buy, buy.rearReenter, prev, cur, preTodayRreRef, preTodayRre2Ref));
+      ev.push(...this.evalRre2(pc, buy, buy.rearReenter, prev, cur, preTodayRreRef));
     }
 
     const barConfirmsToday =
@@ -564,18 +747,20 @@ export class TZEngine {
       this.barEntryShape(prev, cur);
 
     if (buy.rearReenter !== null && buy.rearReenter.sl !== null) {
-      if (buy.rearReenter.rre2 !== null) {
-        ev.push(
-          ...this.evalRearReenterSlProgress(pc, buy, buy.rearReenter, buy.rearReenter.sl, prev, cur, preTodayRre2Ref)
-        );
-      }
+      // REAR RE-ENTER's own SL is NEVER a dead end (unlike BAR) -- it
+      // always self-recovers above "whichever is higher" as snapshotted
+      // when the SL fired (sl.entryThreshold), regardless of whether REAR
+      // RE-ENTER 2 ever formed.
+      ev.push(...this.evalRearReenterSlProgress(pc, buy, buy.rearReenter, buy.rearReenter.sl, prev, cur));
     } else if (buy.rearReenter === null && buy.rear !== null && buy.rear.sl !== null) {
-      if (buy.rear.rear2 !== null) {
-        ev.push(...this.evalRearSlProgress(pc, buy, buy.rear, buy.rear.sl, prev, cur, preTodayRear2Ref));
-      }
+      // REAR's own SL is NEVER a dead end either -- always leads to REAR
+      // RE-ENTER above "whichever is higher" (sl.entryThreshold),
+      // regardless of whether REAR 2 ever formed. Follows TZ BUY's own
+      // "never a dead end" pattern, not BAR's.
+      ev.push(...this.evalRearSlProgress(pc, buy, buy.rear, buy.rear.sl, prev, cur));
     } else if (barConfirmsToday) {
       ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(")));
-      ev.push(...this.checkBarPending(pc, buy, prev, cur));
+      ev.push(...this.checkBarPending(pc, buy, prev, cur, false));
     } else if (buy.rearReenter !== null && !buy.rearReenter.dormant) {
       ev.push(...this.evalRearReenterProgress(pc, buy, buy.rearReenter, prev, cur));
     } else if (buy.rearReenter === null && buy.rear !== null && !buy.rear.dormant) {
@@ -583,13 +768,23 @@ export class TZEngine {
     } else if (buy.barLineages.length > 0) {
       ev.push(...this.evalBarLineagesProgress(pc, buy, prev, cur, preTodayBar2Ref));
     } else if (buy.barPending && buy.active) {
-      ev.push(...this.checkBarPending(pc, buy, prev, cur));
+      ev.push(...this.checkBarPending(pc, buy, prev, cur, true));
     } else if (!buy.active) {
       // no-op
-    } else if (red1PreexistingAtBuyLevel) {
-      ev.push(...this.evalRed1Generic(pc, buy, buy, prev, cur));
-    } else if (buy.tzBuy2 !== null) {
-      if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
+    } else if (!red1PreexistingAtBuyLevel) {
+      // TZ BUY 2 gate: mirrors BAR 2 gating RED1 on a BAR lineage -- a
+      // fresh RED1 cannot attach to TZ BUY unless TZ BUY 2 is currently
+      // ACTIVE, not merely "has existed once" -- TZ BUY 2's own SL closes
+      // this gate again, requiring TZ BUY 2 to reform before RED1/RED2 can
+      // reattach.
+      if (
+        buy.tzBuy2 !== null &&
+        !buy.tzBuy2.slActive &&
+        cur.h <= prev.h &&
+        cur.l < prev.l &&
+        prev.l - cur.l >= THRESH - EPS &&
+        cur.c <= prev.l
+      ) {
         if (!buy.red1Ever) {
           buy.refHighAtRed1 = buy.refHigh;
         }
@@ -597,30 +792,46 @@ export class TZEngine {
         buy.red1 = new Red1(cur.h, cur.l);
         ev.push(`RED1(${branchLabel(pc.id)})`);
       }
+    } else {
+      ev.push(...this.evalRed1Generic(pc, buy, buy, prev, cur));
     }
 
+    // REAR's (and REAR RE-ENTER's) own SL must still be checked and take
+    // effect even while dormant -- same decisive treatment as the main
+    // path (wipes everything below, snapshots "whichever is higher" first).
     if (buy.rearReenter !== null && buy.rearReenter.dormant && buy.rearReenter.sl === null) {
       const rre = buy.rearReenter;
       if (cur.l < rre.refLow && rre.refLow - cur.l >= THRESH - EPS && cur.c <= rre.refLow + EPS) {
         ev.push(`REAR RE-ENTER SL(${branchLabel(pc.id)})`);
-        rre.sl = new RearReenterSL(cur.l);
+        rre.sl = new RearReenterSL(cur.l, this.currentTopRef(buy));
+        rre.rre2 = null;
         buy.red1 = null;
         buy.barLineages = [];
         buy.barSubCounter = 0;
+        buy.barDeadLabels = new Set();
         buy.barPending = false;
       }
     } else if (buy.rear !== null && buy.rear.dormant && buy.rear.sl === null) {
       const rear = buy.rear;
       if (cur.l < rear.refLow && rear.refLow - cur.l >= THRESH - EPS && cur.c <= rear.refLow + EPS) {
         ev.push(`REAR SL(${branchLabel(pc.id)})`);
-        rear.sl = new RearSL(cur.l);
+        rear.sl = new RearSL(cur.l, this.currentTopRef(buy));
+        rear.rear2 = null;
         buy.barLineages = [];
         buy.barSubCounter = 0;
+        buy.barDeadLabels = new Set();
         buy.red1 = null;
         buy.barPending = false;
       }
     }
 
+    // TZ BUY 2's own HH keeps showing only until some deeper tier's own
+    // reference actually reaches or exceeds it -- unlike BAR's HH being
+    // suppressed by BAR 2's mere existence (guaranteed ordered by
+    // construction), TZ BUY 2 isn't guaranteed lower than BAR 2/REAR/REAR
+    // 2 since it may have been climbing long before any of those ever
+    // formed. Checked here using CURRENT (post-today) values, so the
+    // cutover is retroactive same-day. Permanent once tripped.
     if (buy.tzBuy2 !== null && !buy.tzBuy2HhMuted) {
       const deeperRefs: number[] = [];
       for (const lin of buy.barLineages) deeperRefs.push(lin.refHigh);
@@ -641,6 +852,11 @@ export class TZEngine {
       ev = ev.filter((e) => !e.startsWith("TZ BUY 2 HH("));
     }
 
+    // Retroactive same-day suppression pass -- both parts confirmed
+    // necessary because HH/LL/SL-tier functions above run BEFORE the
+    // checks that would otherwise need to suppress them:
+    //
+    // (1) An underlying SL beats its own "2" tier's SL/LL the same day.
     const slLabels = new Set<string>();
     for (const e of ev) {
       if (
@@ -669,6 +885,9 @@ export class TZEngine {
       });
     }
 
+    // (2) Once a "2" produces ANY event (formation included) on a given
+    // label, that SAME label's own underlying HH is suppressed THAT SAME
+    // DAY too, not just from the following day.
     const twoLabels: Record<string, Set<string>> = {
       "TZ BUY HH(": new Set(),
       "BAR HH(": new Set(),
@@ -738,7 +957,13 @@ export class TZEngine {
     return ev;
   }
 
-  private attachFreshRed1(pc: ParentCycle, buy: Buy, stageObj: BarLineage | Rear | RearReenter, prev: Day, cur: Day): string[] {
+  private attachFreshRed1(
+    pc: ParentCycle,
+    buy: Buy,
+    stageObj: BarLineage | Rear | RearReenter,
+    prev: Day,
+    cur: Day
+  ): string[] {
     const ev: string[] = [];
     if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
       if (!stageObj.red1Since) {
@@ -821,19 +1046,29 @@ export class TZEngine {
     }
   }
 
-  private checkBarPending(pc: ParentCycle, buy: Buy, prev: Day, cur: Day): string[] {
+  private checkBarPending(pc: ParentCycle, buy: Buy, prev: Day, cur: Day, supersedeRear: boolean): string[] {
     if (cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
-      buy.barSubCounter += 1;
-      const subLabel = `${branchLabel(pc.id)}.${buy.barSubCounter}`;
+      const subLabel = this.nextBarLabel(buy, branchLabel(pc.id));
       buy.barLineages.push(new BarLineage(subLabel, cur.h, cur.l));
       buy.barPending = false;
       buy.barHighPool = Math.max(buy.barHighPool, cur.h);
-      this.supersedeRearForNewBar(buy);
+      // Only supersede (mark dormant) a genuinely OLD, leftover REAR/REAR
+      // RE-ENTER ancestor -- NEVER the current REAR/REAR RE-ENTER whose
+      // own "2" just spawned THIS bar as its own dual-role cascade
+      // (supersedeRear=false from that call site). Marking the CURRENT
+      // one dormant was a real bug: once dormant, evalRear2/evalRre2
+      // return immediately and its own SL could never be checked again,
+      // even though it must stay reachable (a single candle can trigger
+      // BAR 2 SL + REAR 2 SL together after this exact cascade).
+      if (supersedeRear) {
+        this.supersedeRearForNewBar(buy);
+      }
       return [`BAR(${subLabel})`];
     }
     return [];
   }
 
+  // =================== BAR family (multi-lineage) ===================
   private evalBarLineageHh(pc: ParentCycle, buy: Buy, lin: BarLineage, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     if (!lin.red1Since || this.red1InvalidatesToday(buy, cur)) {
@@ -860,6 +1095,11 @@ export class TZEngine {
     return ev;
   }
 
+  // ------------------- TZ BUY 2 / BAR 2 / REAR 2 / REAR RE-ENTER 2 --------
+  // Mirrors evalBar2 one tier up: forms off TZ BUY's own reference high,
+  // only while TZ BUY itself is pre-SL. Gates RED1/RED2 on TZ BUY. Has its
+  // own independent SL/recovery cycle -- no escalation. UNLIKE BAR 2, TZ
+  // BUY's own top-level SL is never a dead end regardless of TZ BUY 2.
   private evalTzbuy2(pc: ParentCycle, buy: Buy, prev: Day, cur: Day, preTodayBuyRef: number | null): string[] {
     const ev: string[] = [];
     const labelId = branchLabel(pc.id);
@@ -876,16 +1116,23 @@ export class TZEngine {
     if (!buy.active) {
       if (cur.h > buy.tzBuy2.refHigh && cur.h - buy.tzBuy2.refHigh >= ANY) {
         buy.tzBuy2.refHigh = cur.h;
-        ev.push(`INVALID TZ BUY HH(${labelId})`);
+        ev.push(`INVALID TZ BUY 2 HH(${labelId})`);
       }
       return ev;
     }
     const b2 = buy.tzBuy2;
     if (b2.slActive) {
-      if (cur.l >= prev.l && cur.h > b2.refHigh && cur.h - b2.refHigh >= THRESH - EPS && cur.c >= b2.refHigh) {
+      // Recovers above "whichever is higher" as it stood at the moment
+      // THIS SL fired (b2.reentryThreshold), not just its own frozen
+      // refHigh -- everything below it was already wiped when the SL
+      // fired, so this is the only place that reference is still
+      // remembered.
+      const ref = b2.reentryThreshold !== null ? b2.reentryThreshold : b2.refHigh;
+      if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         b2.refHigh = cur.h;
         b2.refLow = cur.l;
         b2.slActive = false;
+        b2.reentryThreshold = null;
         ev.push(`TZ BUY 2(${labelId})`);
       }
       return ev;
@@ -893,8 +1140,20 @@ export class TZEngine {
     if (cur.l < b2.refLow) {
       const gap = b2.refLow - cur.l;
       if (gap >= THRESH - EPS && cur.c <= b2.refLow + EPS) {
+        // TZ BUY 2's own SL is ALSO decisive -- wipes out everything below
+        // it (the whole BAR family, REAR/REAR RE-ENTER), same as TZ BUY's
+        // own SL does one tier up. Snapshot "whichever is higher" BEFORE
+        // wiping.
+        b2.reentryThreshold = this.currentTopRef(buy);
         b2.slActive = true;
         ev.push(`TZ BUY 2 SL(${labelId})`);
+        buy.barLineages = [];
+        buy.barSubCounter = 0;
+        buy.barDeadLabels = new Set();
+        buy.barPending = false;
+        buy.rear = null;
+        buy.rearReenter = null;
+        buy.red1 = null;
         return ev;
       }
       b2.refLow = cur.l;
@@ -907,7 +1166,19 @@ export class TZEngine {
     return ev;
   }
 
-  private evalBar2(pc: ParentCycle, buy: Buy, lin: BarLineage, prev: Day, cur: Day, preTodayLinRef: number | null): string[] {
+  // Forms off lin's own reference high, only while lin itself is pre-SL.
+  // Gates RED1/RED2 on lin, and gates BAR SL2 being reachable at all. Has
+  // its own independent SL/recovery cycle -- no escalation. Frozen (no
+  // independent recovery) once lin's own SL fires, but keeps quietly
+  // climbing as INVALID BAR HH.
+  private evalBar2(
+    pc: ParentCycle,
+    buy: Buy,
+    lin: BarLineage,
+    prev: Day,
+    cur: Day,
+    preTodayLinRef: number | null
+  ): string[] {
     const ev: string[] = [];
     if (lin.bar2 === null) {
       if (lin.sl === null) {
@@ -953,14 +1224,18 @@ export class TZEngine {
     return ev;
   }
 
+  // Mirrors evalBar2 one level up. rear.rear2.dormant is ONLY ever set
+  // when REAR itself is permanently retired (REAR's own SL leading to
+  // REAR RE-ENTER) -- NOT when REAR 2's own dual-role BAR cascade forms.
+  // So by the time rear.rear2.dormant is true here, rear.sl is already
+  // set too, and this method's own SL branch below is naturally moot.
   private evalRear2(
     pc: ParentCycle,
     buy: Buy,
     rear: Rear,
     prev: Day,
     cur: Day,
-    preTodayRearRef: number | null,
-    _preTodayRear2Ref: number | null
+    preTodayRearRef: number | null
   ): string[] {
     const ev: string[] = [];
     if (rear.rear2 === null) {
@@ -983,10 +1258,20 @@ export class TZEngine {
     }
     const r2 = rear.rear2;
     if (r2.slActive) {
-      if (cur.l >= prev.l && cur.h > r2.refHigh && cur.h - r2.refHigh >= THRESH - EPS && cur.c >= r2.refHigh) {
+      // Recovers above "whichever is higher" as it stood at the moment
+      // THIS SL fired (r2.reentryThreshold), not just its own frozen
+      // refHigh -- mirrors TZ BUY 2's own recovery exactly. In practice
+      // REAR 2's own ref rarely if ever trails BAR 2's (REAR 2 tracks
+      // every candle unconditionally, with a weaker threshold than BAR 2
+      // needs to even form), but the explicit snapshot keeps this tier
+      // consistent with the rest of the Family-1 pattern rather than
+      // relying on that as an unstated assumption.
+      const ref = r2.reentryThreshold !== null ? r2.reentryThreshold : r2.refHigh;
+      if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         r2.refHigh = cur.h;
         r2.refLow = cur.l;
         r2.slActive = false;
+        r2.reentryThreshold = null;
         ev.push(`REAR 2(${branchLabel(pc.id)})`);
       }
       return ev;
@@ -994,8 +1279,19 @@ export class TZEngine {
     if (cur.l < r2.refLow) {
       const gap = r2.refLow - cur.l;
       if (gap >= THRESH - EPS && cur.c <= r2.refLow + EPS) {
+        // REAR 2's own SL is decisive too, unlike BAR 2 -- it wipes out
+        // whatever it had unlocked (RED1/RED2 in flight against REAR, any
+        // fresh BAR cascade opened under REAR 2) and needs to reform
+        // (same label, above its own ref) before RED1/RED2 can attach to
+        // REAR again. Snapshot "whichever is higher" BEFORE wiping.
+        r2.reentryThreshold = this.currentTopRef(buy);
         r2.slActive = true;
         ev.push(`REAR 2 SL(${branchLabel(pc.id)})`);
+        buy.red1 = null;
+        buy.barLineages = [];
+        buy.barSubCounter = 0;
+        buy.barDeadLabels = new Set();
+        buy.barPending = false;
         return ev;
       }
       r2.refLow = cur.l;
@@ -1008,14 +1304,17 @@ export class TZEngine {
     return ev;
   }
 
+  // Mirrors evalRear2 one level deeper. rre.dormant guard placed at the
+  // VERY TOP -- rre.dormant CAN become true before rre.rre2 ever forms (a
+  // fresh BAR generation superseding REAR RE-ENTER before its own "2" ever
+  // confirmed), unlike rear.dormant one tier up.
   private evalRre2(
     pc: ParentCycle,
     buy: Buy,
     rre: RearReenter,
     prev: Day,
     cur: Day,
-    preTodayRreRef: number | null,
-    _preTodayRre2Ref: number | null
+    preTodayRreRef: number | null
   ): string[] {
     const ev: string[] = [];
     if (rre.dormant) return ev;
@@ -1038,10 +1337,14 @@ export class TZEngine {
     }
     const r2 = rre.rre2;
     if (r2.slActive) {
-      if (cur.l >= prev.l && cur.h > r2.refHigh && cur.h - r2.refHigh >= THRESH - EPS && cur.c >= r2.refHigh) {
+      // Same "whichever is higher" recovery treatment as REAR 2's own SL,
+      // one level deeper.
+      const ref = r2.reentryThreshold !== null ? r2.reentryThreshold : r2.refHigh;
+      if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         r2.refHigh = cur.h;
         r2.refLow = cur.l;
         r2.slActive = false;
+        r2.reentryThreshold = null;
         ev.push(`REAR RE-ENTER 2(${branchLabel(pc.id)})`);
       }
       return ev;
@@ -1049,8 +1352,18 @@ export class TZEngine {
     if (cur.l < r2.refLow) {
       const gap = r2.refLow - cur.l;
       if (gap >= THRESH - EPS && cur.c <= r2.refLow + EPS) {
+        // Same treatment as REAR 2's own SL, one level deeper -- decisive,
+        // wipes what it unlocked, needs to reform before RED1/RED2 can
+        // attach to REAR RE-ENTER. Snapshot "whichever is higher" BEFORE
+        // wiping.
+        r2.reentryThreshold = this.currentTopRef(buy);
         r2.slActive = true;
         ev.push(`REAR RE-ENTER 2 SL(${branchLabel(pc.id)})`);
+        buy.red1 = null;
+        buy.barLineages = [];
+        buy.barSubCounter = 0;
+        buy.barDeadLabels = new Set();
+        buy.barPending = false;
         return ev;
       }
       r2.refLow = cur.l;
@@ -1063,6 +1376,15 @@ export class TZEngine {
     return ev;
   }
 
+  // Advances every currently-alive BAR lineage's SL/SL2 state (HH/LL/
+  // BAR-2 already handled earlier this same candle). Whichever lineage's
+  // SL2 condition fires first wins: a fresh REAR forms off its own
+  // reference, and every other lineage terminates immediately. Also
+  // checks whether a fresh BAR can start on its own (no RED1/RED2 needed)
+  // once the newest lineage is no longer pre-SL, and attaches RED1/RED2 to
+  // whichever lineage is currently the genuinely active (pre-SL) one --
+  // only the NEWEST lineage ever participates in RED1/RED2 (single shared
+  // buy.red1 object).
   private evalBarLineagesProgress(
     pc: ParentCycle,
     buy: Buy,
@@ -1077,6 +1399,9 @@ export class TZEngine {
     const perLineageEv = new Map<string, string[]>();
     const lineageObjs = new Map<string, BarLineage>();
 
+    // RED1/RED2 is a SINGLE shared object per buy (buy.red1). Frozen once,
+    // before the loop, so an older lineage racing in parallel behind the
+    // newest one never also gets routed through it.
     const newestForRed1 = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
 
     for (const lin of [...buy.barLineages]) {
@@ -1097,6 +1422,8 @@ export class TZEngine {
           if (red1Preexisting) {
             linEv.push(...this.evalRed1Generic(pc, buy, lin, prev, cur));
           } else if (lin.bar2 !== null && !lin.red2Ever) {
+            // A fresh RED1 cannot attach to this lineage until its own
+            // BAR 2 has formed.
             linEv.push(...this.attachFreshRed1(pc, buy, lin, prev, cur));
           }
         }
@@ -1106,6 +1433,11 @@ export class TZEngine {
       const sl = lin.sl;
 
       if (lin.bar2 === null) {
+        // This lineage's SL fired without a BAR 2 ever having formed for
+        // it -- a permanent dead end. No INVALID BAR SL, no BAR SL HH/LL,
+        // no BAR SL2. The only ways out are a fresh BAR(n+1) forming
+        // elsewhere (below, which removes this dead lineage) or the
+        // top-level TZ BUY SL eventually firing.
         continue;
       }
 
@@ -1125,6 +1457,9 @@ export class TZEngine {
             lin.refLow = cur.l;
             lin.red1Since = false;
             lin.red2Ever = false;
+            // BAR 2 does NOT persist through a BAR-level reactivation --
+            // every fresh BAR generation needs its own new BAR 2 from
+            // scratch.
             lin.bar2 = null;
             reactivatedThisCandle = true;
             buy.barPending = false;
@@ -1156,6 +1491,12 @@ export class TZEngine {
           buy.barPending = false;
         }
       } else if (!this.rearAncestorTerminated(buy)) {
+        // A BAR's own SL2 ALWAYS produces a fresh REAR, never a
+        // reactivation of whatever dormant ancestor (REAR or REAR
+        // RE-ENTER) happens to already exist -- regardless of whether that
+        // ancestor's own frozen/quietly-climbing reference happens to
+        // clear the same day. Blocked entirely once the ancestor has
+        // already failed at its own SL.
         const preRef = preTodayBar2Ref.get(lin.label) ?? null;
         const rearRef = preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
         const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
@@ -1183,46 +1524,58 @@ export class TZEngine {
     if (rearWinner !== null) {
       const [, rh, rl] = rearWinner;
       ev.push(`REAR(${labelId})`);
-      buy.rearReenter = null;
+      buy.rearReenter = null; // single-slot: newest REAR-family formation wipes any older dormant one
       buy.rear = new Rear(rh, rl);
-      buy.barLineages = [];
+      buy.barLineages = []; // every lineage -- ancestor or descendant -- terminates
       buy.barSubCounter = 0;
+      buy.barDeadLabels = new Set();
       return ev;
     }
 
-    if (!reactivatedThisCandle && buy.active && buy.barPending && this.barEntryShape(prev, cur)) {
-      buy.barLineages = buy.barLineages.filter((l) => l.sl === null || (!l.sl.invalidated && l.bar2 !== null));
-      buy.barSubCounter += 1;
-      const subLabel = `${labelId}.${buy.barSubCounter}`;
+    // A fresh, independent BAR can start on ANY qualifying breakout the
+    // instant the current newest lineage is no longer pre-SL -- no
+    // RED1/RED2 needed for this. Added alongside the original
+    // RED2/barPending-gated path (kept unchanged below, for a still-pre-SL
+    // newest lineage whose own RED2 already fired), not a replacement for
+    // it: the RED2-gated path alone made fresh BAR formation permanently
+    // impossible once the newest lineage was a no-BAR-2 dead end (real-
+    // data-motivated fix). A lineage that's post-SL, already has its own
+    // BAR 2, and hasn't shown INVALID BAR SL yet is NOT terminated by
+    // this -- it keeps racing in parallel. Only a lineage that's a genuine
+    // dead end (no BAR 2) or already gave up (invalidated) gets dropped
+    // when a fresh one forms -- and ONLY a dead-end drop frees its number
+    // for reuse; one that had BAR 2 stays retired.
+    const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    const newestIsDead = newest === null || newest.sl !== null;
+    const freshBarReady = newestIsDead || buy.barPending;
+    if (!reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
+      const surviving: BarLineage[] = [];
+      const dropped: BarLineage[] = [];
+      for (const l of buy.barLineages) {
+        if (l.sl === null || (!l.sl.invalidated && l.bar2 !== null)) {
+          surviving.push(l);
+        } else {
+          dropped.push(l);
+        }
+      }
+      for (const l of dropped) {
+        if (l.sl !== null && l.bar2 === null) {
+          const n = parseInt(l.label.split(".").pop() as string, 10);
+          buy.barDeadLabels.add(n);
+        }
+      }
+      buy.barLineages = surviving;
+      const subLabel = this.nextBarLabel(buy, labelId);
       buy.barLineages.push(new BarLineage(subLabel, cur.h, cur.l));
       buy.barPending = false;
       buy.barHighPool = Math.max(buy.barHighPool, cur.h);
       ev.push(`BAR(${subLabel})`);
     }
 
-    const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    if (buy.active && newest !== null && newest.sl !== null && !newest.sl.sl2) {
-      const lo = newest.sl.refLow;
-      const hi = newest.sl.refHigh;
-      if (
-        cur.l >= prev.l &&
-        cur.h > prev.h &&
-        cur.h - prev.h >= THRESH - EPS &&
-        cur.c >= prev.h &&
-        lo <= cur.l &&
-        cur.h <= hi
-      ) {
-        buy.barSubCounter += 1;
-        const subLabel = `${labelId}.${buy.barSubCounter}`;
-        buy.barLineages.push(new BarLineage(subLabel, cur.h, cur.l));
-        buy.barHighPool = Math.max(buy.barHighPool, cur.h);
-        ev.push(`BAR(${subLabel})`);
-      }
-    }
-
     return ev;
   }
 
+  // =================== REAR family ===================
   private evalRearHhLl(pc: ParentCycle, buy: Buy, rear: Rear, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     if (!rear.red1Since || rear.dormant || this.red1InvalidatesToday(buy, cur)) {
@@ -1251,9 +1604,16 @@ export class TZEngine {
     const ev: string[] = [];
     if (cur.l < rear.refLow && rear.refLow - cur.l >= THRESH - EPS && cur.c <= rear.refLow + EPS) {
       ev.push(`REAR SL(${branchLabel(pc.id)})`);
-      rear.sl = new RearSL(cur.l);
+      // REAR's own SL is decisive -- wipes out everything below it (REAR
+      // 2, any fresh BAR cascade opened under REAR 2), regardless of any
+      // RED1/RED2 already in flight. Snapshot "whichever is higher"
+      // BEFORE wiping -- REAR RE-ENTER always forms above THIS (never a
+      // dead end, unlike BAR).
+      rear.sl = new RearSL(cur.l, this.currentTopRef(buy));
+      rear.rear2 = null;
       buy.barLineages = [];
       buy.barSubCounter = 0;
+      buy.barDeadLabels = new Set();
       buy.red1 = null;
       buy.barPending = false;
       return ev;
@@ -1261,37 +1621,36 @@ export class TZEngine {
     const red1Preexisting = buy.red1 !== null && buy.red1.active;
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rear, prev, cur));
-    } else if (rear.rear2 !== null && !rear.red2Ever) {
+    } else if (rear.rear2 !== null && !rear.rear2.slActive && !rear.red2Ever) {
+      // A fresh RED1 cannot attach to REAR unless REAR 2 is currently
+      // ACTIVE (not merely "has existed once") -- REAR 2's own SL wipes
+      // this out too, requiring REAR 2 to reform before RED1/RED2 can
+      // attach again.
       ev.push(...this.attachFreshRed1(pc, buy, rear, prev, cur));
     }
     return ev;
   }
 
-  private evalRearSlProgress(
-    pc: ParentCycle,
-    buy: Buy,
-    rear: Rear,
-    _sl: RearSL,
-    prev: Day,
-    cur: Day,
-    preTodayRear2Ref: number | null
-  ): string[] {
+  private evalRearSlProgress(pc: ParentCycle, buy: Buy, rear: Rear, sl: RearSL, prev: Day, cur: Day): string[] {
+    // REAR's own SL always leads to REAR RE-ENTER -- never a dead end,
+    // regardless of whether REAR 2 ever formed. Threshold is "whichever is
+    // higher" as snapshotted at the moment this SL fired (sl.
+    // entryThreshold) -- REAR 2/bar lineages were already wiped at that
+    // point, so this is the only place that reference is still remembered.
     const ev: string[] = [];
     const labelId = branchLabel(pc.id);
-    const ref = preTodayRear2Ref !== null ? preTodayRear2Ref : (rear.rear2 as Bar2).refHigh;
+    const ref = sl.entryThreshold;
     const isReenter = cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref;
     if (isReenter && !this.milestoneBlocked(pc)) {
       buy.rearReenter = new RearReenter(cur.h, cur.l);
       ev.push(`REAR RE-ENTER(${labelId})`);
-      rear.dormant = true;
-      if (rear.rear2 !== null) {
-        rear.rear2.dormant = true;
-      }
+      rear.dormant = true; // this REAR is now permanently retired for this lineage
       return ev;
     }
     return ev;
   }
 
+  // =================== REAR RE-ENTER family ===================
   private evalRearReenterHhLl(pc: ParentCycle, buy: Buy, rre: RearReenter, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     if (!rre.red1Since || rre.dormant || this.red1InvalidatesToday(buy, cur)) {
@@ -1320,15 +1679,25 @@ export class TZEngine {
     const ev: string[] = [];
     if (cur.l < rre.refLow && rre.refLow - cur.l >= THRESH - EPS && cur.c <= rre.refLow + EPS) {
       ev.push(`REAR RE-ENTER SL(${branchLabel(pc.id)})`);
-      rre.sl = new RearReenterSL(cur.l);
+      // Same decisive treatment as REAR's own SL, one level deeper --
+      // wipes REAR RE-ENTER 2 and any fresh BAR cascade opened under it,
+      // snapshotting "whichever is higher" first (self-recovers above
+      // THIS, never a dead end).
+      rre.sl = new RearReenterSL(cur.l, this.currentTopRef(buy));
+      rre.rre2 = null;
       buy.red1 = null;
+      buy.barLineages = [];
+      buy.barSubCounter = 0;
+      buy.barDeadLabels = new Set();
       buy.barPending = false;
       return ev;
     }
     const red1Preexisting = buy.red1 !== null && buy.red1.active;
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rre, prev, cur));
-    } else if (rre.rre2 !== null && !rre.red2Ever) {
+    } else if (rre.rre2 !== null && !rre.rre2.slActive && !rre.red2Ever) {
+      // Mirrors REAR 2's gate one level deeper -- REAR RE-ENTER 2 must be
+      // currently ACTIVE, not merely have existed once.
       ev.push(...this.attachFreshRed1(pc, buy, rre, prev, cur));
     }
     return ev;
@@ -1338,14 +1707,17 @@ export class TZEngine {
     pc: ParentCycle,
     buy: Buy,
     rre: RearReenter,
-    _sl: RearReenterSL,
+    sl: RearReenterSL,
     prev: Day,
-    cur: Day,
-    preTodayRre2Ref: number | null
+    cur: Day
   ): string[] {
+    // REAR RE-ENTER's own SL always self-recovers -- never a dead end,
+    // regardless of whether REAR RE-ENTER 2 ever formed. Threshold is
+    // "whichever is higher" as snapshotted at the moment this SL fired
+    // (sl.entryThreshold).
     const ev: string[] = [];
     const labelId = branchLabel(pc.id);
-    const ref = preTodayRre2Ref !== null ? preTodayRre2Ref : (rre.rre2 as Bar2).refHigh;
+    const ref = sl.entryThreshold;
     const isReenterAgain = cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref;
     if (isReenterAgain && !this.milestoneBlocked(pc)) {
       ev.push(`REAR RE-ENTER(${labelId})`);
@@ -1355,6 +1727,9 @@ export class TZEngine {
       rre.red1Since = false;
       rre.dormant = false;
       rre.red2Ever = false;
+      // REAR RE-ENTER 2 was already wiped (rre.rre2 = null) the moment
+      // this SL fired -- a fresh REAR RE-ENTER 2 has to form from scratch
+      // before RED1/RED2 can attach again.
       return ev;
     }
     return ev;
