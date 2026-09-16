@@ -51,6 +51,12 @@ below it (even one that already has its own BAR 2) and, per an explicit
 user-driven rule reversal, ALSO opens spawn eligibility for a fresh
 sibling TZ GREEN(n+1), exactly like TZ BUY's own top-level SL does, even
 though TZ BUY itself is still active throughout.
+
+Test 10: REAR's own SL, and REAR RE-ENTER's own SL, are NEVER dead ends --
+unlike BAR's own SL -- regardless of whether REAR 2 / REAR RE-ENTER 2 ever
+formed. REAR's own SL always leads to REAR RE-ENTER; REAR RE-ENTER's own
+SL always self-recovers under the same event text. Both mirror TZ BUY's
+own "never a dead end" pattern, not BAR's.
 """
 from tz_engine_wtf import Day, TZEngine, is_milestone
 
@@ -332,6 +338,31 @@ assert not missing9, f"Test 9 MISSING: {missing9}"
 assert "BAR SL(A.1)" not in seen9, \
     "Test 9 FAILED: TZ BUY 2's own SL should wipe the BAR family before its own SL check runs"
 assert "TZ BUY SL(A)" not in seen9, "Test 9 setup: TZ BUY itself must stay active throughout"
+
+# ---------------------------------------------------------------------------
+# Test 10: REAR's own SL (no REAR 2 ever formed) leads to REAR RE-ENTER --
+# never a dead end; REAR RE-ENTER's own SL (no REAR RE-ENTER 2 either)
+# self-recovers under the same event text -- also never a dead end. Both
+# mirror TZ BUY's pattern, not BAR's Family-2 dead-end pattern.
+# ---------------------------------------------------------------------------
+rows10 = rows7 + [
+    ("j16", 93.4, 93.5, 93.0, 93.2),   # REAR SL(A) -- no REAR 2 ever formed
+    ("j17", 93.1, 99, 93.1, 99),       # REAR RE-ENTER(A) above 98 -- not a dead end
+    ("j18", 93.0, 93.2, 92.6, 92.8),   # REAR RE-ENTER SL(A) -- no REAR RE-ENTER 2 either
+    ("j19", 92.7, 100, 92.7, 100),     # REAR RE-ENTER(A) self-recovers above 99, same text
+]
+seen10 = run(rows10, "Test 10: REAR SL / REAR RE-ENTER SL never dead ends")
+expected10 = ["REAR(A)", "REAR SL(A)", "REAR RE-ENTER(A)", "REAR RE-ENTER SL(A)"]
+missing10 = [e for e in expected10 if e not in seen10]
+assert not missing10, f"Test 10 MISSING: {missing10}"
+j17_events = next(evs for date, evs in run.last_trace if date == "j17")
+assert j17_events == ["REAR RE-ENTER(A)"], \
+    f"Test 10 FAILED: REAR SL should lead straight to REAR RE-ENTER, got {j17_events}"
+j19_events = next(evs for date, evs in run.last_trace if date == "j19")
+assert j19_events == ["REAR RE-ENTER(A)"], \
+    f"Test 10 FAILED: REAR RE-ENTER SL should self-recover under the same text, got {j19_events}"
+assert "REAR RE-ENTER 2(A)" not in seen10, "Test 10 setup: REAR RE-ENTER 2 should never form"
+assert "REAR 2(A)" not in seen10, "Test 10 setup: REAR 2 should never form"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

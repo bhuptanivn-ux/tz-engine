@@ -214,13 +214,17 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
 9. TZ BUY 2's own SL wipes the BAR family (even with BAR 2 already formed)
    and opens spawn eligibility for a fresh sibling TZ GREEN(n+1), while TZ
    BUY itself stays active throughout.
+10. REAR's own SL (no REAR 2 ever formed) leads straight to REAR RE-ENTER
+    -- never a dead end; REAR RE-ENTER's own SL (no REAR RE-ENTER 2
+    either) self-recovers under the same event text -- also never a dead
+    end. Both mirror TZ BUY's pattern, not BAR's Family-2 dead-end
+    pattern.
 
 Not yet independently covered by a dedicated synthetic test (lower
 priority -- the same `_current_top_ref` machinery is exercised end-to-end
-by Test 8, and real-data validation already exists for the flow overall):
-REAR's own SL → REAR RE-ENTER with no REAR 2 ever formed; REAR 2/REAR
-RE-ENTER 2's own SL wiping and requiring reformation; REAR RE-ENTER's own
-SL self-recovery with no REAR RE-ENTER 2 ever formed.
+by Tests 8 and 10, and real-data validation already exists for the flow
+overall): REAR 2/REAR RE-ENTER 2's own SL wiping RED1/bar_lineages below
+it and requiring reformation before RED1/RED2 reattaches.
 
 ## Open items
 
