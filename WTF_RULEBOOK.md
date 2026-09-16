@@ -200,8 +200,13 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
 5. TZ BUY 2's own HH muted once a BAR generation's reference catches up.
 6. **BAR SL with no BAR 2 → fresh BAR reuses the freed label, no
    RED1/RED2 needed** (the real-data bug fix).
-7. *(not yet covered by a dedicated synthetic test: multi-generation BAR
-   racing in parallel post-SL2, both lineages alive simultaneously)*.
+7. Multi-generation BAR racing: an older, post-SL, BAR-2'd lineage
+   survives a fresh independent BAR forming elsewhere, both tick forward
+   on the same days, and the older one eventually wins its own SL2 and
+   forms REAR off its own BAR 2 reference. Also exercises the exact edge
+   case the user flagged directly ("a single candle can trigger BAR(3) SL
+   + BAR(2) SL2"): the newer lineage's own SL coinciding with the older
+   one's SL2 on the same candle -- only the SL2 event shows.
 8. TZ BUY's own SL, firing after BAR 2 has formed, reactivates above BAR
    2's reference specifically -- not the numerically higher frozen peaks
    of TZ BUY/TZ BUY 2 (proves "whichever occurred last" is structural, not

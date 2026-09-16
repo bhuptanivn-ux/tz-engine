@@ -30,6 +30,15 @@ BAR can still form immediately afterward with NO RED1/RED2 needed, reusing
 the dead lineage's own freed sub-label (a complete dead end frees its
 number for reuse; one that got BAR 2 would not).
 
+Test 7: multi-generation BAR racing. An older lineage that's already past
+its own SL, already has its own BAR 2, and hasn't shown INVALID BAR SL yet
+is NOT terminated when a fresh, independent BAR forms elsewhere -- both
+race in parallel, ticking forward on the same days, until the older one
+wins its own SL2 and forms REAR off its own BAR 2 reference. Also exercises
+the exact edge case flagged by the user ("a single candle can trigger
+BAR(3) SL + BAR(2) SL2"): the newer lineage breaching its own SL on the
+very same candle the older one confirms SL2 -- only the SL2 event shows.
+
 Test 8: TZ BUY's own top-level SL, firing after the branch has already
 reached BAR 2, wipes everything below it and reactivates above "whichever
 occurred last" (BAR 2's own reference) -- not TZ BUY's own frozen peak, and
@@ -210,6 +219,48 @@ assert "RED1(B)" not in seen6 and "RED2(B)" not in seen6, "Test 6 setup sanity"
 j10_events = next(evs for date, evs in run.last_trace if date == "j10")
 assert j10_events == ["BAR(A.1)"], \
     f"Test 6 FAILED: fresh BAR should reuse freed label 'A.1' with no RED1/RED2, got {j10_events}"
+
+# ---------------------------------------------------------------------------
+# Test 7: multi-generation BAR racing -- an older, post-SL, BAR-2'd lineage
+# survives a fresh independent BAR forming elsewhere, races in parallel,
+# and eventually wins its own SL2 to form REAR
+# ---------------------------------------------------------------------------
+rows7 = [
+    ("j0", 100, 100, 99.0, 99.5),
+    ("j1", 100, 101, 99.2, 101),      # TZ GREEN(A)
+    ("j1b", 100.5, 100.5, 99.5, 100), # consolidation
+    ("j2", 99.4, 100, 99.3, 99.4),    # RED(A)
+    ("j3", 99.5, 102, 99.4, 102),     # TZ BUY(A) ref_high=102 ref_low=99.4
+    ("j3b", 99, 99.5, 90.0, 99.5),    # deep dip+reclaim
+    ("j3c", 89, 99.5, 50.0, 99.5),    # buy/TZ GREEN ref_low -> 50.0, well clear
+    ("j4", 91, 103, 91.0, 103),       # TZ BUY 2(A) ref_high=103 ref_low=91.0
+    ("j5", 95, 104, 94.5, 104),       # rally
+    ("j6", 95, 95, 94.2, 94.2),       # RED1(A)
+    ("j7", 94.0, 94.0, 93.9, 93.9),   # RED2(A) -- bar_pending=True
+    ("j8", 94, 95.5, 94, 95.5),       # BAR(A.1) ref_high=95.5 ref_low=94
+    ("j9", 94, 97, 94.2, 97),         # BAR 2(A.1) ref_high=97 ref_low=94.2
+    ("j10", 94, 94.3, 93.5, 93.8),    # BAR SL(A.1) -- BAR 2 exists, NOT a dead end
+    ("j11", 93.6, 93.9, 93.6, 93.7),  # quiet day -- lowers "prev" without raising
+    # sl.ref_high, so the next breakout won't also read as INVALID BAR SL
+    ("j12", 93.7, 94.1, 93.7, 94.1),  # fresh independent BAR(A.2) -- no RED1/RED2 --
+    # A.1 survives (post-SL, has BAR 2, not yet invalidated) and keeps racing
+    ("j13", 93.8, 94.4, 93.8, 94.0),  # BOTH tick forward the SAME day: BAR SL
+    # HH(A.1) + BAR HH(A.2) -- proves they're racing in parallel, not that A.2
+    # replaced A.1
+    ("j14", 93.6, 93.7, 93.2, 93.3),  # BAR SL2(A.1) wins -- this candle ALSO
+    # breaches A.2's own ref_low, but only the SL2 event shows (SL2 priority)
+    ("j15", 93.5, 98, 93.5, 98),      # REAR(A) forms off A.1's own BAR 2 ref (97)
+]
+seen7 = run(rows7, "Test 7: multi-generation BAR racing in parallel")
+expected7 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "RED1(A)", "RED2(A)",
+             "BAR(A.1)", "BAR 2(A.1)", "BAR SL(A.1)", "BAR(A.2)", "BAR SL2(A.1)", "REAR(A)"]
+missing7 = [e for e in expected7 if e not in seen7]
+assert not missing7, f"Test 7 MISSING: {missing7}"
+assert "BAR SL(A.2)" not in seen7, \
+    "Test 7 FAILED: A.2's own SL, coinciding with A.1's SL2, must be absorbed, not shown"
+j13_events = next(evs for date, evs in run.last_trace if date == "j13")
+assert set(j13_events) == {"BAR HH(A.2)", "BAR SL HH(A.1)"}, \
+    f"Test 7 FAILED: both lineages should tick forward the same day, got {j13_events}"
 
 # ---------------------------------------------------------------------------
 # Test 8: TZ BUY's own SL, firing after BAR 2 has already formed, reactivates
