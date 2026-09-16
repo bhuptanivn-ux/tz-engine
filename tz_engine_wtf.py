@@ -1283,11 +1283,22 @@ class TZEngine:
             return ev
         r2 = rear.rear2
         if r2.sl_active:
-            if (cur.l >= prev.l and cur.h > r2.ref_high and (cur.h - r2.ref_high) >= THRESH - EPS
-                    and cur.c >= r2.ref_high):
+            # TZ BUY 2 variant: recovers above "whichever is higher" as it
+            # stood at the moment THIS SL fired (r2.reentry_threshold), not
+            # just its own frozen ref_high -- mirrors TZ BUY 2's own
+            # recovery exactly. In practice REAR 2's own ref rarely if ever
+            # trails BAR 2's (REAR 2 tracks every candle unconditionally,
+            # with a weaker threshold than BAR 2 needs to even form), but
+            # the explicit snapshot keeps this tier consistent with the
+            # rest of the Family-1 pattern rather than relying on that as
+            # an unstated assumption.
+            ref = r2.reentry_threshold if r2.reentry_threshold is not None else r2.ref_high
+            if (cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS
+                    and cur.c >= ref):
                 r2.ref_high = cur.h
                 r2.ref_low = cur.l
                 r2.sl_active = False
+                r2.reentry_threshold = None
                 ev.append(f"REAR 2({branch_label(pc.id)})")
             return ev
         if cur.l < r2.ref_low:
@@ -1298,6 +1309,8 @@ class TZEngine:
                 # in flight against REAR, any fresh BAR cascade opened
                 # under REAR 2) and needs to reform (same label, above its
                 # own ref) before RED1/RED2 can attach to REAR again.
+                # Snapshot "whichever is higher" BEFORE wiping.
+                r2.reentry_threshold = self._current_top_ref(buy)
                 r2.sl_active = True
                 ev.append(f"REAR 2 SL({branch_label(pc.id)})")
                 buy.red1 = None
@@ -1336,11 +1349,15 @@ class TZEngine:
             return ev
         r2 = rre.rre2
         if r2.sl_active:
-            if (cur.l >= prev.l and cur.h > r2.ref_high and (cur.h - r2.ref_high) >= THRESH - EPS
-                    and cur.c >= r2.ref_high):
+            # TZ BUY 2 variant: same "whichever is higher" recovery
+            # treatment as REAR 2's own SL, one level deeper.
+            ref = r2.reentry_threshold if r2.reentry_threshold is not None else r2.ref_high
+            if (cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS
+                    and cur.c >= ref):
                 r2.ref_high = cur.h
                 r2.ref_low = cur.l
                 r2.sl_active = False
+                r2.reentry_threshold = None
                 ev.append(f"REAR RE-ENTER 2({branch_label(pc.id)})")
             return ev
         if cur.l < r2.ref_low:
@@ -1349,6 +1366,8 @@ class TZEngine:
                 # TZ BUY 2 variant: same treatment as REAR 2's own SL, one
                 # level deeper -- decisive, wipes what it unlocked, needs
                 # to reform before RED1/RED2 can attach to REAR RE-ENTER.
+                # Snapshot "whichever is higher" BEFORE wiping.
+                r2.reentry_threshold = self._current_top_ref(buy)
                 r2.sl_active = True
                 ev.append(f"REAR RE-ENTER 2 SL({branch_label(pc.id)})")
                 buy.red1 = None
