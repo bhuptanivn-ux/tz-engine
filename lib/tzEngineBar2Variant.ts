@@ -1533,20 +1533,29 @@ export class TZEngine {
     }
 
     // A fresh, independent BAR can start on ANY qualifying breakout the
-    // instant the current newest lineage is no longer pre-SL -- no
-    // RED1/RED2 needed for this. Added alongside the original
-    // RED2/barPending-gated path (kept unchanged below, for a still-pre-SL
-    // newest lineage whose own RED2 already fired), not a replacement for
-    // it: the RED2-gated path alone made fresh BAR formation permanently
-    // impossible once the newest lineage was a no-BAR-2 dead end (real-
-    // data-motivated fix). A lineage that's post-SL, already has its own
-    // BAR 2, and hasn't shown INVALID BAR SL yet is NOT terminated by
-    // this -- it keeps racing in parallel. Only a lineage that's a genuine
-    // dead end (no BAR 2) or already gave up (invalidated) gets dropped
-    // when a fresh one forms -- and ONLY a dead-end drop frees its number
-    // for reuse; one that had BAR 2 stays retired.
+    // instant the current newest lineage is no longer pre-SL BUT HAS NOT
+    // YET REACHED ITS OWN SL2 -- no RED1/RED2 needed for this. Added
+    // alongside the original RED2/barPending-gated path (kept unchanged
+    // below, for a still-pre-SL newest lineage whose own RED2 already
+    // fired), not a replacement for it: the RED2-gated path alone made
+    // fresh BAR formation permanently impossible once the newest lineage
+    // was a no-BAR-2 dead end (real-data-motivated fix). A lineage that's
+    // post-SL, already has its own BAR 2, and hasn't shown INVALID BAR SL
+    // yet is NOT terminated by this -- it keeps racing in parallel. Only
+    // a lineage that's a genuine dead end (no BAR 2) or already gave up
+    // (invalidated) gets dropped when a fresh one forms -- and ONLY a
+    // dead-end drop frees its number for reuse; one that had BAR 2 stays
+    // retired.
+    //
+    // EXCLUDES a lineage that has ALREADY reached its own SL2
+    // (`newest.sl.sl2`) -- a second real-data bug (BBOX.NS): once BAR SL2
+    // fires, the only three valid next events are TZ BUY's own SL, REAR
+    // (this same lineage's own breakout above its BAR 2's reference,
+    // handled separately above), or a fresh sibling TZ GREEN(n+1). A
+    // merely generic breakout must not let an unrelated BAR(n+1) jump in
+    // ahead of REAR.
     const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    const newestIsDead = newest === null || newest.sl !== null;
+    const newestIsDead = newest === null || (newest.sl !== null && !newest.sl.sl2);
     const freshBarReady = newestIsDead || buy.barPending;
     if (!reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
       const surviving: BarLineage[] = [];
