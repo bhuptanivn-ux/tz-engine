@@ -1,99 +1,97 @@
 """
-TZ ENGINE simulator -- WTF: the TZ ENGINE itself, extended with TZ BUY 2 /
-BAR 2 / REAR 2 / REAR RE-ENTER 2.
+TZ BUY -- the TZ ENGINE state machine, extended with TZ BUY 2 / BAR 2 /
+REAR 2 / REAR RE-ENTER 2. (Code file still named tz_engine_wtf.py; the
+theory itself is called TZ BUY -- see WTF_RULEBOOK.md for the full,
+consolidated rule set from an exhaustive one-topic-at-a-time review.)
 
-STATUS: TZ BUY 2 is a NEW, provisional layer -- NOT yet verified against
-real OHLC data. Built by taking the already-validated BAR 2 / REAR 2 / REAR
-RE-ENTER 2 variant (tz_engine_bar2_variant.py, verified end-to-end against
-01-01-2020 through 08-08-2020) wholesale and adding a TZ BUY 2 layer one
-tier up, following the exact same "2"-tier pattern, per the user's explicit
-rules (see WTF_RULEBOOK.md). Re-verify TZ BUY 2 specifically against real
-data before trusting it; everything at BAR/REAR/REAR RE-ENTER level below
-it carries over its original real-data validation unchanged.
+STATUS: verified against real weekly OHLC (KALYANKJIL.NS, 2021-03-28
+through 2026-09-15) -- reproduces that dataset's own Event column exactly.
+That run exposed a real bug (fresh BAR formation permanently blocked after
+a BAR SL with no BAR 2), fixed below (see "Fresh BAR formation").
 
 Built on top of the validated 37-event base engine (tz_engine_v9.py),
-keeping REAR / REAR RE-ENTER (unlike the House-of-Bull source document,
-which removed REAR entirely). Layers a new confirmation-gate concept --
-"2" -- at every tier: TZ BUY 2, BAR 2, REAR 2, REAR RE-ENTER 2, each
-structurally identical, one/two/three levels up. Rules for BAR 2/REAR 2/
-REAR RE-ENTER 2 established through extensive back-and-forth verification
-against real 2020 OHLC data; TZ BUY 2 mirrors the exact same pattern one
-tier higher, per explicit user instruction (not yet independently verified
-against real data at this specific tier):
+keeping REAR / REAR RE-ENTER. Layers a confirmation-gate concept -- "2" --
+at every tier: TZ BUY 2, BAR 2, REAR 2, REAR RE-ENTER 2.
 
-- TZ BUY 2 forms off TZ BUY's own reference high, same shape as every other
-  "2" -- only while TZ BUY itself is still pre-SL. Gates RED1/RED2 attaching
-  to TZ BUY (previously ungated in the base engine): no RED1/RED2 against
-  TZ BUY at all until TZ BUY 2 has formed. Has the same independent
-  SL/recovery cycle as every other "2" (no escalation of its own). UNLIKE
-  BAR 2/REAR 2/REAR RE-ENTER 2, TZ BUY's own top-level SL is never a dead
-  end regardless of whether TZ BUY 2 ever formed -- but UNLIKE the
-  un-extended base engine's "NEW TZ BUY" retry (a brand-new Buy object,
-  distinct label), TZ BUY reactivates IN PLACE -- same object, same "TZ
-  BUY" event text, no "NEW TZ BUY" distinction at all -- retrying above
-  max(TZ BUY's own frozen reference, TZ BUY 2's own reference if it
-  existed). TZ BUY 2 forming (or reactivating) IS its own leadership-
-  contest milestone -- unlike BAR 2/REAR 2/REAR RE-ENTER 2, none of which
-  are. TZ BUY 2's own SL never opens spawn eligibility for a fresh sibling
-  TZ GREEN(n+1) -- only TZ BUY's own top-level SL does. TZ BUY 2's own HH
-  display is muted once some deeper tier's reference (any BAR/BAR 2, or
-  REAR/REAR 2/REAR RE-ENTER/REAR RE-ENTER 2) actually reaches or exceeds
-  it -- a comparison, not a mere existence check, since TZ BUY 2 isn't
-  guaranteed lower than what eventually forms below it.
-- BAR 2 forms off its own BAR lineage's reference high, mirroring TZ
-  GREEN 2's shape (Low >= PrevLow, High > ref by >= 0.20, Close >= ref) --
-  only while the lineage itself is still pre-SL.
-- BAR 2 gates RED1/RED2 attaching to its BAR lineage (previously
-  ungated), and gates BAR SL2 being reachable at all: a BAR SL that fires
-  with NO BAR 2 ever having formed is a permanent dead end -- no BAR SL
-  HH/LL/INVALID BAR SL/SL2, only a fresh BAR(n+1) elsewhere or the
-  top-level TZ BUY SL can follow.
-- BAR 2 has its own independent SL/recovery cycle (no "BAR 2 SL2"
-  escalation). It does NOT persist through BAR-level reactivation --
-  every fresh BAR generation needs a brand new BAR 2 from scratch.
-- REAR 2 / REAR RE-ENTER 2 are exact structural mirrors, one/two levels
-  up: REAR 2 gates RED1 on REAR and gates whether REAR's own SL can lead
-  anywhere; REAR RE-ENTER 2 does the same one level deeper. REAR 2's own
-  reference feeds REAR RE-ENTER's formation threshold (mirroring BAR 2 ->
-  REAR exactly).
-- Multi-lineage racing: a RED2 firing against a still-pre-SL BAR lineage
-  does NOT terminate it when a fresh, independent BAR(n+1) forms
-  elsewhere -- both keep racing in parallel (mirrors the base engine's
-  own _clear_for_new_bar_generation principle, extended through and past
-  the moment the fresh BAR actually confirms, not just while awaited).
-  Only the NEWEST lineage participates in RED1/RED2 (single shared
-  buy.red1 object). An older sibling terminates completely, retroactively
-  same-day, the moment the NEWEST lineage's own BAR 2 confirms -- REAR's
-  reference is now governed by the newer lineage regardless of what
-  happens to it next. A lineage that already reached its own SL2 is
-  unaffected by this (separate, already-established mechanism, racing
-  toward REAR on its own merits via INVALID BAR HH).
-- A BAR's own SL2 ALWAYS produces a fresh REAR, off that BAR's own
-  reference -- never a reactivation of some old dormant ancestor (REAR or
-  REAR RE-ENTER), even if the ancestor's frozen reference happens to
-  numerically coincide. "REAR RE-ENTER" is reserved exclusively for REAR
-  RE-ENTER's own SL genuinely failing and recovering -- a separate
-  mechanism that never routes through BAR SL2 at all.
-- Display suppression: BAR's own "BAR HH" is permanently suppressed once
-  its lineage has a BAR 2 (BAR 2 is now the governing reference); REAR's
-  own "REAR HH" suppressed once REAR 2 exists; REAR RE-ENTER's own "REAR
-  RE-ENTER HH" suppressed once REAR RE-ENTER 2 exists. Applies from the
-  exact same day the "2" produces ANY event (formation included),
-  retroactively. Also: an underlying SL beats its own "2" tier's SL/LL
-  the same day (only the underlying SL shows).
-- INVALID [X] HH tracking: once a "2" is frozen (its own SL active) or
-  its parent has failed, its reference keeps quietly climbing on any new
-  High (weak >=0.01 threshold) as "INVALID BAR HH" / "INVALID REAR HH" /
-  "INVALID REAR RE-ENTER HH" -- no recovery event, just an inflated
-  reference kept alive in case something downstream needs it later.
-- Dormancy must stop a "2" tracking entirely, not just suppress its
-  display, once its PARENT (REAR/REAR RE-ENTER) goes permanently dormant
-  (superseded by REAR RE-ENTER, or by a fresh BAR generation) --
-  otherwise it would track forever incorrectly.
+Every tier falls into one of two families (see WTF_RULEBOOK.md for the
+full reasoning):
 
-BAR 2 / REAR 2 / REAR RE-ENTER 2 verified end-to-end against the full
-01-01-2020 through 08-08-2020 OHLC dataset. TZ BUY 2 is new in this file
-and has NOT been run against that dataset yet.
+FAMILY 1 -- "escalating gate" (TZ BUY, TZ BUY 2, REAR, REAR 2, REAR
+RE-ENTER, REAR RE-ENTER 2): own SL is NEVER a dead end; own SL is
+DECISIVE (wipes everything structurally below it -- its own "2", the
+whole BAR family, RED1 in flight); reactivates/self-recovers above
+"whichever occurred last" (`Engine._current_top_ref` -- the current
+reference of the most structurally advanced tier reached so far, snap-
+shotted before the wipe; can be numerically LOWER than a shallower tier's
+own frozen peak, since the deepest tier governs regardless).
+
+FAMILY 2 -- "one-shot" (BAR, BAR 2): BAR's own SL with NO BAR 2 ever
+formed for that lineage is a genuine permanent dead end for that lineage
+(no INVALID BAR SL, no SL2, ever). BAR 2 itself never needs to "reform" --
+once frozen at its own SL it just keeps quietly climbing as INVALID BAR
+HH. Regardless of dead-end status, a brand-new BAR(n+1) can always start
+elsewhere the moment the current newest lineage is no longer pre-SL.
+
+Specifics:
+- TZ BUY 2 forms off TZ BUY's own reference high, only while TZ BUY is
+  pre-SL. Gates RED1/RED2 on TZ BUY: RED1 cannot attach unless TZ BUY 2 is
+  currently ACTIVE (its own SL closes this gate again, requiring TZ BUY 2
+  to reform). Is its own leadership-contest milestone ("TZ BUY 2(" in
+  MILESTONE_KEYS) -- unlike BAR 2/REAR 2/REAR RE-ENTER 2. Its own SL
+  wipes the whole BAR family/REAR/REAR RE-ENTER/RED1 below it (Family 1),
+  recovers under the same "TZ BUY 2(label)" text above "whichever occurred
+  last", and ALSO opens spawn eligibility for a fresh sibling TZ
+  GREEN(n+1) -- same as TZ BUY's own top-level SL (explicit rule addition;
+  lifts the moment TZ BUY 2 recovers). Its own HH display is muted once
+  some deeper tier's actual reference reaches or exceeds it -- a live
+  comparison, not a mere existence check.
+- TZ BUY's own SL: decisive, self-recovers IN PLACE (same object, same
+  "TZ BUY" event text -- no "NEW TZ BUY" distinction), above "whichever
+  occurred last". Always opens spawn eligibility.
+- BAR 2 forms off its own BAR lineage's reference high (Low >= PrevLow,
+  High > ref by >= 0.20, Close >= ref), only while the lineage is pre-SL.
+  Gates RED1/RED2 on its lineage and gates BAR SL2 being reachable at all.
+  Does NOT persist through BAR-level reactivation.
+- Multi-lineage racing: an older, already-post-SL lineage that already has
+  its own BAR 2 and hasn't shown INVALID BAR SL yet is NEVER terminated
+  just because a fresh independent BAR(n+1) forms elsewhere -- it keeps
+  racing toward its own SL2 in parallel (a single candle can trigger one
+  lineage's SL2 while another's own SL is still open -- this is exactly
+  why INVALID BAR SL matters as a distinct state). Only the NEWEST lineage
+  participates in RED1/RED2 (single shared buy.red1 object). An older
+  sibling still merely racing (not yet SL2'd) terminates the moment the
+  NEWEST lineage's own BAR 2 confirms.
+- Fresh BAR formation -- two independent triggers: (1) buy.bar_pending
+  (fresh RED2) plus a qualifying breakout; (2) whenever the newest lineage
+  is no longer pre-SL, a qualifying breakout ALONE forms a fresh BAR --
+  NO RED1/RED2 needed. (2) is the real-data-motivated fix: without it, a
+  BAR SL with no BAR 2 left bar_pending permanently unset-able, and an
+  engine run went silent for 84 weeks after exactly that (KALYANKJIL.NS,
+  2025-02-23 onward). A dead-end lineage's (no BAR 2) sub-label is freed
+  for reuse when this happens; one that got BAR 2 stays retired forever.
+- A BAR's own SL2 ALWAYS produces a fresh REAR off that BAR's own
+  reference -- never a reactivation of some old dormant ancestor.
+- REAR 2 / REAR RE-ENTER 2 mirror BAR 2's shape but are Family 1: their
+  own SL is decisive (wipes RED1/bar_lineages below), requiring reformation
+  before RED1/RED2 reattaches.
+- REAR's own SL / REAR RE-ENTER's own SL: Family 1 -- NEVER a dead end
+  regardless of whether REAR 2/REAR RE-ENTER 2 ever formed; REAR's own SL
+  always leads to REAR RE-ENTER, REAR RE-ENTER's own SL self-recovers
+  under the same text -- both above "whichever occurred last".
+- Display suppression: an underlying SL beats its own "2" tier's SL/LL the
+  same day. Once a "2" produces ANY event (formation included), that same
+  label's own underlying HH is suppressed that same day too.
+- INVALID [X] HH tracking: once a "2" is frozen or its parent has failed,
+  its reference keeps quietly climbing on any new High as "INVALID BAR
+  HH" / "INVALID REAR HH" / "INVALID REAR RE-ENTER HH" -- no recovery
+  event, just an inflated reference kept alive for later.
+- Dormancy stops a "2" tracking entirely, not just its display, once its
+  PARENT (REAR/REAR RE-ENTER) goes permanently dormant.
+
+Spawn eligibility for TZ GREEN(n+1): opens on EITHER TZ BUY's own SL OR TZ
+BUY 2's own SL. Branch-level label reuse (unconditional, any terminated
+branch) and leadership/dormancy/reference-inheritance across sibling
+branches needed no new code -- already generic in the base engine.
 """
 from dataclasses import dataclass, field
 from typing import Optional
@@ -149,12 +147,19 @@ class Red1:
 @dataclass
 class Bar2:
     """The "2" confirmation gate, reused identically at every tier: BAR 2
-    (lineage.bar2), REAR 2 (rear.rear2), REAR RE-ENTER 2 (rre.rre2)."""
+    (lineage.bar2), REAR 2 (rear.rear2), REAR RE-ENTER 2 (rre.rre2), TZ
+    BUY 2 (buy.tz_buy2)."""
     ref_high: float
     ref_low: float
     sl_active: bool = False  # own SL fired; frozen except for its own recovery (no "SL2" escalation)
     dormant: bool = False  # REAR 2 / REAR RE-ENTER 2 only: True once the PARENT
     # (Rear/RearReenter) goes permanently dormant -- stops ALL tracking, not just display
+    reentry_threshold: Optional[float] = None  # TZ BUY 2 only: "whichever
+    # occurred last" (BAR/BAR 2/REAR/etc.), snapshotted at the moment TZ
+    # BUY 2's own SL fires (before everything below it gets wiped) -- its
+    # own SL/recovery cycle climbs back above THIS, not just its own frozen
+    # ref_high. Unused by BAR 2/REAR 2/REAR RE-ENTER 2, which always
+    # recover above their own reference directly.
 
 
 @dataclass
@@ -194,6 +199,9 @@ class BarLineage:
 @dataclass
 class RearSL:
     ref_low: float
+    entry_threshold: float = 0.0  # "whichever occurred last" at the moment
+    # REAR's own SL fired -- REAR RE-ENTER always forms above this (REAR's
+    # own SL is never a dead end, regardless of whether REAR 2 ever formed)
 
 
 @dataclass
@@ -218,6 +226,9 @@ class Rear:
 @dataclass
 class RearReenterSL:
     ref_low: float
+    entry_threshold: float = 0.0  # "whichever occurred last" at the moment
+    # REAR RE-ENTER's own SL fired -- it self-recovers above this, never a
+    # dead end regardless of whether REAR RE-ENTER 2 ever formed
 
 
 @dataclass
@@ -258,6 +269,12 @@ class Buy:
     # regardless, only its own HH display stops.
     bar_lineages: list = field(default_factory=list)  # ordered oldest-first; see BarLineage
     bar_sub_counter: int = 0   # for allocating "A.1", "A.2", ... sub-labels
+    bar_dead_labels: set = field(default_factory=set)  # sub-numbers freed for
+    # reuse -- ONLY by a generation that was a complete dead end (its own SL
+    # fired with no BAR 2 ever having formed for it, so it never really
+    # amounted to anything). A generation that DID get its own BAR 2 and
+    # only lost out later to a newer lineage keeps its number retired
+    # forever -- the counter just keeps incrementing past it.
     bar_pending: bool = False  # RED2 fired; awaiting BAR's own entry-shape confirmation
     # single persistent slot each -- a fresh REAR/REAR RE-ENTER formation
     # always wipes whichever older dormant one currently exists, regardless
@@ -265,6 +282,10 @@ class Buy:
     rear: Optional[Rear] = None
     rear_reenter: Optional[RearReenter] = None
     bar_high_pool: float = 0.0
+    reentry_threshold: Optional[float] = None  # "whichever occurred last",
+    # snapshotted the moment TZ BUY's own SL fires (before everything below
+    # it gets wiped) -- TZ BUY reactivates above THIS, never just its own
+    # frozen peak once something deeper had formed.
 
 
 @dataclass
@@ -383,6 +404,54 @@ class TZEngine:
         target = buy.rear_reenter if buy.rear_reenter is not None else buy.rear
         return target is not None and target.sl is not None
 
+    def _current_top_ref(self, buy: Buy) -> float:
+        """"Whichever occurred last": the current reference of the most
+        structurally advanced tier this buy has reached. Used whenever a
+        tier's own SL wipes everything below it and needs a reactivation
+        threshold that isn't just its own frozen peak (TZ BUY's own SL, TZ
+        BUY 2's own SL, REAR's own SL -> REAR RE-ENTER, REAR RE-ENTER's own
+        self-recovery). `bar_lineages`, whenever non-empty, is ALWAYS more
+        recent than whatever REAR-family tier currently exists: the only
+        ways it can be non-empty are (a) the original cascade opened under
+        TZ BUY 2 before REAR ever existed, or (b) a fresh cascade reopened
+        via REAR 2's/REAR RE-ENTER 2's own dual role -- and forming REAR
+        (or REAR RE-ENTER) always wipes bar_lineages immediately, so a
+        non-empty list can never be a stale leftover from before the
+        current REAR-family tier existed. Hence bar_lineages is checked
+        FIRST inside whichever REAR-family branch currently applies, ahead
+        of that tier's own "2"."""
+        if buy.rear_reenter is not None:
+            if buy.bar_lineages:
+                newest = buy.bar_lineages[-1]
+                return newest.bar2.ref_high if newest.bar2 is not None else newest.ref_high
+            if buy.rear_reenter.rre2 is not None:
+                return buy.rear_reenter.rre2.ref_high
+            return buy.rear_reenter.ref_high
+        if buy.rear is not None:
+            if buy.bar_lineages:
+                newest = buy.bar_lineages[-1]
+                return newest.bar2.ref_high if newest.bar2 is not None else newest.ref_high
+            if buy.rear.rear2 is not None:
+                return buy.rear.rear2.ref_high
+            return buy.rear.ref_high
+        if buy.bar_lineages:
+            newest = buy.bar_lineages[-1]
+            return newest.bar2.ref_high if newest.bar2 is not None else newest.ref_high
+        if buy.tz_buy2 is not None:
+            return buy.tz_buy2.ref_high
+        return buy.ref_high
+
+    def _next_bar_label(self, buy: Buy, label_id: str) -> str:
+        """Reuses the lowest freed dead-end number if one is available,
+        else allocates the next never-used number."""
+        if buy.bar_dead_labels:
+            n = min(buy.bar_dead_labels)
+            buy.bar_dead_labels.discard(n)
+        else:
+            buy.bar_sub_counter += 1
+            n = buy.bar_sub_counter
+        return f"{label_id}.{n}"
+
     def process(self, prev: Day, cur: Day):
         per_branch_events = {}
         milestone_achievers = []
@@ -422,9 +491,17 @@ class TZEngine:
         tip_deep_failure = (tip is not None and tip.buy is not None and
                              self._deep_failure_reached(tip.buy) and
                              not self._buy_currently_live(tip.buy))
+        # TZ BUY 2 variant: TZ BUY 2's own SL ALSO opens spawn eligibility
+        # now, same as TZ BUY's own SL -- explicit user addition ("SPAWN
+        # ELIGIBILITY for new TZ GREEN to start even after TZ BUY 2 SL,
+        # just like it can start after TZ BUY SL"). Lifts the moment TZ
+        # BUY 2 recovers (sl_active back to False), same live-check style
+        # as `not tip.buy.active` above, not a historical flag.
+        tip_tzbuy2_sl = (tip is not None and tip.buy is not None and
+                          tip.buy.tz_buy2 is not None and tip.buy.tz_buy2.sl_active)
         eligible_anchor = (
             tip is not None and not tip.dormant and tip.red_ever and
-            (tip.buy is None or not tip.buy.active or tip_deep_failure)
+            (tip.buy is None or not tip.buy.active or tip_deep_failure or tip_tzbuy2_sl)
         )
         can_spawn = eligible_anchor or tip is None
         new_branch_id = None
@@ -513,9 +590,13 @@ class TZEngine:
         if pc.buy is not None and pc.buy.ref_high > pc.ref_high:
             pc.ref_high = pc.buy.ref_high
 
+        # TZ BUY 2 variant: both TZ GREEN's own HH and LL are only shown
+        # while no buy is currently live for this branch (base engine only
+        # suppressed HH this way; LL was always shown -- explicit user
+        # correction extends the suppression to LL too).
         if hh and not has_live_buy and not is_sl:
             ev.append(f"TZ GREEN HH({branch_label(pc.id)})")
-        if ll:
+        if ll and not has_live_buy:
             ev.append(f"TZ GREEN LL({branch_label(pc.id)})")
 
         if is_sl:
@@ -561,7 +642,6 @@ class TZEngine:
         # candle) can mutate them -- same ordering-bug class as every other
         # "2" tier's pre-today snapshot in this file.
         pre_today_buy_ref = buy.ref_high
-        pre_today_tzbuy2_ref = buy.tz_buy2.ref_high if buy.tz_buy2 is not None else None
 
         reactivated_today = False
         if buy.active:
@@ -600,28 +680,39 @@ class TZEngine:
 
             if is_sl:
                 ev.append(f"{sl_label}({branch_label(pc.id)})")
+                # TZ BUY 2 variant: TZ BUY's own SL is DECISIVE -- it wipes
+                # out everything below it (TZ BUY 2, the whole BAR family,
+                # REAR/REAR RE-ENTER, if any of that had formed), regardless
+                # of any RED1/RED2 already in flight down there (explicit
+                # user correction -- this is NOT the base engine's "TZ BUY
+                # SL doesn't stop the BAR/REAR family" rule; that no longer
+                # applies here). Snapshot "whichever occurred last" BEFORE
+                # wiping -- that's what TZ BUY reactivates above, never just
+                # its own frozen peak once something deeper had formed.
+                buy.reentry_threshold = self._current_top_ref(buy)
                 buy.active = False
                 buy.bar_pending = False
                 buy.red1 = None
+                buy.bar_lineages = []
+                buy.bar_sub_counter = 0
+                buy.bar_dead_labels = set()
+                buy.rear = None
+                buy.rear_reenter = None
+                buy.tz_buy2 = None
+                buy.tz_buy2_hh_muted = False
         else:
             # TZ BUY 2 variant: TZ BUY's own SL has no escalation (no "TZ
             # BUY SL2") and never leads to REAR by itself (REAR stays
             # reachable exclusively via BAR SL2) -- it just reactivates
             # directly, always under the SAME "TZ BUY" label (no "NEW TZ
             # BUY" distinction -- explicit user correction), retrying above
-            # whichever of {TZ BUY's own frozen reference, TZ BUY 2's own
-            # reference} is more mature: TZ BUY 2's, if it had already
-            # formed before this SL (strictly higher/later by construction);
-            # TZ BUY's own frozen reference otherwise (the dead-end case --
-            # TZ BUY 2 never formed, so RED1/RED2 never became reachable on
-            # this instance, but a plain retry is still always available).
-            # Does NOT touch bar_lineages/rear/rear_reenter/bar_pending --
-            # those keep racing independently regardless of top-level TZ
-            # BUY's own state, same principle as everywhere else in this
-            # file ("TZ BUY SL does not stop the BAR/REAR family below it").
-            ref = pre_today_buy_ref
-            if pre_today_tzbuy2_ref is not None:
-                ref = max(ref, pre_today_tzbuy2_ref)
+            # "whichever occurred last" as it stood at the moment the SL
+            # fired (buy.reentry_threshold) -- TZ BUY 2's own reference if
+            # it existed, or deeper still (BAR/BAR 2/REAR/etc.) if the
+            # branch had gotten that far before TZ BUY's own SL wiped it;
+            # TZ BUY's own frozen reference otherwise (the plain dead-end
+            # case -- nothing below it ever formed).
+            ref = buy.reentry_threshold if buy.reentry_threshold is not None else pre_today_buy_ref
             if cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS and cur.c >= ref:
                 buy.active = True
                 buy.ref_high = cur.h
@@ -633,6 +724,7 @@ class TZEngine:
                 # principle as BAR 2 not persisting through BAR reactivation.
                 buy.tz_buy2 = None
                 buy.tz_buy2_hh_muted = False
+                buy.reentry_threshold = None
                 ev.append(f"{label}({branch_label(pc.id)})")
                 reactivated_today = True
 
@@ -657,11 +749,7 @@ class TZEngine:
         pre_today_bar2_ref = {lin.label: (lin.bar2.ref_high if lin.bar2 is not None else None)
                                for lin in buy.bar_lineages}
         pre_today_rear_ref = buy.rear.ref_high if buy.rear is not None else None
-        pre_today_rear2_ref = (buy.rear.rear2.ref_high if buy.rear is not None and buy.rear.rear2 is not None
-                                else None)
         pre_today_rre_ref = buy.rear_reenter.ref_high if buy.rear_reenter is not None else None
-        pre_today_rre2_ref = (buy.rear_reenter.rre2.ref_high
-                               if buy.rear_reenter is not None and buy.rear_reenter.rre2 is not None else None)
 
         # BAR's own HH keeps tracking/showing for as long as it's the
         # NEWEST lineage in the chain (feeds REAR's reference pool) -- an
@@ -731,7 +819,7 @@ class TZEngine:
                 if buy.rear.rear2 is not None:
                     rear_ev = [e for e in rear_ev if not e.startswith("REAR HH(")]
                 ev += rear_ev
-            ev += self._eval_rear2(pc, buy, buy.rear, prev, cur, pre_today_rear_ref, pre_today_rear2_ref)
+            ev += self._eval_rear2(pc, buy, buy.rear, prev, cur, pre_today_rear_ref)
 
         # Same rule for REAR RE-ENTER.
         if buy.rear_reenter is not None:
@@ -742,28 +830,25 @@ class TZEngine:
                 if buy.rear_reenter.rre2 is not None:
                     rre_ev = [e for e in rre_ev if not e.startswith("REAR RE-ENTER HH(")]
                 ev += rre_ev
-            ev += self._eval_rre2(pc, buy, buy.rear_reenter, prev, cur, pre_today_rre_ref, pre_today_rre2_ref)
+            ev += self._eval_rre2(pc, buy, buy.rear_reenter, prev, cur, pre_today_rre_ref)
 
         bar_confirms_today = (buy.bar_pending and buy.active and not buy.bar_lineages and
                                (buy.rear is not None or buy.rear_reenter is not None) and
                                self._bar_entry_shape(prev, cur))
         if buy.rear_reenter is not None and buy.rear_reenter.sl is not None:
-            # BAR 2 variant: REAR RE-ENTER's own SL -> REAR RE-ENTER transition
-            # is only reachable once REAR RE-ENTER 2 has formed (mirrors BAR
-            # SL2 requiring BAR 2). A REAR RE-ENTER whose own SL fired
-            # without REAR RE-ENTER 2 ever having formed is a dead end --
-            # nothing further happens for it (no explicit further path back
-            # up defined; it just stays silent from here).
-            if buy.rear_reenter.rre2 is not None:
-                ev += self._eval_rear_reenter_sl_progress(pc, buy, buy.rear_reenter, buy.rear_reenter.sl,
-                                                           prev, cur, pre_today_rre2_ref)
+            # TZ BUY 2 variant: REAR RE-ENTER's own SL is NEVER a dead end
+            # (unlike BAR) -- it always self-recovers above "whichever
+            # occurred last" as snapshotted when the SL fired (sl.
+            # entry_threshold), regardless of whether REAR RE-ENTER 2 ever
+            # formed (explicit user correction).
+            ev += self._eval_rear_reenter_sl_progress(pc, buy, buy.rear_reenter, buy.rear_reenter.sl, prev, cur)
         elif buy.rear_reenter is None and buy.rear is not None and buy.rear.sl is not None:
-            # BAR 2 variant: REAR's own SL -> REAR RE-ENTER transition is
-            # only reachable once REAR 2 has formed (mirrors BAR SL2
-            # requiring BAR 2). REAR's own SL fired without REAR 2 ever
-            # having formed -- a dead end.
-            if buy.rear.rear2 is not None:
-                ev += self._eval_rear_sl_progress(pc, buy, buy.rear, buy.rear.sl, prev, cur, pre_today_rear2_ref)
+            # TZ BUY 2 variant: REAR's own SL is NEVER a dead end either --
+            # always leads to REAR RE-ENTER above "whichever occurred last"
+            # (sl.entry_threshold), regardless of whether REAR 2 ever
+            # formed (explicit user correction -- this follows TZ BUY's
+            # own "never a dead end" pattern, not BAR's).
+            ev += self._eval_rear_sl_progress(pc, buy, buy.rear, buy.rear.sl, prev, cur)
         elif bar_confirms_today:
             ev = [e for e in ev if not (e.startswith("REAR HH(") or e.startswith("REAR RE-ENTER HH("))]
             ev += self._check_bar_pending(pc, buy, prev, cur)
@@ -779,9 +864,13 @@ class TZEngine:
             pass
         elif not red1_preexisting_at_buy_level:
             # TZ BUY 2 gate: mirrors BAR 2 gating RED1 on a BAR lineage --
-            # a fresh RED1 cannot attach to TZ BUY until TZ BUY 2 has formed
-            # ("NO RED1-RED2 UNTIL TZ BUY 2 is there" -- explicit user rule).
-            if buy.tz_buy2 is not None and (
+            # a fresh RED1 cannot attach to TZ BUY unless TZ BUY 2 is
+            # currently ACTIVE, not merely "has existed once" (explicit user
+            # rule: "RED 1 CANNOT BE FORMED UNLESS THERE IS AN ACTIVE TZ BUY
+            # 2... NEW RED 1 WILL FORM EVERY TIME THERE IS A NEW TZ BUY 2 IN
+            # CASE OF ANY TZ BUY 2 SL") -- TZ BUY 2's own SL wipes this gate
+            # shut too, mirroring REAR 2/REAR RE-ENTER 2's own SL gates.
+            if buy.tz_buy2 is not None and not buy.tz_buy2.sl_active and (
                     cur.h <= prev.h and cur.l < prev.l and (prev.l - cur.l) >= THRESH - EPS and cur.c <= prev.l):
                 if not buy.red1_ever:
                     buy.ref_high_at_red1 = buy.ref_high
@@ -792,23 +881,29 @@ class TZEngine:
             ev += self._eval_red1_generic(pc, buy, buy, prev, cur)
 
         # REAR's (and REAR RE-ENTER's) own SL must still be checked and
-        # take effect even while dormant.
+        # take effect even while dormant -- same decisive treatment as the
+        # main path (wipes everything below, snapshots "whichever occurred
+        # last" first).
         if buy.rear_reenter is not None and buy.rear_reenter.dormant and buy.rear_reenter.sl is None:
             rre = buy.rear_reenter
             if (cur.l < rre.ref_low and (rre.ref_low - cur.l) >= THRESH - EPS and cur.c <= rre.ref_low + EPS):
                 ev.append(f"REAR RE-ENTER SL({branch_label(pc.id)})")
-                rre.sl = RearReenterSL(ref_low=cur.l)
+                rre.sl = RearReenterSL(ref_low=cur.l, entry_threshold=self._current_top_ref(buy))
+                rre.rre2 = None
                 buy.red1 = None
                 buy.bar_lineages = []
                 buy.bar_sub_counter = 0
+                buy.bar_dead_labels = set()
                 buy.bar_pending = False
         elif buy.rear is not None and buy.rear.dormant and buy.rear.sl is None:
             rear = buy.rear
             if (cur.l < rear.ref_low and (rear.ref_low - cur.l) >= THRESH - EPS and cur.c <= rear.ref_low + EPS):
                 ev.append(f"REAR SL({branch_label(pc.id)})")
-                rear.sl = RearSL(ref_low=cur.l)
+                rear.sl = RearSL(ref_low=cur.l, entry_threshold=self._current_top_ref(buy))
+                rear.rear2 = None
                 buy.bar_lineages = []
                 buy.bar_sub_counter = 0
+                buy.bar_dead_labels = set()
                 buy.red1 = None
                 buy.bar_pending = False
 
@@ -995,8 +1090,7 @@ class TZEngine:
     def _check_bar_pending(self, pc, buy, prev: Day, cur: Day):
         if (cur.l >= prev.l and cur.h > prev.h and
                 (cur.h - prev.h) >= THRESH - EPS and cur.c >= prev.h):
-            buy.bar_sub_counter += 1
-            sub_label = f"{branch_label(pc.id)}.{buy.bar_sub_counter}"
+            sub_label = self._next_bar_label(buy, branch_label(pc.id))
             buy.bar_lineages.append(BarLineage(label=sub_label, ref_high=cur.h, ref_low=cur.l))
             buy.bar_pending = False
             buy.bar_high_pool = max(buy.bar_high_pool, cur.h)
@@ -1049,18 +1143,36 @@ class TZEngine:
             return ev
         b2 = buy.tz_buy2
         if b2.sl_active:
-            if (cur.l >= prev.l and cur.h > b2.ref_high and (cur.h - b2.ref_high) >= THRESH - EPS
-                    and cur.c >= b2.ref_high):
+            # TZ BUY 2 variant: recovers above "whichever occurred last" as
+            # it stood at the moment THIS SL fired (b2.reentry_threshold),
+            # not just its own frozen ref_high -- everything below it (BAR/
+            # BAR 2/REAR/etc.) was already wiped when the SL fired, so this
+            # is the only place that reference is still remembered.
+            ref = b2.reentry_threshold if b2.reentry_threshold is not None else b2.ref_high
+            if (cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS and cur.c >= ref):
                 b2.ref_high = cur.h
                 b2.ref_low = cur.l
                 b2.sl_active = False
+                b2.reentry_threshold = None
                 ev.append(f"TZ BUY 2({branch_label(pc.id)})")
             return ev
         if cur.l < b2.ref_low:
             gap = b2.ref_low - cur.l
             if gap >= THRESH - EPS and cur.c <= b2.ref_low + EPS:
+                # TZ BUY 2 variant: TZ BUY 2's own SL is ALSO decisive --
+                # wipes out everything below it (the whole BAR family,
+                # REAR/REAR RE-ENTER), same as TZ BUY's own SL does one
+                # tier up. Snapshot "whichever occurred last" BEFORE wiping.
+                b2.reentry_threshold = self._current_top_ref(buy)
                 b2.sl_active = True
                 ev.append(f"TZ BUY 2 SL({branch_label(pc.id)})")
+                buy.bar_lineages = []
+                buy.bar_sub_counter = 0
+                buy.bar_dead_labels = set()
+                buy.bar_pending = False
+                buy.rear = None
+                buy.rear_reenter = None
+                buy.red1 = None
                 return ev
             b2.ref_low = cur.l
             ev.append(f"TZ BUY 2 LL({branch_label(pc.id)})")
@@ -1145,8 +1257,18 @@ class TZEngine:
         if cur.l < r2.ref_low:
             gap = r2.ref_low - cur.l
             if gap >= THRESH - EPS and cur.c <= r2.ref_low + EPS:
+                # TZ BUY 2 variant: REAR 2's own SL is decisive too, unlike
+                # BAR 2 -- it wipes out whatever it had unlocked (RED1/RED2
+                # in flight against REAR, any fresh BAR cascade opened
+                # under REAR 2) and needs to reform (same label, above its
+                # own ref) before RED1/RED2 can attach to REAR again.
                 r2.sl_active = True
                 ev.append(f"REAR 2 SL({branch_label(pc.id)})")
+                buy.red1 = None
+                buy.bar_lineages = []
+                buy.bar_sub_counter = 0
+                buy.bar_dead_labels = set()
+                buy.bar_pending = False
                 return ev
             r2.ref_low = cur.l
             ev.append(f"REAR 2 LL({branch_label(pc.id)})")
@@ -1188,8 +1310,16 @@ class TZEngine:
         if cur.l < r2.ref_low:
             gap = r2.ref_low - cur.l
             if gap >= THRESH - EPS and cur.c <= r2.ref_low + EPS:
+                # TZ BUY 2 variant: same treatment as REAR 2's own SL, one
+                # level deeper -- decisive, wipes what it unlocked, needs
+                # to reform before RED1/RED2 can attach to REAR RE-ENTER.
                 r2.sl_active = True
                 ev.append(f"REAR RE-ENTER 2 SL({branch_label(pc.id)})")
+                buy.red1 = None
+                buy.bar_lineages = []
+                buy.bar_sub_counter = 0
+                buy.bar_dead_labels = set()
+                buy.bar_pending = False
                 return ev
             r2.ref_low = cur.l
             ev.append(f"REAR RE-ENTER 2 LL({branch_label(pc.id)})")
@@ -1343,45 +1473,53 @@ class TZEngine:
             buy.rear = Rear(ref_high=rh, ref_low=rl)
             buy.bar_lineages = []  # every lineage -- ancestor or descendant -- terminates
             buy.bar_sub_counter = 0
+            buy.bar_dead_labels = set()
             return ev
 
-        # mechanism 1: RED2 already fired against some (still sl=None)
-        # lineage -- a fresh BAR is awaited via the general breakout shape.
-        # BAR 2 variant: a fresh, independent BAR(n+1) does NOT terminate
-        # the lineage RED2 fired from while it's still pre-SL -- per
-        # _clear_for_new_bar_generation's own principle ("the EXISTING
-        # BAR(n) lineage does NOT get wiped by its own RED2 -- it keeps
-        # living in parallel with a freshly-awaited new BAR(n) generation"),
-        # that parallel-living continues THROUGH and PAST the moment the
-        # fresh BAR(n+1) actually confirms, not just during the awaiting
-        # window. It only stops being tracked once it reaches its own dead
-        # end: a prior INVALID BAR SL that failed to reactivate, or its own
-        # SL fired with no BAR 2 ever having formed (permanent dead end,
-        # see the gate above). A lineage still genuinely racing toward its
-        # own SL2 is unaffected either way and keeps racing independently.
-        if not reactivated_this_candle and buy.active and buy.bar_pending and self._bar_entry_shape(prev, cur):
-            buy.bar_lineages = [l for l in buy.bar_lineages
-                                 if l.sl is None or (not l.sl.invalidated and l.bar2 is not None)]
-            buy.bar_sub_counter += 1
-            sub_label = f"{label_id}.{buy.bar_sub_counter}"
+        # A fresh, independent BAR can start on ANY qualifying breakout the
+        # instant the current newest lineage is no longer pre-SL -- no
+        # RED1/RED2 needed for this (explicit user rule: "a new BAR can
+        # occur after BAR SL... not above earlier BAR reference high like
+        # TZ BUY" -- it just needs the ordinary breakout shape against the
+        # previous day, same as the very first BAR ever did). ADDED
+        # alongside the original RED2/bar_pending-gated path (kept
+        # unchanged below, for a still-pre-SL newest lineage whose own
+        # RED2 already fired -- that's a different, already-validated
+        # scenario), not a replacement for it: the RED2-gated path alone
+        # made fresh BAR formation permanently impossible once the newest
+        # lineage was a no-BAR-2 dead end, since nothing could ever set
+        # bar_pending again for it (confirmed against real OHLC data: an
+        # engine run went completely silent for 84 weeks after exactly this
+        # happened). A lineage that's post-SL, already has its own BAR 2,
+        # and hasn't shown INVALID BAR SL yet is NOT terminated by this --
+        # it keeps racing in parallel (multi-generation racing, explicit
+        # user confirmation: "RACE IN PARALLEL. CANNOT TERMINATE IT" -- a
+        # single candle can trigger one lineage's own SL2 while another's
+        # own SL is still open, which is exactly why INVALID BAR SL
+        # matters). Only a lineage that's a genuine dead end (no BAR 2) or
+        # already gave up (invalidated, dormant) gets dropped when a fresh
+        # one forms -- and ONLY a dead-end (no BAR 2 ever formed) drop
+        # frees its number for reuse; one that had BAR 2 stays retired.
+        newest = buy.bar_lineages[-1] if buy.bar_lineages else None
+        newest_is_dead = newest is None or newest.sl is not None
+        fresh_bar_ready = newest_is_dead or buy.bar_pending
+        if not reactivated_this_candle and buy.active and fresh_bar_ready and self._bar_entry_shape(prev, cur):
+            surviving, dropped = [], []
+            for l in buy.bar_lineages:
+                if l.sl is None or (not l.sl.invalidated and l.bar2 is not None):
+                    surviving.append(l)
+                else:
+                    dropped.append(l)
+            for l in dropped:
+                if l.sl is not None and l.bar2 is None:
+                    n = int(l.label.rsplit(".", 1)[-1])
+                    buy.bar_dead_labels.add(n)
+            buy.bar_lineages = surviving
+            sub_label = self._next_bar_label(buy, label_id)
             buy.bar_lineages.append(BarLineage(label=sub_label, ref_high=cur.h, ref_low=cur.l))
             buy.bar_pending = False
             buy.bar_high_pool = max(buy.bar_high_pool, cur.h)
             ev.append(f"BAR({sub_label})")
-
-        # mechanism 2: a fresh BAR can also branch directly off the NEWEST
-        # lineage's own SL range, independent of RED1/RED2, as long as
-        # it's still pre-SL2
-        newest = buy.bar_lineages[-1] if buy.bar_lineages else None
-        if buy.active and newest is not None and newest.sl is not None and not newest.sl.sl2:
-            lo, hi = newest.sl.ref_low, newest.sl.ref_high
-            if (cur.l >= prev.l and cur.h > prev.h and (cur.h - prev.h) >= THRESH - EPS and
-                    cur.c >= prev.h and lo <= cur.l and cur.h <= hi):
-                buy.bar_sub_counter += 1
-                sub_label = f"{label_id}.{buy.bar_sub_counter}"
-                buy.bar_lineages.append(BarLineage(label=sub_label, ref_high=cur.h, ref_low=cur.l))
-                buy.bar_high_pool = max(buy.bar_high_pool, cur.h)
-                ev.append(f"BAR({sub_label})")
 
         return ev
 
@@ -1408,52 +1546,48 @@ class TZEngine:
         ev = []
         if (cur.l < rear.ref_low and (rear.ref_low - cur.l) >= THRESH - EPS and cur.c <= rear.ref_low + EPS):
             ev.append(f"REAR SL({branch_label(pc.id)})")
-            rear.sl = RearSL(ref_low=cur.l)
+            # TZ BUY 2 variant: REAR's own SL is decisive -- wipes out
+            # everything below it (REAR 2, any fresh BAR cascade opened
+            # under REAR 2), regardless of any RED1/RED2 already in flight.
+            # Snapshot "whichever occurred last" BEFORE wiping -- REAR RE-
+            # ENTER always forms above THIS (never a dead end, unlike BAR).
+            rear.sl = RearSL(ref_low=cur.l, entry_threshold=self._current_top_ref(buy))
+            rear.rear2 = None
             buy.bar_lineages = []
             buy.bar_sub_counter = 0
+            buy.bar_dead_labels = set()
             buy.red1 = None
             buy.bar_pending = False
             return ev
         red1_preexisting = buy.red1 is not None and buy.red1.active
         if red1_preexisting:
             ev += self._eval_red1_generic(pc, buy, rear, prev, cur)
-        elif rear.rear2 is not None and not rear.red2_ever:
-            # BAR 2 variant gate: mirrors BAR 2 gating RED1 on a BAR
-            # lineage -- a fresh RED1 cannot attach to REAR until REAR 2
-            # has formed.
+        elif rear.rear2 is not None and not rear.rear2.sl_active and not rear.red2_ever:
+            # TZ BUY 2 variant gate: a fresh RED1 cannot attach to REAR
+            # unless REAR 2 is currently ACTIVE (not merely "has existed
+            # once," unlike BAR 2) -- REAR 2's own SL wipes this out too,
+            # requiring REAR 2 to reform before RED1/RED2 can attach again.
             ev += self._attach_fresh_red1(pc, buy, rear, prev, cur)
         return ev
 
-    def _eval_rear_sl_progress(self, pc, buy, rear: Rear, sl: RearSL, prev: Day, cur: Day, pre_today_rear2_ref=None):
-        # BAR 2 variant: only ever called once rear.rear2 exists (gated in
-        # _eval_buy's routing) -- REAR's own SL -> REAR RE-ENTER transition
-        # is only reachable once REAR 2 has formed, mirroring BAR SL2
-        # requiring BAR 2. REAR RE-ENTER's formation threshold is REAR 2's
-        # reference AS OF THE START OF TODAY (rear2 is frozen while
-        # rear.sl is not None -- see _eval_rear2 -- so this is a static
-        # value, not a live-climbing one; same freeze relationship as
-        # BAR 2 has to BAR).
+    def _eval_rear_sl_progress(self, pc, buy, rear: Rear, sl: RearSL, prev: Day, cur: Day):
+        # TZ BUY 2 variant: REAR's own SL always leads to REAR RE-ENTER --
+        # never a dead end, regardless of whether REAR 2 ever formed
+        # (explicit user correction, follows TZ BUY's pattern, not BAR's).
+        # Threshold is "whichever occurred last" as snapshotted at the
+        # moment this SL fired (sl.entry_threshold) -- REAR 2/bar_lineages
+        # were already wiped at that point, so this is the only place that
+        # reference is still remembered.
         ev = []
         label_id = branch_label(pc.id)
-        ref = pre_today_rear2_ref if pre_today_rear2_ref is not None else rear.rear2.ref_high
+        ref = sl.entry_threshold
         is_reenter = (cur.l >= prev.l and cur.h > ref and
                       (cur.h - ref) >= THRESH - EPS and cur.c >= ref)
         if is_reenter and not self._milestone_blocked(pc):
             buy.rear_reenter = RearReenter(ref_high=cur.h, ref_low=cur.l)
             ev.append(f"REAR RE-ENTER({label_id})")
             rear.dormant = True  # this REAR is now permanently retired for this lineage
-            # BAR 2 variant: REAR RE-ENTER always forms fresh now (BAR SL2
-            # -> fresh REAR is the only path back up; a dormant ancestor is
-            # never reactivated in place any more), so REAR's own rear2
-            # reference is never read again once REAR RE-ENTER exists --
-            # stop it from climbing forever (same "dormant stops ALL
-            # tracking" principle already applied in _supersede_rear_for_new_bar).
-            if rear.rear2 is not None:
-                rear.rear2.dormant = True
             return ev
-        # no INVALID REAR HH tracking needed here -- REAR 2 is frozen while
-        # rear.sl is active (see _eval_rear2), so the threshold stays
-        # static until REAR RE-ENTER's own condition clears it.
         return ev
 
     # =================== REAR RE-ENTER family ===================
@@ -1479,26 +1613,37 @@ class TZEngine:
         ev = []
         if (cur.l < rre.ref_low and (rre.ref_low - cur.l) >= THRESH - EPS and cur.c <= rre.ref_low + EPS):
             ev.append(f"REAR RE-ENTER SL({branch_label(pc.id)})")
-            rre.sl = RearReenterSL(ref_low=cur.l)
+            # TZ BUY 2 variant: same decisive treatment as REAR's own SL,
+            # one level deeper -- wipes REAR RE-ENTER 2 and any fresh BAR
+            # cascade opened under it, snapshotting "whichever occurred
+            # last" first (self-recovers above THIS, never a dead end).
+            rre.sl = RearReenterSL(ref_low=cur.l, entry_threshold=self._current_top_ref(buy))
+            rre.rre2 = None
             buy.red1 = None
+            buy.bar_lineages = []
+            buy.bar_sub_counter = 0
+            buy.bar_dead_labels = set()
             buy.bar_pending = False
             return ev
         red1_preexisting = buy.red1 is not None and buy.red1.active
         if red1_preexisting:
             ev += self._eval_red1_generic(pc, buy, rre, prev, cur)
-        elif rre.rre2 is not None and not rre.red2_ever:
+        elif rre.rre2 is not None and not rre.rre2.sl_active and not rre.red2_ever:
+            # TZ BUY 2 variant gate: mirrors REAR 2's gate one level deeper
+            # -- REAR RE-ENTER 2 must be currently ACTIVE, not merely have
+            # existed once.
             ev += self._attach_fresh_red1(pc, buy, rre, prev, cur)
         return ev
 
-    def _eval_rear_reenter_sl_progress(self, pc, buy, rre: RearReenter, sl: RearReenterSL, prev: Day, cur: Day,
-                                        pre_today_rre2_ref=None):
-        # BAR 2 variant: only ever called once rre.rre2 exists (gated in
-        # _eval_buy's routing). This is the genuine post-SL recovery path
-        # -- reactivates rre IN PLACE, under its own identity, once REAR
-        # RE-ENTER 2's own (frozen, static) reference clears.
+    def _eval_rear_reenter_sl_progress(self, pc, buy, rre: RearReenter, sl: RearReenterSL, prev: Day, cur: Day):
+        # TZ BUY 2 variant: REAR RE-ENTER's own SL always self-recovers --
+        # never a dead end, regardless of whether REAR RE-ENTER 2 ever
+        # formed (explicit user correction). Threshold is "whichever
+        # occurred last" as snapshotted at the moment this SL fired
+        # (sl.entry_threshold).
         ev = []
         label_id = branch_label(pc.id)
-        ref = pre_today_rre2_ref if pre_today_rre2_ref is not None else rre.rre2.ref_high
+        ref = sl.entry_threshold
         is_reenter_again = (cur.l >= prev.l and cur.h > ref and
                              (cur.h - ref) >= THRESH - EPS and cur.c >= ref)
         if is_reenter_again and not self._milestone_blocked(pc):
@@ -1509,16 +1654,10 @@ class TZEngine:
             rre.red1_since = False
             rre.dormant = False
             rre.red2_ever = False
-            # BAR 2 variant: unlike BAR 2 (which explicitly does NOT
-            # persist through a BAR-level reactivation), REAR RE-ENTER 2
-            # DOES persist through this reactivation -- it stays as-is,
-            # already gating RED1 immediately without needing to re-form
-            # (confirmed by the actual verified sequence: REAR RE-ENTER 2
-            # formed once on 19/03, REAR RE-ENTER's own SL fired and
-            # reactivated in place on 24/03, and RED1(A) attached on 26/03
-            # with no fresh REAR RE-ENTER 2 reforming in between).
+            # TZ BUY 2 variant: REAR RE-ENTER 2 was already wiped (rre.rre2
+            # = None) the moment this SL fired -- a fresh REAR RE-ENTER 2
+            # has to form from scratch before RED1/RED2 can attach again.
             return ev
-        # no further path back up from here -- deepest terminal leaf
         return ev
 
 

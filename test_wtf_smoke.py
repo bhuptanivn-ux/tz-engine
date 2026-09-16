@@ -23,6 +23,25 @@ REAR 2/REAR RE-ENTER 2, none of which are).
 Test 5: TZ BUY 2's own HH display is muted once a deeper tier's reference
 (here, a BAR generation) reaches or exceeds TZ BUY 2's own reference --
 not merely once that deeper tier exists.
+
+Test 6: a BAR lineage's own SL fires with NO BAR 2 ever having formed for
+it (a permanent dead end, real-data-motivated fix) -- a fresh, independent
+BAR can still form immediately afterward with NO RED1/RED2 needed, reusing
+the dead lineage's own freed sub-label (a complete dead end frees its
+number for reuse; one that got BAR 2 would not).
+
+Test 8: TZ BUY's own top-level SL, firing after the branch has already
+reached BAR 2, wipes everything below it and reactivates above "whichever
+occurred last" (BAR 2's own reference) -- not TZ BUY's own frozen peak, and
+not TZ BUY 2's own frozen peak either, both of which are numerically HIGHER
+at that point (confirms the reactivation threshold tracks the
+structurally deepest tier, not simply the maximum of any frozen values).
+
+Test 9: TZ BUY 2's own SL is decisive -- it wipes the whole BAR family
+below it (even one that already has its own BAR 2) and, per an explicit
+user-driven rule reversal, ALSO opens spawn eligibility for a fresh
+sibling TZ GREEN(n+1), exactly like TZ BUY's own top-level SL does, even
+though TZ BUY itself is still active throughout.
 """
 from tz_engine_wtf import Day, TZEngine, is_milestone
 
@@ -159,6 +178,109 @@ mute_from = next(i for i, (date, _) in enumerate(run.last_trace) if date == "d11
 post_mute_events = [e for _, evs in run.last_trace[mute_from:] for e in evs]
 assert "TZ BUY 2 HH(A)" not in post_mute_events, \
     "Test 5 FAILED: TZ BUY 2 HH(A) should be muted from d11 onward"
+
+# ---------------------------------------------------------------------------
+# Test 6: BAR SL with no BAR 2 ever formed -- permanent dead end for THAT
+# lineage, but a fresh independent BAR forms immediately (no RED1/RED2),
+# reusing the freed dead-end sub-label "A.1"
+# ---------------------------------------------------------------------------
+rows6 = [
+    ("j0", 100, 100, 99.0, 99.5),
+    ("j1", 100, 101, 99.2, 101),      # TZ GREEN(A)
+    ("j1b", 100.5, 100.5, 99.5, 100), # consolidation
+    ("j2", 99.4, 100, 99.3, 99.4),    # RED(A)
+    ("j3", 99.5, 102, 99.4, 102),     # TZ BUY(A) ref_high=102 ref_low=99.4
+    ("j3b", 99, 99.5, 90.0, 99.5),    # deep dip+reclaim -- buffers buy's ref_low
+    ("j3c", 89, 99.5, 50.0, 99.5),    # further -- buy's ref_low down to 50.0,
+    # well clear of everything that follows (TZ GREEN's own ref_low tracks down
+    # to 50.0 in lockstep, same mechanism, same candles)
+    ("j4", 91, 103, 91.0, 103),       # TZ BUY 2(A) ref_high=103 ref_low=91.0
+    ("j5", 95, 104, 94.5, 104),       # rally -- fresh local high/low
+    ("j6", 95, 95, 94.2, 94.2),       # RED1(A)
+    ("j7", 94.0, 94.0, 93.9, 93.9),   # RED2(A) -- bar_pending=True
+    ("j8", 94, 95.5, 94, 95.5),       # BAR(A.1) ref_high=95.5 ref_low=94
+    ("j9", 94, 94.2, 93.5, 93.8),     # BAR SL(A.1) -- no BAR 2 ever formed: dead end
+    ("j10", 93.6, 96, 93.6, 96),      # fresh BAR forms -- NO RED1/RED2 -- reuses
+    # the freed label "A.1" (dead end, no BAR 2), not "A.2"
+]
+seen6 = run(rows6, "Test 6: BAR SL w/o BAR 2 -> fresh BAR reuses freed label, no RED1/RED2")
+assert "BAR SL(A.1)" in seen6, "Test 6: BAR SL(A.1) should fire"
+assert "BAR 2(A.1)" not in seen6, "Test 6 setup broken: BAR 2(A.1) should never form"
+assert "RED1(B)" not in seen6 and "RED2(B)" not in seen6, "Test 6 setup sanity"
+j10_events = next(evs for date, evs in run.last_trace if date == "j10")
+assert j10_events == ["BAR(A.1)"], \
+    f"Test 6 FAILED: fresh BAR should reuse freed label 'A.1' with no RED1/RED2, got {j10_events}"
+
+# ---------------------------------------------------------------------------
+# Test 8: TZ BUY's own SL, firing after BAR 2 has already formed, reactivates
+# above BAR 2's own reference ("whichever occurred last") -- NOT TZ BUY's own
+# frozen peak or TZ BUY 2's own frozen peak, both numerically higher at that
+# point
+# ---------------------------------------------------------------------------
+rows8 = [
+    ("k0", 100, 100, 99.0, 99.5),
+    ("k1", 100, 101, 99.2, 101),      # TZ GREEN(A) ref_low=99.2, left untouched
+    ("k1b", 100.5, 100.5, 99.5, 100), # consolidation
+    ("k2", 99.4, 100, 99.3, 99.4),    # RED(A)
+    ("k3", 99.5, 102, 99.4, 102),     # TZ BUY(A) ref_high=102 ref_low=99.4
+    ("k4", 99.5, 103, 99.5, 103),     # TZ BUY 2(A) ref_high=103 ref_low=99.5 (rally)
+    ("k5", 99.8, 104, 99.8, 104),     # rally -- TZ BUY 2 HH -> 104 (both TZ BUY's own
+    # peak and TZ BUY 2's own peak climb to 104 from here on -- HIGHER than what
+    # BAR 2 will reach below)
+    ("k6", 100, 100, 99.6, 99.6),     # RED1(A)
+    ("k7", 99.5, 99.5, 99.4, 99.4),   # RED2(A) -- bar_pending=True
+    ("k8", 99.5, 100, 99.5, 100),     # BAR(A.1) ref_high=100 ref_low=99.5
+    ("k9", 99.6, 101, 99.6, 101),     # BAR 2(A.1) ref_high=101 ref_low=99.6
+    ("k10", 99.3, 99.5, 99.1, 99.2),  # TZ BUY SL(A) -- wipes TZ BUY 2/BAR/BAR 2;
+    # reentry_threshold should be BAR 2's own ref (101), not 104
+    ("k11", 99.2, 102, 99.2, 102),    # reactivates at 102 -- clears 101 but NOT 104,
+    # proving the threshold used was BAR 2's ref, not the (higher) frozen peaks
+]
+seen8 = run(rows8, "Test 8: TZ BUY SL reactivates above BAR 2's ref, not the higher frozen peaks")
+expected8 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "RED1(A)", "RED2(A)",
+             "BAR(A.1)", "BAR 2(A.1)", "TZ BUY SL(A)"]
+missing8 = [e for e in expected8 if e not in seen8]
+assert not missing8, f"Test 8 MISSING: {missing8}"
+k11_events = next(evs for date, evs in run.last_trace if date == "k11")
+assert k11_events == ["TZ BUY(A)"], \
+    f"Test 8 FAILED: TZ BUY should reactivate at k11 (above BAR 2's ref 101), got {k11_events}"
+
+# ---------------------------------------------------------------------------
+# Test 9: TZ BUY 2's own SL wipes the BAR family below it (even with BAR 2
+# already formed) AND opens spawn eligibility for a fresh sibling TZ
+# GREEN(n+1) -- explicit rule-reversal addition, mirroring TZ BUY's own SL --
+# even though TZ BUY itself stays active throughout
+# ---------------------------------------------------------------------------
+rows9 = [
+    ("i0", 100, 100, 99.0, 99.5),
+    ("i1", 100, 101, 99.2, 101),      # TZ GREEN(A)
+    ("i1b", 100.5, 100.5, 99.5, 100), # consolidation
+    ("i2", 99.4, 100, 99.3, 99.4),    # RED(A)
+    ("i3", 99.5, 102, 99.4, 102),     # TZ BUY(A) ref_high=102 ref_low=99.4
+    ("i3b", 99, 99.5, 90.0, 99.5),    # deep dip+reclaim -- buy's ref_low -> 90.0
+    ("i3c", 89, 99.5, 50.0, 99.5),    # further -- buy's ref_low -> 50.0, far below
+    # where TZ BUY 2 will track, so TZ BUY 2's own SL can fire later without
+    # also breaching TZ BUY's own SL
+    ("i4", 91, 103, 91.0, 103),       # TZ BUY 2(A) ref_high=103 ref_low=91.0
+    ("i5", 92, 104, 91.5, 104),       # rally -- TZ BUY 2 HH -> 104
+    ("i6", 92, 92, 91.2, 91.2),       # RED1(A)
+    ("i7", 91.5, 91.5, 90.9, 90.9),   # RED2(A) -- bar_pending=True
+    ("i8", 91, 93, 91, 93),           # BAR(A.1) ref_high=93 ref_low=91
+    ("i9", 91, 94, 91.2, 94),         # BAR 2(A.1) ref_high=94 ref_low=91.2
+    ("i10", 90.5, 91.0, 90.6, 90.7),  # TZ BUY 2 SL(A) -- wipes BAR(A.1)/BAR 2(A.1)
+    # (no "BAR SL(A.1)" should fire -- the wipe pre-empts it); TZ BUY(A) itself
+    # stays active throughout
+    ("i11", 90.6, 92, 90.6, 92),      # spawn eligibility from TZ BUY 2's own SL --
+    # TZ GREEN(B) forms even though TZ BUY(A) is still active
+]
+seen9 = run(rows9, "Test 9: TZ BUY 2 SL wipes BAR family + opens spawn eligibility")
+expected9 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "RED1(A)", "RED2(A)",
+             "BAR(A.1)", "BAR 2(A.1)", "TZ BUY 2 SL(A)", "TZ GREEN(B)"]
+missing9 = [e for e in expected9 if e not in seen9]
+assert not missing9, f"Test 9 MISSING: {missing9}"
+assert "BAR SL(A.1)" not in seen9, \
+    "Test 9 FAILED: TZ BUY 2's own SL should wipe the BAR family before its own SL check runs"
+assert "TZ BUY SL(A)" not in seen9, "Test 9 setup: TZ BUY itself must stay active throughout"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

@@ -1,197 +1,224 @@
-# WTF — the TZ ENGINE itself, extended with TZ BUY 2 / BAR 2 / REAR 2 / REAR RE-ENTER 2
+# TZ BUY — the TZ ENGINE state machine
 
-**Status:** TZ BUY 2 is a new, provisional layer — **not yet verified against
-real OHLC data**. Everything at BAR 2 / REAR 2 / REAR RE-ENTER 2 and below
-carries over its original real-data validation from `tz_engine_bar2_variant.py`
-(verified end-to-end against 01-01-2020 through 08-08-2020) unchanged — this
-file only adds a new tier one level above what that file already proved.
+**Naming note:** this theory is called **TZ BUY**. Earlier drafts of this
+file called it "WTF" or "the BAR 2 variant" — those names are retired; the
+logic itself hasn't changed identity, just its name. The code file is
+still `tz_engine_wtf.py` (not yet renamed).
 
-This is the **final, consolidated** design — it supersedes an earlier draft
-of this file that got two things wrong (corrected via a second round of
-explicit user review against a competing draft that surfaced from a parallel
-conversation): TZ BUY's own retry mechanic, and whether TZ BUY 2 counts as a
-leadership-contest milestone. Both are settled below.
-
-## What WTF is, and how it relates to the other two files in this repo
-
-Per the user's framing: this project develops three theories —
-**A) WTF** (the TZ ENGINE itself — the theory this file covers),
-**B) DTF with respect to WTF**, **C) DTF** — with WTF the current focus.
-WTF is **not** the from-scratch `tz_engine_new_theory.py` theory on this same
-branch (a separate, independent hypothesis with its own TZ BUY→BAR structure
-that predates TZ BUY 2 entirely) — it is the real TZ ENGINE
-(`tz_engine_v9.py`, the validated 37-event base) extended in place with a
-"2"-tier confirmation gate at TZ BUY, in addition to the "2" tiers BAR/REAR/
-REAR RE-ENTER already have in `tz_engine_bar2_variant.py`.
-
-`tz_engine_wtf.py` was built by copying `tz_engine_bar2_variant.py` (already
-has BAR 2/REAR 2/REAR RE-ENTER 2, real-data-validated) and adding TZ BUY 2 on
-top, following the exact same "2"-tier pattern, rather than re-deriving that
-already-solved layer from the un-extended base engine. A hint that other,
-parallel work exists on the same idea: an uploaded copy of
-`tz_engine_bar2_variant.py` was found to already carry its own, different TZ
-BUY 2 implementation (field `tz_buy2`, method `_eval_tzbuy2`, an
-`extra_reentry_floor` hook explicitly commented as being for "Rule B's own
-BAR 2"). This file's naming was aligned to match it (`tz_buy2`/`_eval_tzbuy2`)
-to reduce friction whenever the DTF-with-respect-to-WTF hooks are wired in
-later — but the *rules themselves* were decided in this conversation and
-confirmed point-by-point (below), not copied wholesale from that file, which
-disagreed with the user's explicit instructions on two points.
+**Status:** verified against real weekly OHLC (KALYANKJIL.NS, 2021-03-28
+through 2026-09-15) — reproduces that dataset's own Event column exactly.
+That run also exposed a real bug (engine going silent for 84 weeks after a
+BAR SL with no BAR 2), fixed as described below. All rules below reflect
+the corrected, final design after an exhaustive one-topic-at-a-time
+walkthrough of every event in the theory.
 
 ## The flow
 
 ```
 TZ GREEN → RED → TZ BUY (above TZ GREEN's own ref) →
 TZ BUY 2 (above TZ BUY's own ref) →
-RED1 → RED2 (vs TZ BUY — NOT reachable until TZ BUY 2 has formed) →
+RED1 → RED2 (vs TZ BUY -- NOT reachable until TZ BUY 2 is ACTIVE) →
 BAR(1) → BAR 2(1) → RED1 → RED2 → BAR(2) → BAR 2(2) → ... (unlimited) →
-BAR SL → BAR SL2 (only reachable once BAR 2 has formed) →
-REAR → REAR 2 → RED1 → RED2 → BAR(1) (fresh cascade, REAR 2's own dual role) →
-REAR SL (only reachable once REAR 2 has formed) →
-REAR RE-ENTER → REAR RE-ENTER 2 → RED1 → RED2 → BAR(1) (fresh cascade) →
-REAR RE-ENTER SL (only reachable once REAR RE-ENTER 2 has formed) →
-REAR RE-ENTER (self-recovers, same event text, terminal)
+BAR SL → BAR SL2 (only reachable once BAR 2 has formed for THAT lineage) →
+REAR → REAR 2 → RED1 → RED2 → BAR(1) (fresh cascade, REAR 2's dual role) →
+REAR SL → REAR RE-ENTER (ALWAYS -- never a dead end) →
+REAR RE-ENTER 2 → RED1 → RED2 → BAR(1) (fresh cascade) →
+REAR RE-ENTER SL → REAR RE-ENTER (self-recovers, same text)
 ```
 
-TZ BUY's own top-level SL is never a dead end, unlike BAR/REAR/REAR
-RE-ENTER's own SL (permanent dead ends when their "2" never formed) — it
-always reactivates. This mirrors BAR's own already-existing "reactivate in
-place under the same label" behavior (BAR's own SL, with BAR 2 existing, can
-reactivate via INVALID BAR SL under the *same* `"BAR(label)"` text — this
-isn't new, it's the pattern TZ BUY's retry was corrected to match).
+## The core organizing principle: two families of tiers
 
-## Rules, as given by the user (final, confirmed answers)
+Every tier in this hierarchy falls into exactly one of two families, and
+this single distinction resolves almost every rule below.
 
-**A. Retry after TZ BUY's own SL — no "NEW TZ BUY."** TZ BUY reactivates IN
-PLACE: same `Buy` object, same `"TZ BUY(label)"` event text, whether or not
-TZ BUY 2 ever formed. There is no "NEW TZ BUY" distinction anywhere in this
-file anymore (dropped entirely, including from `MILESTONE_KEYS` and
-`SL_LL_KEYS`). This is a **correction** to this file's own first draft
-(which had kept the base engine's `NEW_TZ_BUY` kind/label as a separate
-`Buy` object) — confirmed explicitly wrong; the uploaded competing draft's
-behavior on this point is correct.
+**Family 1 -- "escalating gate" tiers: TZ BUY, TZ BUY 2, REAR, REAR 2,
+REAR RE-ENTER, REAR RE-ENTER 2.** Every one of these:
+- Is **never a dead end** at its own SL, regardless of whether its own "2"
+  (or, for REAR/REAR RE-ENTER, whether REAR 2/REAR RE-ENTER 2) ever formed.
+- On its own SL, is **decisive**: wipes out EVERYTHING structurally below
+  it (its own "2", the whole BAR family, RED1 in flight) and requires that
+  everything reform from scratch before RED1/RED2 can attach again.
+- Reactivates/self-recovers **above "whichever occurred last"** -- the
+  current reference of the most structurally advanced tier this buy had
+  reached at the moment the SL fired -- not just its own frozen peak.
 
-**B. Retry threshold — `max()`, not either/or.** The reactivation threshold
-is `max(TZ BUY's own frozen reference, TZ BUY 2's own reference if it ever
-formed)`. Practically equivalent to "TZ BUY 2's ref if it exists, else TZ
-BUY's own peak" (TZ BUY 2's reference is always strictly higher than TZ
-BUY's own by construction, once it exists) — confirmed by the user as "the
-same practical effect." Implemented as the `max()` form for clarity and to
-match the uploaded file exactly.
+**Family 2 -- "one-shot" tiers: BAR, BAR 2.** These are the exception:
+- BAR's own SL, **with no BAR 2 ever having formed for that lineage**, is a
+  genuine **permanent dead end** for that specific lineage -- no INVALID
+  BAR SL, no BAR SL HH/LL, no BAR SL2, ever, for it.
+- BAR's own SL, **with BAR 2 having formed**, can reactivate in place
+  under the same label (INVALID BAR SL), or continue toward BAR SL2.
+- BAR 2 itself never needs to "recover" or reform once frozen at its own
+  SL -- it has done its job (gated RED1/RED2 and BAR SL2 eligibility for
+  that lineage already); it just keeps quietly climbing as INVALID BAR HH.
+- Regardless of any of the above, **a brand-new BAR(n+1) can always start
+  elsewhere in the same buy** the moment the current newest lineage is no
+  longer pre-SL -- see "Fresh BAR formation" below.
 
-**C. TZ BUY 2 IS its own leadership-contest milestone** — added to
-`MILESTONE_KEYS` as `"TZ BUY 2("`. This is a deliberate **asymmetry**: BAR 2,
-REAR 2, and REAR RE-ENTER 2 remain non-milestones (unchanged from the
-original validated engine) — the elevation applies to TZ BUY 2 only, not
-uniformly to every "2" tier (explicit user choice between the two options
-when asked). `"TZ BUY 2("` does not collide with the `is_fresh_buy` check
-(`e.startswith("TZ BUY(")`, which `"TZ BUY 2("` does not match due to the
-space before the digit), so TZ BUY 2 forming/reactivating is a
-*continuation* milestone (the newer-branch-with-an-existing-live-buy
-exemption applies), not a *fresh* one.
+## "Whichever occurred last" -- the reactivation threshold
 
-**D / I. TZ BUY 2's own SL does NOT open spawn eligibility for TZ
-GREEN(n+1).** Only TZ BUY's own top-level SL does. This needed **zero new
-code** — the base engine's existing spawn-eligibility rule already keys off
-`buy.active` (TZ BUY's own state), not any "2"-tier's SL flag, so it already
-produces exactly this behavior without modification. This directly
-contradicts the uploaded competing draft, which explicitly makes TZ BUY 2's
-own SL open eligibility too — confirmed by the user as the uploaded draft's
-mistake, not something to adopt.
+Implemented as `Engine._current_top_ref(buy)`. Whenever a Family-1 tier's
+own SL fires (or REAR RE-ENTER self-recovers), the reactivation/re-entry
+threshold is NOT just that tier's own frozen reference -- it's the current
+reference of the deepest structure the buy had actually reached, snapshotted
+BEFORE the wipe:
 
-**E. TZ BUY 2's own HH — comparison-based mute, not existence-based.**
-Unlike BAR's own HH (permanently suppressed the instant BAR 2 exists, since
-BAR 2's reference is guaranteed higher than BAR's own by construction), TZ
-BUY 2's own HH is **not** guaranteed lower than whatever eventually forms
-below it — it may have been climbing long before any BAR/REAR/REAR RE-ENTER
-ever formed. So TZ BUY 2's own HH display is muted only once some deeper
-tier's *actual reference value* (any BAR generation's own ref, any BAR 2's
-own ref, REAR's, REAR 2's, REAR RE-ENTER's, REAR RE-ENTER 2's) reaches or
-exceeds TZ BUY 2's own current reference — a live numeric comparison,
-re-checked every candle until it trips, then permanent. Confirmed
-TZ-BUY-2-only (not extended to BAR 2/REAR 2/REAR RE-ENTER 2, which have no
-such rule and don't need one, being guaranteed-ordered already).
+- If `bar_lineages` is non-empty: the newest lineage's own BAR 2 reference
+  (or the lineage's own reference, if it never got a BAR 2). `bar_lineages`
+  is checked FIRST inside whichever REAR-family branch applies, because
+  forming REAR/REAR RE-ENTER always wipes it immediately -- so a non-empty
+  list can never be a stale leftover from before the current REAR-family
+  tier existed.
+- Else if REAR RE-ENTER exists: its own "2"'s reference, or its own.
+- Else if REAR exists: its own "2"'s reference, or its own.
+- Else if TZ BUY 2 exists: its reference.
+- Else: TZ BUY's own frozen reference.
 
-**F. Cross-theory hook (`extra_reentry_floor`)** — explicitly deferred:
-"will come to it later in DTF with respect to WTF." Not implemented in this
-file yet; the uploaded draft's version of this hook is a forward reference
-to work not yet started here.
+This can be numerically LOWER than a shallower tier's own frozen peak (TZ
+BUY's or TZ BUY 2's own HH tracking keeps climbing independently and isn't
+guaranteed to stay below whatever BAR/BAR 2 eventually reach) -- the
+deepest tier's value governs regardless, because it is structurally the
+most recent. Confirmed by explicit worked examples from the user, and by
+Test 8 in `test_wtf_smoke.py` (TZ BUY's own SL reactivates above BAR 2's
+ref of 101, not the numerically higher frozen peaks of 104).
 
-**H. TZ BUY 2's own SL recovers under the SAME `"TZ BUY 2(label)"` text** —
-already true in this file from the original TZ BUY 2 build (mirrors BAR 2's
-own SL/recovery cycle, which already uses the same pattern); reconfirmed by
-the user, no change needed.
+## Rules, tier by tier
 
-**J. BAR/BAR 2 already have the "reactivate in place, same label" pattern**
-that TZ BUY's retry was corrected to match — this is the *original*,
-real-data-validated behavior TZ BUY 2 was modeled on, not something newly
-introduced. When BAR's own SL fires:
-- **With BAR 2 having formed**: can reactivate under the same `"BAR(label)"`
-  text via INVALID BAR SL, if it independently re-qualifies as a fresh
-  breakout; otherwise continues toward BAR SL2.
-- **With no BAR 2 ever formed**: that *specific lineage* is a permanent dead
-  end — no INVALID BAR SL, no BAR SL2, no REAR reachable from it.
+**TZ BUY 2** forms off TZ BUY's own reference high, only while TZ BUY is
+pre-SL. Gates RED1/RED2 attaching to TZ BUY: RED1 cannot attach unless TZ
+BUY 2 is currently **ACTIVE** (not merely "has existed once" -- its own SL
+closes this gate again, requiring TZ BUY 2 to reform before RED1/RED2 can
+reattach; mirrors the REAR 2/REAR RE-ENTER 2 gates below). Is its own
+leadership-contest milestone (`MILESTONE_KEYS` includes `"TZ BUY 2("`) --
+a deliberate asymmetry; BAR 2/REAR 2/REAR RE-ENTER 2 are not milestones.
+Its own HH display is muted only once some deeper tier's actual reference
+(any BAR/BAR 2, REAR/REAR 2/REAR RE-ENTER/REAR RE-ENTER 2) reaches or
+exceeds it -- a live comparison, not a mere existence check, since TZ BUY
+2 isn't guaranteed lower than what eventually forms below it.
 
-Either way, **a brand-new BAR(n+1) can still start elsewhere in the same
-buy**, via two paths that don't care whether the dead lineage ever had its
-own BAR 2:
-1. A fresh RED2 (against whatever's currently active) followed by a
-   qualifying breakout ("mechanism 1").
-2. A fresh breakout landing directly inside the dead lineage's own SL price
-   range ("mechanism 2") — this path doesn't check `bar2 is not None` on the
-   dead lineage at all, in the original, already-validated engine. Flagged
-   to the user as a possible inconsistency (BAR 2 gates SL2 but not this
-   path) — not yet resolved as a bug or confirmed intentional; left
-   unchanged pending that decision.
+**TZ BUY 2's own SL** (Family 1): decisive -- wipes the whole BAR family,
+REAR/REAR RE-ENTER, and RED1 in flight, same as TZ BUY's own SL. Recovers
+under the same `"TZ BUY 2(label)"` text, above "whichever occurred last".
+**Also opens spawn eligibility for a fresh sibling TZ GREEN(n+1)**, exactly
+like TZ BUY's own top-level SL -- an explicit rule-reversal addition
+(TZ BUY 2's own SL was originally NOT a spawn trigger; the user later
+added it back explicitly), even while TZ BUY itself stays active. Lifts
+the moment TZ BUY 2 recovers (a live check on `sl_active`, not a
+historical flag).
 
-## Naming
+**TZ BUY's own SL** (Family 1): decisive, self-recovers, IN PLACE (same
+object, same `"TZ BUY(label)"` text -- there is no "NEW TZ BUY"). Opens
+spawn eligibility for TZ GREEN(n+1) (this was always true, unlike TZ BUY
+2's SL which needed the explicit addition above).
 
-`Buy.tz_buy2: Optional[Bar2]`, `Buy.tz_buy2_hh_muted: bool`,
-`Engine._eval_tzbuy2(...)` — aligned to match the uploaded competing
-draft's naming, to minimize friction if that file's DTF-with-respect-to-WTF
-hooks are integrated later. `Buy.kind` was removed entirely (no longer
-needed once "NEW TZ BUY" was dropped).
+**BAR / BAR 2** (Family 2, multi-lineage): multiple lineages can coexist
+and race in parallel -- an older lineage that's already post-SL, already
+has its own BAR 2, and hasn't shown INVALID BAR SL yet is **never
+terminated** just because a fresh independent BAR(n+1) forms elsewhere; it
+keeps racing toward its own SL2 (a single candle can trigger one lineage's
+SL2 while another's own SL is still open -- this is exactly why INVALID
+BAR SL matters as a distinct state). Only the NEWEST lineage participates
+in RED1/RED2 (single shared `buy.red1`). BAR 2 gates RED1/RED2 attaching
+to a lineage, and gates whether that lineage's own SL can ever reach SL2 at
+all.
 
-## A latent bug fixed along the way
+**Fresh BAR formation** -- two independent, non-exclusive triggers:
+1. The original mechanism: `buy.bar_pending` (a fresh RED2 fired) plus a
+   qualifying breakout shape.
+2. **Added this pass, real-data-motivated**: whenever the current newest
+   lineage is no longer pre-SL (dead-ended or otherwise), a qualifying
+   breakout ALONE forms a fresh BAR immediately -- **no RED1/RED2 needed**.
+   Without this, a BAR SL firing with no BAR 2 ever having formed left
+   `bar_pending` permanently unset-able (nothing could ever trigger a fresh
+   RED2 again), which produced a genuine bug against real data: an engine
+   run went completely silent for 84 weeks after exactly this happened
+   (KALYANKJIL.NS, BAR SL fired 2025-02-23 with no BAR 2, zero further
+   events through 2026-09-06). Confirmed by the user: "CAN A NEW BAR OCCUR
+   after BAR SL: YES... In this case NO NEED TO HAVE A RED 1 - RED 2."
 
-The retroactive same-day HH-suppression pass (used to suppress
-`"TZ BUY HH("` the same day `"TZ BUY 2("` fires) originally built its
-underlying-event key as `label + " HH("` inside a loop that *also*
-reassigned a local variable named `label` to the current event's branch
-letter on every iteration — a genuine variable-shadowing bug that would have
-silently corrupted this suppression after the very first event on any given
-candle. Fixed by hardcoding `"TZ BUY HH("` directly (safe now that there is
-only one possible top-level label, post-A) and renaming the loop's local
-variable to `branch_lbl` so it can never collide with anything else again.
+**BAR sub-label reuse**: a dead lineage's numeric sub-label (e.g. the `1`
+in `"A.1"`) is freed for reuse ONLY if it was a **complete dead end** (its
+own SL fired with no BAR 2 ever having formed). A lineage that DID get its
+own BAR 2 and only later lost out to a newer generation keeps its number
+retired permanently -- the counter just keeps incrementing past it. This
+is a different rule from branch-level label reuse (below), which is
+unconditional.
 
-## Testing so far
+**Branch-level label reuse** (unrelated rule, unconditional): any
+terminated branch frees its integer ID for reuse via `lowest_free_id()` --
+no BAR-2-style qualification. Already correctly implemented via the base
+engine's own branch-management machinery; needed no new code.
 
-`test_wtf_smoke.py` — five independent synthetic OHLC sequences:
+**REAR / REAR 2**: REAR forms off a BAR's own SL2 (never a reactivation of
+some old dormant ancestor -- always fresh, off that BAR's own reference).
+REAR 2 mirrors BAR 2's shape one level up, but is Family 1, not Family 2:
+REAR 2's own SL is decisive -- wipes RED1/bar_lineages/bar_pending below
+it, requires REAR 2 to reform (same label, above its own ref) before
+RED1/RED2 can attach to REAR again.
 
-1. Full escalation TZ GREEN → RED → TZ BUY → TZ BUY 2 → RED1 → RED2 (gated
-   on TZ BUY 2) → BAR(A.1).
+**REAR's own SL** (Family 1, corrected this pass from an earlier,
+wrong Family-2 assumption): **never a dead end**, regardless of whether
+REAR 2 ever formed -- always leads to REAR RE-ENTER above "whichever
+occurred last". Mirrors TZ BUY's pattern, not BAR's. Worked example from
+the user: `REAR - REAR SL - REAR (REAR RE-ENTER ABOVE THE REAR REF. HIGH)`.
+
+**REAR RE-ENTER / REAR RE-ENTER 2**: exact structural mirrors, one level
+deeper. REAR RE-ENTER 2's own SL is decisive (wipes what it unlocked, same
+as REAR 2). REAR RE-ENTER's own SL self-recovers under the same event
+text, above "whichever occurred last", never a dead end regardless of
+whether REAR RE-ENTER 2 ever formed -- terminal (no further escalation
+beyond this).
+
+## Multi-branch / spawn eligibility / leadership
+
+Spawn eligibility for a fresh sibling TZ GREEN(n+1) opens on EITHER TZ
+BUY's own top-level SL OR TZ BUY 2's own SL (the latter an explicit
+addition/reversal -- see above). Leadership contest, dormancy, and
+reference inheritance across sibling branches needed **no new code** --
+already correctly handled by the base engine's existing
+`_milestone_blocked` / dormancy / `lowest_free_id` machinery; only the
+new milestone classification (`"TZ BUY 2("`) and the new spawn triggers
+needed adding.
+
+A newer branch's own TZ BUY 2 forming can retroactively record a higher
+reference for an older, now-dormant sibling's own TZ BUY 2 (single-leader
+reference-inheritance rule, already generic in the base engine). Two
+sibling branches reaching a milestone (e.g. both TZ BUY 2) on the exact
+same day is resolved by the existing seq-ordering / collateral-termination
+rules -- no special-casing needed for TZ BUY 2 specifically.
+
+## Testing
+
+`test_wtf_smoke.py` -- 9 synthetic scenarios (`python3 test_wtf_smoke.py`):
+
+1. Full escalation TZ BUY → TZ BUY 2 → RED1 → RED2 → BAR(A.1).
 2. TZ BUY SL with no TZ BUY 2 ever formed → reactivates in place off the
-   dead buy's own raw peak; asserts `"NEW TZ BUY("` never appears.
-3. TZ BUY SL after TZ BUY 2 already existed → reactivates off
-   `max(TZ BUY's own ref, TZ BUY 2's ref)`; a companion run confirms a
-   candle clearing the old peak but not TZ BUY 2's reference does not
-   reactivate.
-4. Direct check that `is_milestone("TZ BUY 2(A)")` is `True` while
-   `is_milestone("BAR 2(A.1)")` / `is_milestone("REAR 2(A)")` stay `False`.
-5. TZ BUY 2's own HH display is muted from the exact candle a BAR
-   generation's own reference (or its own BAR 2) reaches or exceeds TZ BUY
-   2's reference — checked via the per-day trace, not just the flat event
-   set (since the event legitimately fires earlier in the same run, before
-   the deeper tier catches up).
+   dead buy's own raw peak.
+3. TZ BUY SL after TZ BUY 2 existed → reactivates off TZ BUY 2's ref; a
+   companion run confirms a candle clearing only the old peak does not.
+4. `"TZ BUY 2("` is its own milestone; BAR 2/REAR 2 are not.
+5. TZ BUY 2's own HH muted once a BAR generation's reference catches up.
+6. **BAR SL with no BAR 2 → fresh BAR reuses the freed label, no
+   RED1/RED2 needed** (the real-data bug fix).
+7. *(not yet covered by a dedicated synthetic test: multi-generation BAR
+   racing in parallel post-SL2, both lineages alive simultaneously)*.
+8. TZ BUY's own SL, firing after BAR 2 has formed, reactivates above BAR
+   2's reference specifically -- not the numerically higher frozen peaks
+   of TZ BUY/TZ BUY 2 (proves "whichever occurred last" is structural, not
+   simply `max()`).
+9. TZ BUY 2's own SL wipes the BAR family (even with BAR 2 already formed)
+   and opens spawn eligibility for a fresh sibling TZ GREEN(n+1), while TZ
+   BUY itself stays active throughout.
 
-This only proves the layer's plumbing is internally consistent on data built
-to exercise it — not a substitute for verification against real OHLC, which
-TZ BUY 2 has never had. Run `python3 test_wtf_smoke.py`.
+Not yet independently covered by a dedicated synthetic test (lower
+priority -- the same `_current_top_ref` machinery is exercised end-to-end
+by Test 8, and real-data validation already exists for the flow overall):
+REAR's own SL → REAR RE-ENTER with no REAR 2 ever formed; REAR 2/REAR
+RE-ENTER 2's own SL wiping and requiring reformation; REAR RE-ENTER's own
+SL self-recovery with no REAR RE-ENTER 2 ever formed.
 
 ## Open items
 
-- Whether BAR's "mechanism 2" (a fresh BAR branching directly off a dead
-  lineage's own SL price range) should also be gated on that lineage having
-  had its own BAR 2 — flagged under J above, not yet resolved.
-- The `extra_reentry_floor` cross-theory hook (deferred to DTF-with-respect-
-  to-WTF work).
+- The `extra_reentry_floor` cross-theory hook (deferred to
+  DTF-with-respect-to-TZ-BUY work, not started).
+- File itself (`tz_engine_wtf.py`) not yet renamed to match "TZ BUY".
