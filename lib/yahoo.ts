@@ -72,6 +72,46 @@ export async function searchSymbols(query: string, region?: string): Promise<Sym
 }
 
 /**
+ * Fetch the earliest date Yahoo Finance has data for a symbol — its
+ * "first trade date" (listing date for a stock, inception for an index).
+ * Requests a tiny recent window purely to read the response's `meta`
+ * block; `meta.firstTradeDate` is a property of the symbol itself and is
+ * included regardless of the requested period, so there's no need to pull
+ * the whole history just to find where it starts.
+ */
+export async function fetchFirstTradeDate(symbol: string): Promise<string | null> {
+  const url = new URL(`${CHART_BASE}/${encodeURIComponent(symbol)}`);
+  url.searchParams.set("range", "5d");
+  url.searchParams.set("interval", "1d");
+
+  const res = await fetch(url.toString(), {
+    headers: { "User-Agent": "Mozilla/5.0" },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Yahoo Finance chart request failed with status ${res.status}`);
+  }
+
+  const data = await res.json();
+  const result = data?.chart?.result?.[0];
+  const chartError = data?.chart?.error;
+
+  if (chartError) {
+    throw new Error(chartError.description || "Yahoo Finance returned an error");
+  }
+  if (!result) {
+    throw new Error(`No data returned for symbol "${symbol}"`);
+  }
+
+  const firstTradeDate = result.meta?.firstTradeDate;
+  if (typeof firstTradeDate !== "number") {
+    return null;
+  }
+  return new Date(firstTradeDate * 1000).toISOString().slice(0, 10);
+}
+
+/**
  * Fetch daily/weekly/monthly OHLC history for a Yahoo Finance symbol
  * (e.g. "KALYANKJIL.NS") between two dates, inclusive.
  */

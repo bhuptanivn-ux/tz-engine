@@ -217,3 +217,8 @@ thead th {
 .event-disclaimer {
   margin: 0 0 0.75rem;
 }
+
+.start-date-hint {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+}

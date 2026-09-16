@@ -47,6 +47,8 @@ export default function Home() {
   const [start, setStart] = useState("2021-03-28");
   const [end, setEnd] = useState(todayISO());
   const [interval, setIntervalValue] = useState("1d");
+  const [minStartDate, setMinStartDate] = useState("");
+  const [minStartLoading, setMinStartLoading] = useState(false);
 
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("bar2");
   const [rows, setRows] = useState<HistoryRow[]>([]);
@@ -78,6 +80,34 @@ export default function Home() {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [query, selected, marketFilter, mode]);
+
+  useEffect(() => {
+    if (!selected) {
+      setMinStartDate("");
+      return;
+    }
+    let cancelled = false;
+    setMinStartLoading(true);
+    fetch(`/api/meta?symbol=${encodeURIComponent(selected.symbol)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const firstDate: string | null = data.firstTradeDate || null;
+        setMinStartDate(firstDate || "");
+        if (firstDate) {
+          setStart((prev) => (prev < firstDate ? firstDate : prev));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setMinStartDate("");
+      })
+      .finally(() => {
+        if (!cancelled) setMinStartLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.symbol]);
 
   function pickSuggestion(match: SymbolMatch) {
     setSelected(match);
@@ -276,8 +306,18 @@ export default function Home() {
               id="start-date"
               type="date"
               value={start}
+              min={minStartDate || undefined}
               onChange={(e) => setStart(e.target.value)}
             />
+            {selected && (
+              <div className="muted start-date-hint">
+                {minStartLoading
+                  ? "Checking earliest available date…"
+                  : minStartDate
+                  ? `Data available from ${minStartDate}`
+                  : "Earliest available date unknown — no lower limit applied."}
+              </div>
+            )}
           </div>
           <div className="field">
             <label htmlFor="end-date">End date</label>
