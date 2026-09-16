@@ -203,7 +203,7 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
 
 ## Testing
 
-`test_wtf_smoke.py` -- 18 synthetic scenarios (`python3 test_wtf_smoke.py`):
+`test_wtf_smoke.py` -- 19 synthetic scenarios (`python3 test_wtf_smoke.py`):
 
 1. Full escalation TZ BUY → TZ BUY 2 → RED1 → RED2 → BAR(A.1).
 2. TZ BUY SL with no TZ BUY 2 ever formed → reactivates in place off the
@@ -257,6 +257,78 @@ rules -- no special-casing needed for TZ BUY 2 specifically.
     follow. Impact was severe: a single wrong `BAR(A.4)` kept a dead
     branch alive for 17 years of the BBOX.NS dataset, suppressing the
     correct branch progression the whole time.
+16. A second bug fix found against real data (BBOX.NS): a long-dormant
+    branch's own TZ BUY reactivating must never terminate a newer
+    sibling's currently-live, ongoing buy -- it must stay completely
+    hidden until that sibling's own cycle fails, not merely "jump in."
+    See the dedicated section below.
+
+## A long-dormant branch reactivating must never override a live sibling
+
+Two related corrections, both found against real data (BBOX.NS) in the
+same investigation:
+
+**1. The reactivation threshold must track the current leader, only ever
+upward.** Whenever exactly one branch is the sole non-dormant leader,
+every OTHER (dormant) branch's own frozen top-level reactivation
+threshold (`Buy.reentry_threshold`, set once when ITS OWN TZ BUY SL
+fired) is pulled up to at least match the leader's own current
+`_current_top_ref` -- so a dormant branch's old, comparatively low
+threshold can never trail far behind wherever the real leader has since
+climbed to. Implemented alongside the base engine's existing (unchanged)
+`pc.ref_high` propagation, in the same single-leader block in `process()`.
+Only ever raises the threshold, never lowers it -- a dormant branch whose
+own historical peak is ALREADY higher than the current leader's climb
+keeps that higher number.
+
+**2. A reactivation is a *continuation* milestone, not a fresh one, for
+termination purposes.** This is the decisive fix. Even with (1) in place,
+once price does clear a dormant branch's (possibly-raised) threshold, it
+reactivates -- and the ORIGINAL milestone-resolution rule (inherited
+unmodified from the base engine, predating TZ BUY 2 entirely) decides
+whether that milestone event **dormants** every other branch with a lower
+seq or **unconditionally terminates outright** every branch with a higher
+seq, based on whether the event text starts with `"TZ BUY("` (`is_fresh_buy`).
+Before this fix, EVERY `"TZ BUY("` event -- fresh formation or in-place
+reactivation alike, since both use the identical text -- counted as
+"fresh," meaning a long-dormant branch reactivating would unconditionally
+**wipe out** a newer sibling's fully live, ongoing TZ BUY/TZ BUY 2 cycle,
+rather than merely sitting behind it. Root cause: the "no NEW TZ BUY,
+reactivate in place under the same text" rule (confirmed earlier in this
+review) removed the only signal that used to distinguish "genuinely new"
+from "just waking back up" for this OLDER, unrelated check.
+
+Fixed by computing `is_fresh_buy` from whether `pc.buy` was `None`
+immediately before this candle's own `_eval_parent` call, not from the
+event text -- a genuine first-ever formation is still "fresh" (unconditional
+termination of anything higher-seq, as before); an in-place reactivation
+is now a *continuation* milestone, subject to the SAME exemption that
+already protected e.g. `"TZ BUY 2("` events: a higher-seq sibling that
+currently has a live buy is spared (goes dormant, not terminated), and
+the reactivating branch's own event is fully suppressed (not even shown
+as a milestone) for as long as it stays blocked this way -- it keeps
+running internally in the background, exactly like a post-SL2 BAR lineage
+already quietly climbs via INVALID BAR HH.
+
+Confirmed by the user with a worked example: "TZ BUY A SL... TZ GREEN B -
+TZ BUY 2 B occurs before TZ BUY A [reactivates]. Later[,] earlier
+threshold of A breaks[,] than it should not shift to TZ BUY A... So in
+case TZ BUY B SL triggers, technically TZ BUY A & TZ BUY B reactivation
+price will be the same." Impact on BBOX.NS was severe: at 2012-08-19, a
+branch dormant since 2011 reactivating on an old, un-revised threshold
+was wiping out a fully live TZ BUY 2 cycle that had been running since
+March 2012 -- deleting years of that cycle's future history in the
+dataset. Test 16 covers this.
+
+**Open question, not yet addressed**: what should happen once the
+CURRENTLY LIVE leader's own cycle later fails (its own TZ BUY SL fires)
+while an older sibling sits reactivated-but-hidden behind it? The
+mechanism above lets the older sibling's own reference stay in sync, but
+nothing yet explicitly hands back visibility/leadership to it at that
+moment -- in practice the (still non-dormant) former leader would likely
+just attempt its own reactivation at that same now-shared threshold
+first. Not fixed here since no worked example was given for this specific
+transition; flagged for a future pass if it turns out to matter.
 
 **Bug found and fixed this pass: REAR 2 / REAR RE-ENTER 2's own SL was
 wrongly unreachable after their own fresh-cascade BAR formed.** Once that

@@ -488,6 +488,7 @@ class TZEngine:
             pc = self.branches[pid]
             if not pc.active:
                 continue
+            buy_was_none = pc.buy is None
             all_events = self._eval_parent(pc, prev, cur, any_live_buy)
             per_branch_events[pid] = all_events
 
@@ -496,12 +497,28 @@ class TZEngine:
 
             for e in all_events:
                 if is_milestone(e):
-                    # TZ BUY 2 variant: "TZ BUY(" reactivating in place is
-                    # still the same fresh-milestone text as first formation
-                    # (no more "NEW TZ BUY" distinction). "TZ BUY 2(" does
-                    # NOT match this prefix (space before the digit), so it
-                    # is a *continuation* milestone -- the exemption applies.
-                    is_fresh_buy = e.startswith("TZ BUY(")
+                    # TZ BUY 2 variant: "TZ BUY(" reactivating in place uses
+                    # the SAME event text as first formation (no more "NEW
+                    # TZ BUY" distinction) -- but for the purposes of THIS
+                    # termination-vs-exemption check, a reactivation must be
+                    # treated as a *continuation* milestone, not a fresh
+                    # one, or it would unconditionally terminate a newer
+                    # sibling's currently-live, ongoing buy outright instead
+                    # of merely dormanting it. Real-data bug (BBOX.NS): a
+                    # long-dormant branch's own TZ BUY reactivating (its
+                    # frozen threshold finally cleared) was wiping out a
+                    # newer sibling's fully active TZ BUY/TZ BUY 2 cycle in
+                    # progress, rather than staying hidden behind it until
+                    # that sibling's own cycle actually failed -- explicit
+                    # user correction. `buy_was_none` (captured BEFORE this
+                    # candle's own _eval_parent/_eval_buy call) distinguishes
+                    # a genuine first-ever formation (buy didn't exist a
+                    # moment ago) from an in-place reactivation (buy object
+                    # already existed, just inactive) -- only the former is
+                    # "fresh" enough to unconditionally terminate. "TZ BUY
+                    # 2(" never matches this prefix at all (space before the
+                    # digit), so it was already exempt regardless.
+                    is_fresh_buy = e.startswith("TZ BUY(") and buy_was_none
                     milestone_achievers.append((pc, is_fresh_buy))
 
         active_branches = [pc for pc in self.branches.values() if pc.active]
@@ -571,9 +588,35 @@ class TZEngine:
         non_dormant = [pc for pc in active_pcs if not pc.dormant]
         if len(non_dormant) == 1:
             leader = non_dormant[0]
+            leader_top_ref = self._current_top_ref(leader.buy) if leader.buy is not None else leader.ref_high
             for pc in active_pcs:
                 if pc is not leader and pc.dormant and leader.ref_high > pc.ref_high:
                     pc.ref_high = leader.ref_high
+                # TZ BUY 2 variant: a dormant sibling's OWN frozen top-level
+                # reactivation threshold (buy.reentry_threshold, set once
+                # when ITS OWN TZ BUY SL fired) must keep getting pulled up
+                # to at least match the sole leader's own current top
+                # reference, for as long as it stays dormant -- otherwise a
+                # comparatively small bounce could clear this sibling's OLD,
+                # much lower frozen threshold and reactivate/surface it (a
+                # milestone event) even while the leader is still very much
+                # alive and racing far above that level. Explicit user
+                # correction, worked example: "TZ BUY A SL... TZ GREEN B -
+                # TZ BUY 2 B occurs before TZ BUY A [reactivates]. Later
+                # earlier threshold of A breaks[,] than it should not shift
+                # to TZ BUY A. The HH should get[] revised for future. So in
+                # case TZ BUY B SL triggers, technically TZ BUY A & TZ BUY B
+                # reactivation price will be the same." Only ever raises the
+                # threshold (never lowers it) and only while this sibling's
+                # own buy is genuinely inactive (sitting on that frozen
+                # value) -- a still-active dormant buy already tracks every
+                # candle's real price action on its own (see BAR
+                # 2/REAR-family "quietly climbing" INVALID HH tracking),
+                # needing no separate propagation here.
+                if (pc is not leader and pc.dormant and pc.buy is not None and
+                        not pc.buy.active and pc.buy.reentry_threshold is not None and
+                        leader_top_ref > pc.buy.reentry_threshold):
+                    pc.buy.reentry_threshold = leader_top_ref
 
         visible = []
         for pid, events in per_branch_events.items():

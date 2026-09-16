@@ -95,6 +95,16 @@ SL, REAR (this same lineage's own breakout above its BAR 2's reference),
 or a fresh sibling TZ GREEN(n+1) -- confirmed explicitly by the user. A
 breakout that clears only the previous day's high, not BAR 2's own
 reference, must produce neither a bogus BAR nor REAR.
+
+Test 16: corrects a second real bug found against real data (BBOX.NS) --
+a long-dormant branch's own TZ BUY reactivating (its frozen threshold
+finally cleared, possibly by the very same breakout that also advances a
+newer sibling) must NEVER terminate that newer sibling's currently-live,
+ongoing buy outright. It must stay completely hidden -- not even shown as
+a milestone -- for as long as the newer sibling's own cycle is still
+alive, surfacing only once that sibling's own cycle genuinely fails.
+Confirmed explicitly by the user: "it should stay hidden until newer one
+fails."
 """
 from tz_engine_wtf import Day, TZEngine, is_milestone
 
@@ -608,6 +618,48 @@ j15_events = next(evs for date, evs in run.last_trace if date == "j15")
 assert not any(e.startswith("BAR(") for e in j15_events), \
     f"Test 15 FAILED: a fresh BAR must not form once the newest lineage has reached its own SL2, got {j15_events}"
 assert "REAR(A)" not in seen15, "Test 15 setup: this breakout must not clear BAR 2's own ref either"
+
+# ---------------------------------------------------------------------------
+# Test 16: a long-dormant branch's own TZ BUY reactivating must NOT
+# terminate a newer sibling's currently-live, ongoing buy -- it must stay
+# completely hidden until that sibling's own cycle fails. Branch A gets its
+# own top-level SL early (freezing its reentry threshold); branch B spawns,
+# builds its own full TZ BUY -> TZ BUY 2 cycle well below A's frozen level,
+# then climbs past it. Only B's own events may show.
+# ---------------------------------------------------------------------------
+rows16 = [
+    ("m0", 100, 100, 99.0, 99.5),
+    ("m1", 100, 101, 99.2, 101),      # TZ GREEN(A)
+    ("m1b", 100.5, 100.5, 99.5, 100), # consolidation
+    ("m2", 99.4, 100, 99.3, 99.4),    # RED(A)
+    ("m3", 99.5, 102, 99.4, 102),     # TZ BUY(A) ref_high=102
+    ("m4", 99.3, 99.3, 99.1, 99.2),   # TZ BUY SL(A) -- reentry_threshold=102
+    ("m5", 99.2, 99.6, 99.2, 99.6),   # TZ GREEN(B) ref_low=99.2 -- stays under 102
+    ("m5b", 99.5, 99.6, 99.3, 99.4),  # consolidation
+    ("m6", 99.2, 99.3, 99.1, 99.1),   # RED(B) -- shallow dip, no TZ GREEN SL(B)
+    ("m7", 99.2, 99.9, 99.2, 99.9),   # TZ BUY(B) ref_high=99.9 -- still under 102
+    ("m8", 99.3, 100.5, 99.3, 100.5), # TZ BUY 2(B) -- MILESTONE: B becomes sole
+    # non-dormant leader, A goes dormant -- still under 102
+    ("m9", 99.4, 116, 99.4, 116),     # TZ BUY 2 HH(B) -- B's climb now clears A's
+    # frozen 102 too (A silently reactivates internally in the background),
+    # but only B's own event may show
+    ("m10", 99.5, 117, 99.5, 117),    # further climb -- A must stay fully hidden
+]
+seen16 = run(rows16, "Test 16: old dormant branch must not surface/terminate a newer LIVE cycle")
+expected16 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY SL(A)", "TZ GREEN(B)", "RED(B)",
+              "TZ BUY(B)", "TZ BUY 2(B)", "TZ BUY 2 HH(B)"]
+missing16 = [e for e in expected16 if e not in seen16]
+assert not missing16, f"Test 16 MISSING: {missing16}"
+post_sl_events = [e for date, evs in run.last_trace for e in evs
+                  if date not in ("m1", "m1b", "m2", "m3")]
+assert not any(e.startswith("TZ BUY(A)") for e in post_sl_events), \
+    f"Test 16 FAILED: A's reactivation must never surface once B's own live cycle exists, got {post_sl_events}"
+m9_events = next(evs for date, evs in run.last_trace if date == "m9")
+assert m9_events == ["TZ BUY 2 HH(B)"], \
+    f"Test 16 FAILED: only B's own event may show even though this breakout also clears A's threshold, got {m9_events}"
+m10_events = next(evs for date, evs in run.last_trace if date == "m10")
+assert m10_events == ["TZ BUY 2 HH(B)"], \
+    f"Test 16 FAILED: A must stay fully hidden going forward, got {m10_events}"
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")
