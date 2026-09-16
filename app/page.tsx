@@ -41,6 +41,22 @@ function splitEventTokens(eventStr: string): string[] {
     .filter(Boolean);
 }
 
+// Strips the trailing "(A)" / "(A.1)" branch label off an event token, e.g.
+// "TZ GREEN(A)" -> "TZ GREEN", "BAR SL2(A.1)" -> "BAR SL2". This is the
+// category the filter dropdown groups by — so picking "TZ GREEN" matches
+// every branch (A, B, C, ...), not just one.
+function eventKind(token: string): string {
+  const idx = token.indexOf("(");
+  return (idx === -1 ? token : token.slice(0, idx)).trim();
+}
+
+// HH/LL are continuous reference-tracking noise (they fire almost every
+// week) rather than milestone/SL events, so they're excluded from the
+// filter dropdown entirely — not just deduped.
+function isHhOrLlKind(kind: string): boolean {
+  return /\s(HH|LL)$/.test(kind);
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("stock");
 
@@ -68,17 +84,22 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const allEventTypes = useMemo(() => {
+  const allEventKinds = useMemo(() => {
     const set = new Set<string>();
     for (const v of events.values()) {
-      for (const tok of splitEventTokens(v)) set.add(tok);
+      for (const tok of splitEventTokens(v)) {
+        const kind = eventKind(tok);
+        if (!isHhOrLlKind(kind)) set.add(kind);
+      }
     }
     return Array.from(set).sort();
   }, [events]);
 
   const filteredRows = useMemo(() => {
     if (!eventFilter) return rows;
-    return rows.filter((r) => splitEventTokens(events.get(r.date) || "").includes(eventFilter));
+    return rows.filter((r) =>
+      splitEventTokens(events.get(r.date) || "").some((tok) => eventKind(tok) === eventFilter)
+    );
   }, [rows, events, eventFilter]);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -401,7 +422,7 @@ export default function Home() {
               Download CSV
             </button>
           </div>
-          {allEventTypes.length > 0 && (
+          {allEventKinds.length > 0 && (
             <div className="field event-filter-field">
               <label htmlFor="event-filter">Filter by event</label>
               <select
@@ -410,9 +431,9 @@ export default function Home() {
                 onChange={(e) => setEventFilter(e.target.value)}
               >
                 <option value="">All events ({rows.length} rows)</option>
-                {allEventTypes.map((tok) => (
-                  <option key={tok} value={tok}>
-                    {tok}
+                {allEventKinds.map((kind) => (
+                  <option key={kind} value={kind}>
+                    {kind}
                   </option>
                 ))}
               </select>
