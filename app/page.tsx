@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { GLOBAL_INDICES } from "@/lib/indices";
 import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
 import { computeBar2VariantEvents } from "@/lib/tzEngineBar2Variant";
@@ -65,6 +65,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<SymbolMatch[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
 
   // Index-tab state
   const [indexSymbol, setIndexSymbol] = useState(GLOBAL_INDICES[0].symbol);
@@ -118,6 +119,7 @@ export default function Home() {
         const res = await fetch(`/api/search?${params.toString()}`);
         const data = await res.json();
         setSuggestions(data.results || []);
+        setHighlightedIndex(-1);
       } catch {
         setSuggestions([]);
       }
@@ -165,6 +167,26 @@ export default function Home() {
     setQuery(`${match.name} (${match.symbol})`);
     setSuggestions([]);
     setShowSuggestions(false);
+    setHighlightedIndex(-1);
+  }
+
+  function handleSearchKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (!showSuggestions || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightedIndex((i) => Math.min(i + 1, suggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      if (highlightedIndex >= 0 && highlightedIndex < suggestions.length) {
+        e.preventDefault();
+        pickSuggestion(suggestions[highlightedIndex]);
+      }
+    } else if (e.key === "Escape") {
+      setShowSuggestions(false);
+      setHighlightedIndex(-1);
+    }
   }
 
   function switchMode(next: Mode) {
@@ -211,9 +233,18 @@ export default function Home() {
 
     setLoading(true);
     try {
+      // The engine is sequential/stateful — each day's outcome depends on
+      // everything that happened before it (a BAR SL2 reference might trace
+      // back to a TZ GREEN that formed years earlier). So it always runs
+      // over the FULL history from the symbol's actual first-trade-date,
+      // regardless of what start date the user picked to view — truncating
+      // the input to the display range would silently corrupt every event
+      // computed for it. Only the displayed rows are sliced to the user's
+      // chosen start date, after the engine has already run.
+      const engineFetchStart = minStartDate && minStartDate < start ? minStartDate : start;
       const params = new URLSearchParams({
         symbol: selected.symbol,
-        start,
+        start: engineFetchStart,
         end,
         interval,
       });
@@ -223,12 +254,12 @@ export default function Home() {
         throw new Error(data.error || "Failed to fetch history");
       }
       const fetchedRows: HistoryRow[] = data.rows || [];
-      setRows(fetchedRows);
       setEvents(
         engineChoice === "bar2"
           ? computeBar2VariantEvents(fetchedRows)
           : computeNewTheoryEvents(fetchedRows)
       );
+      setRows(fetchedRows.filter((r) => r.date >= start));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch history");
     } finally {
@@ -329,15 +360,23 @@ export default function Home() {
                 }}
                 onFocus={() => setShowSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                onKeyDown={handleSearchKeyDown}
                 autoComplete="off"
+                role="combobox"
+                aria-expanded={showSuggestions && suggestions.length > 0}
+                aria-activedescendant={
+                  highlightedIndex >= 0 ? `suggestion-${highlightedIndex}` : undefined
+                }
               />
               {showSuggestions && suggestions.length > 0 && (
                 <div className="suggestions">
-                  {suggestions.map((s) => (
+                  {suggestions.map((s, i) => (
                     <div
                       key={s.symbol}
-                      className="suggestion-item"
+                      id={`suggestion-${i}`}
+                      className={i === highlightedIndex ? "suggestion-item active" : "suggestion-item"}
                       onMouseDown={() => pickSuggestion(s)}
+                      onMouseEnter={() => setHighlightedIndex(i)}
                     >
                       <div>
                         {s.symbol} <span className="name">{s.exchange}</span>
@@ -422,23 +461,6 @@ export default function Home() {
               Download CSV
             </button>
           </div>
-          {allEventKinds.length > 0 && (
-            <div className="field event-filter-field">
-              <label htmlFor="event-filter">Filter by event</label>
-              <select
-                id="event-filter"
-                value={eventFilter}
-                onChange={(e) => setEventFilter(e.target.value)}
-              >
-                <option value="">All events ({rows.length} rows)</option>
-                {allEventKinds.map((kind) => (
-                  <option key={kind} value={kind}>
-                    {kind}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
           <p className="muted event-disclaimer">
             {engineChoice === "bar2" ? (
               <>
@@ -466,7 +488,26 @@ export default function Home() {
                   <th>High</th>
                   <th>Low</th>
                   <th>Close</th>
-                  <th className="event-col">Event</th>
+                  <th className="event-col">
+                    <div className="event-th">
+                      <span>Event</span>
+                      {allEventKinds.length > 0 && (
+                        <select
+                          className="event-th-filter"
+                          aria-label="Filter by event"
+                          value={eventFilter}
+                          onChange={(e) => setEventFilter(e.target.value)}
+                        >
+                          <option value="">All ▾</option>
+                          {allEventKinds.map((kind) => (
+                            <option key={kind} value={kind}>
+                              {kind}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  </th>
                 </tr>
               </thead>
               <tbody>
