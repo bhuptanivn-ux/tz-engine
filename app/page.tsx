@@ -120,7 +120,12 @@ export default function Home() {
         const firstDate: string | null = data.firstTradeDate || null;
         setMinStartDate(firstDate || "");
         if (firstDate) {
-          setStart((prev) => (prev < firstDate ? firstDate : prev));
+          // Default to this symbol's own earliest available date — not just
+          // a floor. Without this, a symbol listed before the previous
+          // selection's start date would silently keep whatever start date
+          // was already in the field, making every stock look like its
+          // history begins on the same leftover date.
+          setStart(firstDate);
         }
       })
       .catch(() => {
