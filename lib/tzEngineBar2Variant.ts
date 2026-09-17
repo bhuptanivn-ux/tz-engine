@@ -214,10 +214,29 @@ function hasRed2Ever(obj: RedRegimeHolder): obj is BarLineage | Rear | RearReent
   return "red2Ever" in obj;
 }
 
+export type TzBuyReentryRule = "topref" | "simple";
+
 export class TZEngine {
   private branches = new Map<number, ParentCycle>();
   private seqCounter = 0;
   private preTodayLiveBuy = new Map<number, boolean>();
+
+  // Which formula governs the reference TZ BUY must clear to reactivate
+  // above once ITS OWN top-level SL fires:
+  // - "topref" (default, matches the live site elsewhere): the maximum
+  //   reference across every tier this buy currently holds state for
+  //   (TZ BUY 2, the whole BAR family, REAR, REAR 2, REAR RE-ENTER...) --
+  //   see currentTopRef.
+  // - "simple": only TZ BUY's own frozen reference vs TZ BUY 2's, exactly
+  //   the older `extra_reentry_floor`-era formula from
+  //   tz_engine_bar2_variant.py's own _eval_buy (pre_today_buy_ref /
+  //   pre_today_tzbuy2_ref) -- ignores BAR/REAR references entirely, even
+  //   if one of them is numerically higher.
+  // Every OTHER tier's own SL (TZ BUY 2, REAR, REAR 2, REAR RE-ENTER, REAR
+  // RE-ENTER 2) always uses "topref" regardless of this setting -- the
+  // older Python file's extra_reentry_floor hook only ever touched TZ
+  // BUY's own reactivation, never any deeper tier's.
+  constructor(private reentryRule: TzBuyReentryRule = "topref") {}
 
   private nextSeq(): number {
     this.seqCounter += 1;
@@ -590,6 +609,7 @@ export class TZEngine {
     // forever-climbing branch, called later this same candle) can mutate
     // it.
     const preTodayBuyRef = buy.refHigh;
+    const preTodayTzBuy2Ref = buy.tzBuy2 !== null ? buy.tzBuy2.refHigh : null;
 
     let reactivatedToday = false;
     if (buy.active) {
@@ -639,10 +659,13 @@ export class TZEngine {
         // TZ BUY's own SL is DECISIVE -- it wipes out everything below it
         // (TZ BUY 2, the whole BAR family, REAR/REAR RE-ENTER, if any of
         // that had formed), regardless of any RED1/RED2 already in flight
-        // down there. Snapshot "whichever is higher" BEFORE wiping --
-        // that's what TZ BUY reactivates above, never just its own frozen
+        // down there. Snapshot the reactivation reference BEFORE wiping --
+        // that's what TZ BUY reactivates above, not just its own frozen
         // peak once something deeper had formed.
-        buy.reentryThreshold = this.currentTopRef(buy);
+        buy.reentryThreshold =
+          this.reentryRule === "topref"
+            ? this.currentTopRef(buy)
+            : Math.max(preTodayBuyRef, preTodayTzBuy2Ref ?? -Infinity);
         buy.active = false;
         buy.barPending = false;
         buy.red1 = null;
@@ -823,7 +846,14 @@ export class TZEngine {
       ev.push(...this.checkBarPending(pc, buy, prev, cur, true));
     } else if (!buy.active) {
       // no-op
-    } else if (!red1PreexistingAtBuyLevel) {
+    } else if (!(buy.red1 !== null && buy.red1.active)) {
+      // Rechecked fresh here rather than reusing red1PreexistingAtBuyLevel
+      // (an entry-time snapshot) -- TZ BUY 2's own SL can fire earlier in
+      // THIS SAME call (inside evalTzbuy2, called above) and null out
+      // buy.red1 without touching buy.active, which the stale snapshot
+      // would miss entirely, reaching the branch below with a red1 object
+      // that no longer exists and crashing.
+      //
       // TZ BUY 2 gate: mirrors BAR 2 gating RED1 on a BAR lineage -- a
       // fresh RED1 cannot attach to TZ BUY unless TZ BUY 2 is currently
       // ACTIVE, not merely "has existed once" -- TZ BUY 2's own SL closes
@@ -1819,7 +1849,10 @@ export interface HistoryRowLike {
  * The first row never gets an event -- the engine compares each day
  * against the one before it.
  */
-export function computeBar2VariantEvents(rows: HistoryRowLike[]): Map<string, string> {
+export function computeBar2VariantEvents(
+  rows: HistoryRowLike[],
+  reentryRule: TzBuyReentryRule = "topref"
+): Map<string, string> {
   const days: Day[] = rows
     .filter((r) => r.open !== null && r.high !== null && r.low !== null && r.close !== null)
     .map((r) => ({
@@ -1830,7 +1863,7 @@ export function computeBar2VariantEvents(rows: HistoryRowLike[]): Map<string, st
       c: r.close as number,
     }));
 
-  const engine = new TZEngine();
+  const engine = new TZEngine(reentryRule);
   const map = new Map<string, string>();
   for (let i = 1; i < days.length; i++) {
     const prev = days[i - 1];

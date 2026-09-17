@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { GLOBAL_INDICES } from "@/lib/indices";
 import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
-import { computeBar2VariantEvents } from "@/lib/tzEngineBar2Variant";
+import { computeBar2VariantEvents, type TzBuyReentryRule } from "@/lib/tzEngineBar2Variant";
 
 interface SymbolMatch {
   symbol: string;
@@ -88,6 +88,7 @@ export default function Home() {
   const [minStartLoading, setMinStartLoading] = useState(false);
 
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("bar2");
+  const [reentryRule, setReentryRule] = useState<TzBuyReentryRule>("topref");
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [events, setEvents] = useState<Map<string, string>>(new Map());
   const [eventFilter, setEventFilter] = useState(""); // "" = show all events
@@ -264,7 +265,7 @@ export default function Home() {
       const fetchedRows: HistoryRow[] = data.rows || [];
       setEvents(
         engineChoice === "bar2"
-          ? computeBar2VariantEvents(fetchedRows)
+          ? computeBar2VariantEvents(fetchedRows, reentryRule)
           : computeNewTheoryEvents(fetchedRows)
       );
       // When the start date is still the auto-populated default (the
@@ -460,6 +461,24 @@ export default function Home() {
             <option value="newtheory">New Theory v3 (experimental, unverified)</option>
           </select>
         </div>
+
+        {engineChoice === "bar2" && (
+          <div className="field">
+            <label htmlFor="reentry-rule-select">TZ BUY reactivation rule (when its own SL fires)</label>
+            <select
+              id="reentry-rule-select"
+              value={reentryRule}
+              onChange={(e) => setReentryRule(e.target.value as TzBuyReentryRule)}
+            >
+              <option value="topref">
+                New: reactivate above the highest reference across every tier (TZ BUY 2, BAR, REAR...)
+              </option>
+              <option value="simple">
+                Old: reactivate above max(TZ BUY&apos;s own ref, TZ BUY 2&apos;s ref) only
+              </option>
+            </select>
+          </div>
+        )}
 
         <button onClick={handleFetch} disabled={loading}>
           {loading ? "Fetching…" : "Fetch data"}
