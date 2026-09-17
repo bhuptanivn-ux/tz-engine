@@ -1259,6 +1259,22 @@ class TZEngine:
                 b2.sl_active = False
                 b2.reentry_threshold = None
                 ev.append(f"TZ BUY 2({branch_label(pc.id)})")
+            elif cur.h > ref and (cur.h - ref) >= ANY:
+                # Real-data bug (PAYTM.NS): a new high that doesn't (yet)
+                # fully confirm recovery -- clears the old level but closes
+                # back below it -- was simply ignored, leaving the STALE
+                # pre-SL peak as the recovery bar forever. That let a LATER,
+                # lower high wrongly confirm "recovered" against a level
+                # price had already cleared and abandoned weeks earlier.
+                # Matches INVALID BAR HH exactly: any new high while SL'd
+                # quietly becomes the new bar TZ BUY 2 must clear, same ANY
+                # threshold, no recovery event yet. Raises ref_high too (not
+                # just reentry_threshold) so _current_top_ref sees this
+                # climbed level live if TZ BUY's own SL fires later and
+                # needs "whichever is higher" across every tier.
+                b2.ref_high = cur.h
+                b2.reentry_threshold = cur.h
+                ev.append(f"INVALID TZ BUY 2 HH({branch_label(pc.id)})")
             return ev
         if cur.l < b2.ref_low:
             gap = b2.ref_low - cur.l

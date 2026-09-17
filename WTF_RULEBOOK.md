@@ -397,6 +397,56 @@ after REAR 2 SL/REAR RE ENTER 2 SL as well" -- explicit user addition).
 Implemented as `tip_rear2_sl`/`tip_rre2_sl` in `process()`, alongside the
 existing `tip_tzbuy2_sl`. Test 13b confirms this for REAR 2's own SL.
 
+## TZ BUY 2's own post-SL recovery bar must keep climbing on intervening highs
+
+Bug found against real data (PAYTM.NS): once TZ BUY 2's own SL fires
+(`b2.sl_active = True`), the code only ever checked new highs against the
+STALE, frozen pre-SL peak (`b2.reentry_threshold`/`b2.ref_high` as they
+stood at the moment the SL fired) -- there was no equivalent of `INVALID
+BAR HH` for this specific state (`buy.active` still `True`, only TZ BUY
+2's own tier SL'd). An intervening high that cleared that stale peak but
+closed back below it (a failed recovery attempt) was silently ignored
+instead of raising the bar -- which let a LATER, actually LOWER high
+wrongly confirm "recovered" against a level price had already cleared and
+abandoned weeks earlier.
+
+Real trace (PAYTM.NS, branch A): TZ BUY 2 SL fired 2023-07-23, freezing
+the recovery bar at 914.95 (2023-06-18's peak). 2023-08-20's high (938.65)
+cleared 914.95 but closed at 899.20 (back below it) -- a failed recovery
+attempt that the old code simply dropped. 2023-10-01's high (936.70) then
+wrongly confirmed "TZ BUY 2(A)" recovering, against the STALE 914.95 --
+even though it was actually 1.95 points BELOW the 938.65 the price had
+already reached and abandoned six weeks earlier. 2023-10-08's high
+(983.55) then also failed to close above 938.65, so the real recovery
+bar should have climbed there too, before genuinely confirming on
+2023-10-15 (high 998.30, close 987.65 -- clears 983.55 with a confirming
+close). The user's exact correction: "After TZ BUY 2 SL, any HH above the
+HH before the SL will be the new HH. You can notify it as INVALID TZ BUY
+2 HH just like INVALID BAR HH. TZ BUY can reactivate only above this HH
+and the reference high before the SL... any NEW HH after the TZ BUY 2 SL
+will be the new reference high for both TZ BUY (in case TZ BUY SL also
+occurs) and TZ BUY 2 in case only TZ BUY 2 SL."
+
+Fixed by adding the missing `elif` branch in `_eval_tzbuy2`'s
+`b2.sl_active` handling: any new high clearing the current bar by `ANY`
+(0.01) without fully confirming recovery (needs the standard `THRESH`
+gap AND a confirming close, same shape as every other recovery check in
+this file) now emits `INVALID TZ BUY 2 HH(label)` and raises BOTH
+`b2.ref_high` and `b2.reentry_threshold` to that new high -- mirroring
+`INVALID BAR HH` exactly. Raising `b2.ref_high` (not just
+`reentry_threshold`) is what satisfies the second half of the user's
+rule for free: `_current_top_ref` reads `buy.tz_buy2.ref_high` live,
+so if TZ BUY's own top-level SL fires later, its own reactivation
+threshold (`self._current_top_ref(buy)`, snapshotted fresh at that
+moment) automatically picks up whatever TZ BUY 2 had already quietly
+climbed to -- no separate propagation needed. Test 18 covers this
+(clearing a stale peak with a non-confirming close raises the bar
+instead of recovering; a later, lower high against the raised bar shows
+nothing; only a genuine close-confirmed break of the raised bar
+recovers). Verified against all real datasets: KALYANKJIL.NS and all
+three BBOX.NS variants show zero diffs (this code path never triggers
+for them); PAYTM.NS diffs exactly and only in the affected window.
+
 ## Open items
 
 - The `extra_reentry_floor` cross-theory hook (deferred to

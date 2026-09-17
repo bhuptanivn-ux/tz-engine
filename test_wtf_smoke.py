@@ -695,5 +695,50 @@ for i in range(1, len(days17)):
             f"original formation value, got {buy_a.ref_low}")
 print("Test 17: hidden branch's own TZ BUY stays fully inert (no reactivation) while sibling B is live.\n")
 
+# ---------------------------------------------------------------------------
+# Test 18: real bug found against real data (PAYTM.NS) -- once TZ BUY 2's own
+# SL fires, an intervening new high that clears the frozen pre-SL peak but
+# closes back below it must quietly raise the recovery bar ("INVALID TZ BUY
+# 2 HH", exactly mirroring INVALID BAR HH) instead of being ignored. Without
+# this, a LATER, actually LOWER high could wrongly confirm "recovered"
+# against a stale level price had already cleared and abandoned weeks
+# earlier. User's exact correction: "After TZ BUY 2 SL, any HH above the HH
+# before the SL will be the new HH... TZ BUY CAN REACTIVATE ONLY ABOVE THIS
+# HH and the reference high before the SL."
+# ---------------------------------------------------------------------------
+rows18 = [
+    ("k0", 100, 100, 99.0, 99.5),
+    ("k1", 100, 101, 99.2, 101),      # TZ GREEN(A)
+    ("k1b", 100.5, 100.5, 99.5, 100), # consolidation
+    ("k2", 99.4, 100, 99.3, 99.4),    # RED(A)
+    ("k3", 99.5, 102, 99.4, 102),     # TZ BUY(A) ref_high=102, ref_low=99.4
+    ("k4", 99.5, 103, 99.5, 103),     # TZ BUY 2(A) via rally -- ref_high=103
+    ("k5", 99.4, 99.5, 99.3, 99.3),   # TZ BUY 2 SL(A) -- gap 0.2 below TZ BUY
+    # 2's own 99.5; TZ BUY's own top-level ref_low(99.4) only breached by 0.1
+    # (safe, stays active) -- reentry_threshold snapshots at 103
+    ("k6", 99.5, 104, 99.4, 102),     # clears 103 by 1.0 but CLOSES BACK
+    # BELOW it (102 < 103) -- must NOT recover; must raise the bar to 104
+    ("k7", 99.5, 103.5, 99.4, 100),   # a LOWER high (103.5) than the now-
+    # raised 104 -- must show NOTHING (this is the exact real-bug shape:
+    # this would have wrongly confirmed recovery against the STALE 103)
+    ("k8", 100, 105, 99.5, 105),      # genuinely clears the RAISED 104 with
+    # a confirming close -- TZ BUY 2 recovers here, not any candle before
+]
+seen18 = run(rows18, "Test 18: TZ BUY 2 recovery bar must keep climbing on intervening highs, not stay frozen at the stale pre-SL peak")
+expected18 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "TZ BUY 2 SL(A)",
+              "INVALID TZ BUY 2 HH(A)"]
+missing18 = [e for e in expected18 if e not in seen18]
+assert not missing18, f"Test 18 MISSING: {missing18}"
+k6_events = next(evs for date, evs in run.last_trace if date == "k6")
+assert "TZ BUY 2(A)" not in k6_events, \
+    f"Test 18 FAILED: clearing the stale 103 with a non-confirming close must NOT recover TZ BUY 2, got {k6_events}"
+k7_events = next(evs for date, evs in run.last_trace if date == "k7")
+assert not any(e.startswith("TZ BUY 2") for e in k7_events), \
+    f"Test 18 FAILED: a high (103.5) below the already-raised bar (104) must show nothing for TZ BUY 2, got {k7_events}"
+k8_events = next(evs for date, evs in run.last_trace if date == "k8")
+assert "TZ BUY 2(A)" in k8_events, \
+    f"Test 18 FAILED: clearing the RAISED bar (104) with a confirming close must recover TZ BUY 2, got {k8_events}"
+print("Test 18: TZ BUY 2's post-SL recovery bar correctly keeps climbing on intervening highs.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")
