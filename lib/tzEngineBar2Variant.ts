@@ -38,9 +38,9 @@
 // `extra_reentry_floor` DTF/WTF cross-theory hook (not implemented in the
 // Python source this was ported from either -- deferred).
 
-const THRESH = 0.2;
-const ANY = 0.01;
-const EPS = 1e-9;
+export const THRESH = 0.2;
+export const ANY = 0.01;
+export const EPS = 1e-9;
 
 export interface Day {
   date: string;
@@ -70,7 +70,7 @@ class Red1 {
 // The "2" confirmation gate, reused identically at every tier: BAR 2
 // (lineage.bar2), REAR 2 (rear.rear2), REAR RE-ENTER 2 (rre.rre2), TZ
 // BUY 2 (buy.tzBuy2).
-class Bar2 {
+export class Bar2 {
   slActive = false;
   dormant = false; // REAR 2 / REAR RE-ENTER 2 only, and ONLY ever set when
   // the PARENT (Rear/RearReenter) is permanently retired (REAR's own SL
@@ -133,7 +133,7 @@ class RearReenter {
   constructor(public refHigh: number, public refLow: number) {}
 }
 
-class Buy {
+export class Buy {
   active = true;
   red1Ever = false;
   refHighAtRed1 = 0;
@@ -164,7 +164,7 @@ class Buy {
   constructor(public refHigh: number, public refLow: number) {}
 }
 
-class ParentCycle {
+export class ParentCycle {
   active = true;
   dormant = false;
   redEver = false;
@@ -237,6 +237,54 @@ export class TZEngine {
   // older Python file's extra_reentry_floor hook only ever touched TZ
   // BUY's own reactivation, never any deeper tier's.
   constructor(private reentryRule: TzBuyReentryRule = "topref") {}
+
+  // --- DTF/WTF screener support -------------------------------------
+  // The DTF/WTF dual-timeframe layer (see lib/dtfWtfScreener.ts) anchors a
+  // DAILY buy sequence directly off a WEEKLY engine's currently-governing
+  // TZ BUY 2 reference, rather than via a normal TZ-GREEN-style breakout.
+  // These three members exist only to support that: they don't change
+  // anything about the single-timeframe engine used elsewhere on the site.
+
+  /**
+   * Reads the currently-governing TZ BUY 2 reference for this engine
+   * instance (intended to be run on WEEKLY-resampled data), i.e. the WTF
+   * anchor a DTF sequence should clear to originate. Returns null when no
+   * active branch currently has a live, non-SL'd TZ BUY 2. When more than
+   * one branch qualifies, the most recently spawned one (highest seq) wins
+   * — the same "tip" notion `process()` uses elsewhere.
+   */
+  currentGoverningTzBuy2Ref(): number | null {
+    let best: ParentCycle | null = null;
+    for (const pc of this.branches.values()) {
+      if (
+        pc.active &&
+        pc.buy !== null &&
+        pc.buy.active &&
+        pc.buy.tzBuy2 !== null &&
+        !pc.buy.tzBuy2.slActive
+      ) {
+        if (best === null || pc.seq > best.seq) best = pc;
+      }
+    }
+    return best !== null ? (best.buy as Buy).tzBuy2!.refHigh : null;
+  }
+
+  /**
+   * Registers `pc` as this engine instance's ONLY branch, so the internal
+   * cross-branch checks (milestoneBlocked, the "sole leader" pull-up in
+   * process()) see just this one lineage. Used to drive a freshly-anchored
+   * DTF buy sequence with the same validated per-tier logic (RED1/TZ BUY
+   * 2/BAR/REAR/reactivation) as a normal TZ-GREEN-originated branch,
+   * without going through process()'s own TZ-GREEN origination path.
+   */
+  seedSyntheticBranch(pc: ParentCycle): void {
+    this.branches = new Map([[pc.id, pc]]);
+  }
+
+  /** Public wrapper so external callers can step a synthetic branch's buy day by day. */
+  stepBuy(pc: ParentCycle, buy: Buy, prev: Day, cur: Day): string[] {
+    return this.evalBuy(pc, buy, prev, cur);
+  }
 
   private nextSeq(): number {
     this.seqCounter += 1;

@@ -309,7 +309,7 @@ export default function Home() {
 
   return (
     <main className="container">
-      <h1>Global Market Historical Data</h1>
+      <h1>Trading Zone</h1>
       <p className="subtitle">
         Pull OHLC data for a major world index, or search any stock across global markets.
       </p>
