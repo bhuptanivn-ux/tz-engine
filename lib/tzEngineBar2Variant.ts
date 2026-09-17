@@ -951,9 +951,13 @@ export class TZEngine {
       }
     }
     if (slLabels.size > 0) {
+      // Port bug (found via real data, PAYTM.NS): this list wrongly
+      // included "TZ BUY HH(" -- Python's own equivalent list never has
+      // it, only "BAR HH(" one tier down. That extra entry silently
+      // dropped a legitimate "TZ BUY HH(A) + TZ BUY SL(A)" same-candle
+      // pair down to just the SL, diverging from Python's own output.
       ev = ev.filter((e) => {
         const matchesSuppressible =
-          e.startsWith("TZ BUY HH(") ||
           e.startsWith("TZ BUY 2 SL(") ||
           e.startsWith("TZ BUY 2 LL(") ||
           e.startsWith("BAR HH(") ||
@@ -1216,6 +1220,21 @@ export class TZEngine {
         b2.slActive = false;
         b2.reentryThreshold = null;
         ev.push(`TZ BUY 2(${labelId})`);
+      } else if (cur.h > ref && cur.h - ref >= ANY) {
+        // Real-data bug (PAYTM.NS): a new high that doesn't (yet) fully
+        // confirm recovery -- clears the old level but closes back below
+        // it -- was simply ignored, leaving the STALE pre-SL peak as the
+        // recovery bar forever. That let a LATER, lower high wrongly
+        // confirm "recovered" against a level price had already cleared
+        // and abandoned weeks earlier. Matches INVALID BAR HH exactly:
+        // any new high while SL'd quietly becomes the new bar TZ BUY 2
+        // must clear, same ANY threshold, no recovery event yet. Raises
+        // refHigh too (not just reentryThreshold) so currentTopRef sees
+        // this climbed level live if TZ BUY's own SL fires later and
+        // needs "whichever is higher" across every tier.
+        b2.refHigh = cur.h;
+        b2.reentryThreshold = cur.h;
+        ev.push(`INVALID TZ BUY 2 HH(${labelId})`);
       }
       return ev;
     }
