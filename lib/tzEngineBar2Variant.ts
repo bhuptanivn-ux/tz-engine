@@ -660,8 +660,28 @@ export class TZEngine {
       // reactivates directly, always under the SAME "TZ BUY" label,
       // retrying above "whichever is higher" as it stood at the moment the
       // SL fired (buy.reentryThreshold).
+      //
+      // Real-data bug (BBOX.NS): a long-dead branch's own reentry
+      // threshold gets pulled up every week to match the sole live
+      // leader's climbing top ref, which means it clears "cur.h > ref"
+      // the INSTANT the leader makes any new high at all -- reactivating
+      // this branch's buy in place (active=true, refLow reset to
+      // whatever THIS week's low happens to be) while it's still supposed
+      // to stay fully hidden behind that live leader. That stray,
+      // arbitrary refLow then let this hidden branch's own SL condition
+      // fire later completely disconnected from anything happening in the
+      // actually-live cycle (confirmed bug: "TZ BUY SL(A)" surfacing out
+      // of nowhere while sibling C's cycle was still fully alive). Blocked
+      // here exactly like a milestone event -- milestoneBlocked already
+      // answers "is some higher-seq sibling currently live," using the
+      // same pre-today snapshot -- so a hidden branch's own TZ BUY stays
+      // inert (no active flip, no refLow reset) the whole time it's
+      // hidden; only its reference HIGH keeps climbing via the existing
+      // propagation block. Real reactivation becomes possible again only
+      // once the leader's own cycle actually fails.
       const ref = buy.reentryThreshold !== null ? buy.reentryThreshold : preTodayBuyRef;
-      if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
+      if (!this.milestoneBlocked(pc) && cur.l >= prev.l && cur.h > ref &&
+          cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         buy.active = true;
         buy.refHigh = cur.h;
         buy.refLow = cur.l;
