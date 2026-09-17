@@ -641,8 +641,9 @@ rows16 = [
     ("m8", 99.3, 100.5, 99.3, 100.5), # TZ BUY 2(B) -- MILESTONE: B becomes sole
     # non-dormant leader, A goes dormant -- still under 102
     ("m9", 99.4, 116, 99.4, 116),     # TZ BUY 2 HH(B) -- B's climb now clears A's
-    # frozen 102 too (A silently reactivates internally in the background),
-    # but only B's own event may show
+    # frozen 102 too (A's OWN reentry_threshold keeps getting pulled up to
+    # match it, per the confirmed "keep adding" rule -- but A's own buy must
+    # stay fully inert, see Test 17), only B's own event may show
     ("m10", 99.5, 117, 99.5, 117),    # further climb -- A must stay fully hidden
 ]
 seen16 = run(rows16, "Test 16: old dormant branch must not surface/terminate a newer LIVE cycle")
@@ -660,6 +661,39 @@ assert m9_events == ["TZ BUY 2 HH(B)"], \
 m10_events = next(evs for date, evs in run.last_trace if date == "m10")
 assert m10_events == ["TZ BUY 2 HH(B)"], \
     f"Test 16 FAILED: A must stay fully hidden going forward, got {m10_events}"
+
+
+# ---------------------------------------------------------------------------
+# Test 17: real bug found against real data (BBOX.NS) -- a dormant sibling's
+# own top-level TZ BUY must NOT actually reactivate (buy.active flip, ref_low
+# reset) while it's exempted/hidden behind a live newer sibling, even though
+# its own reentry_threshold gets pulled up to match the leader's climbing
+# peak every week (confirmed rule: "every higher high... will keep adding").
+# Test 16 only checked that the VISIBLE event stayed hidden; the real bug
+# was one layer deeper -- the reactivation's event TEXT was suppressed but
+# the underlying STATE CHANGE (active=True, ref_low reset to whatever that
+# week's low happened to be) still went through, which let the hidden
+# branch's own SL condition fire later, completely disconnected from
+# anything happening in the actually-live cycle (real trace: BBOX.NS's
+# "TZ BUY SL(A)" surfacing out of nowhere in March 2020 while sibling C's
+# TZ BUY 2 cycle was still fully alive and had never failed). Reuses Test
+# 16's exact rows, inspecting the engine's own internal state directly
+# instead of just the visible events.
+# ---------------------------------------------------------------------------
+days17 = [Day(d, o, h, l, c) for d, o, h, l, c in rows16]
+engine17 = TZEngine()
+for i in range(1, len(days17)):
+    prev, cur = days17[i - 1], days17[i]
+    engine17.process(prev, cur)
+    if cur.date in ("m9", "m10"):
+        buy_a = engine17.branches[1].buy
+        assert buy_a.active is False, (
+            f"Test 17 FAILED at {cur.date}: dormant branch A's own TZ BUY must stay "
+            f"inactive while sibling B is live, got active={buy_a.active}")
+        assert buy_a.ref_low == 99.4, (
+            f"Test 17 FAILED at {cur.date}: A's own ref_low must stay frozen at its "
+            f"original formation value, got {buy_a.ref_low}")
+print("Test 17: hidden branch's own TZ BUY stays fully inert (no reactivation) while sibling B is live.\n")
 
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

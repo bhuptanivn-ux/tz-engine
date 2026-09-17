@@ -320,15 +320,49 @@ was wiping out a fully live TZ BUY 2 cycle that had been running since
 March 2012 -- deleting years of that cycle's future history in the
 dataset. Test 16 covers this.
 
-**Open question, not yet addressed**: what should happen once the
-CURRENTLY LIVE leader's own cycle later fails (its own TZ BUY SL fires)
-while an older sibling sits reactivated-but-hidden behind it? The
-mechanism above lets the older sibling's own reference stay in sync, but
-nothing yet explicitly hands back visibility/leadership to it at that
-moment -- in practice the (still non-dormant) former leader would likely
-just attempt its own reactivation at that same now-shared threshold
-first. Not fixed here since no worked example was given for this specific
-transition; flagged for a future pass if it turns out to matter.
+**Follow-up bug found and fixed (BBOX.NS, later pass): "hidden" was only
+half-implemented -- the reactivation event TEXT was suppressed, but the
+underlying STATE CHANGE was not.** Fix (2) above (an in-place reactivation
+treated as a continuation milestone) correctly hid the *event*, but
+`_eval_buy`'s own reactivation branch (`if not buy.active: ... if cur.h >
+ref: buy.active = True; buy.ref_low = cur.l; ...`) ran unconditionally
+regardless of whether the milestone got exempted afterward. Since (1)
+above pulls the dormant sibling's `reentry_threshold` up to match the
+live leader's climbing peak every single week, `cur.h > ref` becomes true
+almost every time the leader makes ANY new high at all -- silently
+flipping the hidden branch's `buy.active` to `True` and resetting its
+`ref_low` to whatever THAT WEEK's low happened to be (an arbitrary value
+with no relationship to the leader's own state). That mismatched pair --
+a reference high pinned to the leader's current level, paired with a
+reference low frozen at a random recent week -- let the hidden branch's
+own SL condition fire completely disconnected from the live cycle. Real
+trace: BBOX.NS showed `TZ BUY SL(A)` firing out of nowhere in March 2020
+(the COVID crash week) even though sibling C's `TZ BUY 2` cycle was still
+fully alive and had never failed -- A had silently "reactivated" in the
+background back in February on a routine new high, using that week's low
+(48.49) as its SL trigger, entirely unrelated to C's own much lower
+reference (25.70).
+
+Fixed by gating the reactivation itself (not just its display) on
+`not self._milestone_blocked(pc)` -- the same "does some higher-seq
+sibling currently have a live buy" check already used to decide whether a
+BAR lineage's own REAR can form. While blocked, the hidden branch's own
+`buy.active` and `ref_low` now stay completely untouched -- ONLY its
+`reentry_threshold` keeps climbing via the existing propagation block, per
+the user's own confirmed rule ("EVERY HIGHER HIGH... WILL KEEP ADDING").
+This also answers the previously-open question above: once the live
+leader's own cycle genuinely fails (`_milestone_blocked` no longer true),
+the hidden branch becomes eligible again and reactivates cleanly straight
+into whatever tier its `reentry_threshold` had caught up to -- confirmed
+against real BBOX.NS data, where the fix changes a 2023 breakout from
+wrongly starting a brand-new `TZ GREEN(F)` cycle (discarding a dormant
+branch's already-built-up `TZ BUY 2` state) into correctly reactivating
+directly into `TZ BUY(E)` at the escalated tier, exactly as rule (2)'s
+"same object, same text" reactivation was always meant to work. Test 17
+covers the core fix (hidden branch's own buy stays fully inert while a
+sibling is live); verified end-to-end against both real datasets --
+KALYANKJIL.NS unaffected (0 diffs), BBOX.NS corrected across the same
+mechanism recurring repeatedly through its ~24-year history.
 
 **Bug found and fixed this pass: REAR 2 / REAR RE-ENTER 2's own SL was
 wrongly unreachable after their own fresh-cascade BAR formed.** Once that

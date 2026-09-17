@@ -784,8 +784,30 @@ class TZEngine:
             # branch had gotten that far before TZ BUY's own SL wiped it;
             # TZ BUY's own frozen reference otherwise (the plain dead-end
             # case -- nothing below it ever formed).
+            # Real-data bug (BBOX.NS): a long-dead branch's own reentry
+            # threshold gets pulled up every week to match the sole live
+            # leader's climbing top ref (see the propagation block in
+            # process()), which means it clears "cur.h > ref" the INSTANT
+            # the leader makes any new high at all -- reactivating this
+            # branch's buy in place (active=True, ref_low reset to
+            # whatever THIS week's low happens to be) while it's still
+            # supposed to stay fully hidden behind that live leader. That
+            # stray, arbitrary ref_low then lets this hidden branch's own
+            # SL condition fire later completely disconnected from
+            # anything happening in the actually-live cycle (confirmed
+            # bug: "TZ BUY SL(A)" surfacing out of nowhere while sibling
+            # C's cycle was still fully alive). Blocked here exactly like
+            # a milestone event -- _milestone_blocked already answers "is
+            # some higher-seq sibling currently live," using the same
+            # pre-today snapshot -- so a hidden branch's own TZ BUY stays
+            # inert (no active flip, no ref_low reset) the whole time it's
+            # hidden; only its reference HIGH keeps climbing via that same
+            # propagation block, per the user's own confirmed rule. Real
+            # reactivation becomes possible again only once the leader's
+            # own cycle actually fails.
             ref = buy.reentry_threshold if buy.reentry_threshold is not None else pre_today_buy_ref
-            if cur.l >= prev.l and cur.h > ref and (cur.h - ref) >= THRESH - EPS and cur.c >= ref:
+            if (not self._milestone_blocked(pc) and cur.l >= prev.l and cur.h > ref and
+                    (cur.h - ref) >= THRESH - EPS and cur.c >= ref):
                 buy.active = True
                 buy.ref_high = cur.h
                 buy.ref_low = cur.l
