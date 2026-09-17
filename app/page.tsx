@@ -30,6 +30,15 @@ function fmt(n: number | null): string {
   return n === null ? "—" : n.toFixed(2);
 }
 
+// Deliberately not derived from a symbol's firstTradeDate: weekly/monthly
+// candles are labeled by the START of their period (e.g. a week's Monday),
+// so if the real listing date falls mid-period, requesting period1 set to
+// the exact listing date would exclude that whole boundary candle (its own
+// label precedes the requested start). Requesting from far enough back
+// instead lets Yahoo naturally return everything it actually has, with no
+// risk of clipping the first week/month.
+const ENGINE_HISTORY_FLOOR = "1900-01-01";
+
 // A day's combined event string joins multiple events with " + " (bar2
 // engine) or ", " (New Theory engine). Neither individual event tag ever
 // contains a plus or comma itself, so splitting on either separator is safe
@@ -236,15 +245,14 @@ export default function Home() {
       // The engine is sequential/stateful — each day's outcome depends on
       // everything that happened before it (a BAR SL2 reference might trace
       // back to a TZ GREEN that formed years earlier). So it always runs
-      // over the FULL history from the symbol's actual first-trade-date,
-      // regardless of what start date the user picked to view — truncating
-      // the input to the display range would silently corrupt every event
-      // computed for it. Only the displayed rows are sliced to the user's
-      // chosen start date, after the engine has already run.
-      const engineFetchStart = minStartDate && minStartDate < start ? minStartDate : start;
+      // over the FULL history, regardless of what start date the user
+      // picked to view — truncating the input to the display range would
+      // silently corrupt every event computed for it. Only the displayed
+      // rows are sliced to the user's chosen start date, after the engine
+      // has already run.
       const params = new URLSearchParams({
         symbol: selected.symbol,
-        start: engineFetchStart,
+        start: ENGINE_HISTORY_FLOOR,
         end,
         interval,
       });
@@ -259,7 +267,15 @@ export default function Home() {
           ? computeBar2VariantEvents(fetchedRows)
           : computeNewTheoryEvents(fetchedRows)
       );
-      setRows(fetchedRows.filter((r) => r.date >= start));
+      // When the start date is still the auto-populated default (the
+      // symbol's own listing date), show everything Yahoo actually
+      // returned rather than re-filtering by that exact date string —
+      // a weekly/monthly candle's date label (period start) can fall
+      // slightly before the precise listing date, and a strict ">="
+      // comparison would silently drop that genuine first candle again.
+      // Only apply the display cutoff once the user has deliberately
+      // moved the start date later than the default.
+      setRows(start === minStartDate ? fetchedRows : fetchedRows.filter((r) => r.date >= start));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch history");
     } finally {
