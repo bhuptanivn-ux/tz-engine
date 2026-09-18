@@ -44,11 +44,15 @@ function candleKind(open: number | null, close: number | null): CandleKind {
 
 // Same fixed hex values as .candle-bull / .candle-bear / .candle-doji in
 // globals.css -- kept in sync manually since one lives in CSS (cell
-// backgrounds) and the other here (per-token Event text color).
+// backgrounds) and the other here (per-token Event text color). Doji uses
+// the --doji-event-color CSS variable instead of a flat hex: the pale doji
+// fill (#d9f9e5) has unreadable contrast on a white card in light mode
+// (but is fine light-on-dark in dark mode), so that token swaps to a
+// darker green per theme -- see globals.css.
 const CANDLE_COLOR: Record<"bull" | "bear" | "doji", string> = {
   bull: "#22c55e",
   bear: "#ef5350",
-  doji: "#d9f9e5",
+  doji: "var(--doji-event-color)",
 };
 
 // Specific event kinds get their own fixed emphasis color regardless of

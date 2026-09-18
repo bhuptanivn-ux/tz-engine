@@ -6,6 +6,12 @@
   --border: #e2e2e5;
   --accent: #2563eb;
   --muted: #6b7280;
+  /* Doji (open == close) Event text color. The pale doji cell fill
+     (#d9f9e5) has ~1.1:1 contrast against a white card -- unreadable in
+     light mode -- but works fine as light-on-dark against the dark card,
+     so this token swaps per theme while the cell background itself stays
+     the fixed pale value in both themes. */
+  --doji-event-color: #15803d;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -16,6 +22,7 @@
     --border: #2a2e37;
     --accent: #4f8cff;
     --muted: #9aa0ab;
+    --doji-event-color: #d9f9e5;
   }
 }
 
