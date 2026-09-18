@@ -62,10 +62,48 @@ already-confirmed rule) is unaffected by any of this -- it's the same
 mechanism either way, just decides which DTF setup to point at once WTF
 reactivates.
 
-Still open before this can be implemented: what "TZ BUY ENTRY" / "BAR
-ENTRY" require on the DTF chart itself beyond reaching that same-named
-tier (i.e. is any DTF-level TZ BUY/BAR formation a valid "entry," or does
-it need its own additional confirmation?).
+**What "TZ BUY ENTRY" / "BAR ENTRY" require on the DTF chart itself**
+(user's exact confirmation, resolving the question above): neither is a
+new mechanism -- both are just DTF's own copy of the SAME TZ BUY engine
+(run on daily candles) reaching an already-fully-coded tier. "DTF work"
+is not a new theory or new rules; it's the identical `TZEngine` run on a
+different (daily) OHLC series, with the cross-time-frame layer above only
+deciding WHICH of its tiers to treat as the actionable follow-up signal.
+
+- **TZ BUY ENTRY** = DTF's own `"TZ BUY("` event. Requires DTF's own TZ
+  BUY to be ACTIVE -- a fresh first formation, OR a reactivation in
+  place after DTF's own TZ BUY SL ("TZ BUY ENTRY SL") once DTF price
+  breaks back above the reactivation reference high. This is *exactly*
+  TZ BUY's own existing SL/reactivation rule (`buy.reentry_threshold`,
+  "whichever is higher") -- nothing new, just DTF's own instance of it.
+
+- **BAR ENTRY** = DTF's own tier immediately following DTF's own `"BAR("`
+  formation -- mechanically identical to BAR 2 (an independent SL/
+  recovery cycle of its own, `"BAR ENTRY SL"`), with DTF's own top-level
+  BAR SL staying DECISIVE over it exactly like the base engine's BAR/BAR
+  2: once BAR's own SL fires, it wipes BAR ENTRY, and a fresh BAR can
+  only reform above "whichever is higher" between BAR's own reference
+  high and BAR ENTRY's own reference high (`_current_top_ref`, same
+  principle already used everywhere else in this file). Worked example
+  given: `RED1 → RED2 → BAR → BAR ENTRY → BAR ENTRY SL → BAR SL → BAR
+  (above BAR ENTRY's own ref high) → BAR ENTRY`.
+  - Gate: DTF's own RED1 → RED2 → BAR → BAR ENTRY sequence is only
+    available for a given lineage if that SAME RED1→RED2→BAR→BAR 2
+    escalation hasn't ALREADY completed once for it -- the identical
+    disambiguation condition as the cross-time-frame table above, just
+    applied to DTF's own local state instead of WTF's.
+  - Ordering: BAR → BAR ENTRY can occur either BEFORE TZ BUY → TZ BUY
+    ENTRY forms at all, or AFTER TZ BUY / TZ BUY ENTRY's own SL fires --
+    as long as no earlier BAR → BAR 2/BAR ENTRY has already happened for
+    that lineage. There's no fixed required order between the two
+    tracks, only the "hasn't already happened" gate.
+
+So the only genuinely new piece needed for DTF work is the cross-time-
+frame disambiguation logic itself (which WTF milestone points at which
+DTF tier) -- the DTF-side mechanics (TZ BUY's own SL/reactivation, BAR/
+BAR 2's own SL/reactivation) are the exact same rules already coded and
+tested in `TZEngine`, just needing to run a second instance against
+daily candles alongside the weekly one.
 
 **Status:** verified against real weekly OHLC (KALYANKJIL.NS, 2021-03-28
 through 2026-09-15) — reproduces that dataset's own Event column exactly.
