@@ -53,10 +53,28 @@ const STRIPE_COLOR: Record<"bull" | "bear" | "doji", string> = {
 
 // Specific event kinds get their own fixed emphasis color regardless of
 // that day's own candle direction -- a deeper shade marking the stronger,
-// "2"-confirmed tier: TZ BUY 2 (darker green) and BAR SL2 (darker red).
+// "2"-confirmed tier: TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 (all the same
+// darker green -- every one is a "2"-confirmed bullish milestone) and
+// BAR SL2 (darker red, the deeper stop). When any of these appear on a
+// day, its color governs the WHOLE row (see rowOverrideColor below), not
+// just the Event badge.
 const EVENT_COLOR_OVERRIDE: Record<string, string> = {
   "TZ BUY 2": "#15803d",
+  "REAR 2": "#15803d",
+  "REAR RE-ENTER 2": "#15803d",
   "BAR SL2": "#b91c1c",
+};
+
+// The row-level wash for an overridden row deliberately does NOT dilute
+// the override's own dark hex -- alpha-blending a dark, muted color like
+// #15803d over a near-white card desaturates it into grey-sage rather
+// than reading as green. The wash instead reuses the vivid bull/bear hue
+// (same hue family, just a stronger alpha than a plain row) so it still
+// reads as a clear green/red; the stripe and badge carry the actual dark
+// shade, which works fine at that smaller, more solid scale.
+const OVERRIDE_ROW_WASH: Record<string, string> = {
+  "#15803d": "candle-override-green",
+  "#b91c1c": "candle-override-red",
 };
 
 // Event badges: background is a ~12% tint of the same color as the text,
@@ -593,9 +611,26 @@ export default function Home() {
               <tbody>
                 {filteredRows.map((r) => {
                   const kind = candleKind(r.open, r.close);
-                  const cellClass = kind ? `candle-${kind} mono` : "mono";
-                  const stripeStyle = kind ? { borderLeft: `4px solid ${STRIPE_COLOR[kind]}` } : undefined;
                   const tokens = splitEventTokens(events.get(r.date) || "");
+                  // If any of TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 / BAR SL2
+                  // fired today, that event's color governs the WHOLE row --
+                  // Date/O/H/L/C, not just its own badge -- regardless of
+                  // what today's own candle direction would otherwise show.
+                  let rowOverrideColor: string | null = null;
+                  for (const tok of tokens) {
+                    const c = EVENT_COLOR_OVERRIDE[eventKind(tok)];
+                    if (c) {
+                      rowOverrideColor = c;
+                      break;
+                    }
+                  }
+                  const cellClass = rowOverrideColor
+                    ? `${OVERRIDE_ROW_WASH[rowOverrideColor]} mono`
+                    : kind
+                    ? `candle-${kind} mono`
+                    : "mono";
+                  const stripeHex = rowOverrideColor ?? (kind ? STRIPE_COLOR[kind] : null);
+                  const stripeStyle = stripeHex ? { borderLeft: `4px solid ${stripeHex}` } : undefined;
                   return (
                     <tr key={r.date}>
                       <td className={cellClass} style={stripeStyle}>{r.date}</td>
