@@ -42,6 +42,27 @@ function candleKind(open: number | null, close: number | null): CandleKind {
   return "doji";
 }
 
+// Same fixed hex values as .candle-bull / .candle-bear / .candle-doji in
+// globals.css -- kept in sync manually since one lives in CSS (cell
+// backgrounds) and the other here (per-token Event text color).
+const CANDLE_COLOR: Record<"bull" | "bear" | "doji", string> = {
+  bull: "#22c55e",
+  bear: "#ef5350",
+  doji: "#d9f9e5",
+};
+
+// Specific event kinds get their own fixed emphasis color regardless of
+// that day's own candle direction -- a deeper shade marking the stronger,
+// "2"-confirmed tier: TZ BUY 2 (darker green) and BAR SL2 (darker red).
+const EVENT_COLOR_OVERRIDE: Record<string, string> = {
+  "TZ BUY 2": "#15803d",
+  "BAR SL2": "#b91c1c",
+};
+
+function eventTokenColor(kind: string, rowCandle: CandleKind): string {
+  return EVENT_COLOR_OVERRIDE[kind] ?? CANDLE_COLOR[rowCandle ?? "bull"];
+}
+
 // Deliberately not derived from a symbol's firstTradeDate: weekly/monthly
 // candles are labeled by the START of their period (e.g. a week's Monday),
 // so if the real listing date falls mid-period, requesting period1 set to
@@ -561,6 +582,7 @@ export default function Home() {
                 {filteredRows.map((r) => {
                   const kind = candleKind(r.open, r.close);
                   const cellClass = kind ? `candle-${kind}` : undefined;
+                  const tokens = splitEventTokens(events.get(r.date) || "");
                   return (
                     <tr key={r.date}>
                       <td className={cellClass}>{r.date}</td>
@@ -568,7 +590,14 @@ export default function Home() {
                       <td className={cellClass}>{fmt(r.high)}</td>
                       <td className={cellClass}>{fmt(r.low)}</td>
                       <td className={cellClass}>{fmt(r.close)}</td>
-                      <td className="event-col">{events.get(r.date) || ""}</td>
+                      <td className="event-col">
+                        {tokens.map((tok, i) => (
+                          <span key={i}>
+                            {i > 0 && " + "}
+                            <span style={{ color: eventTokenColor(eventKind(tok), kind) }}>{tok}</span>
+                          </span>
+                        ))}
+                      </td>
                     </tr>
                   );
                 })}

@@ -191,7 +191,7 @@ th:first-child, td:first-child {
 
 .event-col {
   text-align: left;
-  color: var(--accent);
+  font-weight: 700;
   white-space: nowrap;
 }
 
@@ -199,9 +199,10 @@ th:first-child, td:first-child {
    fixed colors (not theme variables) matching standard up/down candle
    colors, with numbers kept literally black in both themes so they stay
    readable against these backgrounds regardless of light/dark mode. The
-   Event column is intentionally excluded (see .event-col above). */
+   Event column keeps no background of its own -- see .event-col above and
+   the per-token color logic in page.tsx (candleColor / EVENT_COLOR_OVERRIDE). */
 .candle-bull {
-  background: #26a69a;
+  background: #22c55e;
   color: #000000;
 }
 
@@ -211,7 +212,7 @@ th:first-child, td:first-child {
 }
 
 .candle-doji {
-  background: #a8e6cf;
+  background: #d9f9e5;
   color: #000000;
 }
 
