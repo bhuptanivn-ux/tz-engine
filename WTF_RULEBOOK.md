@@ -5,6 +5,39 @@ file called it "WTF" or "the BAR 2 variant" — those names are retired; the
 logic itself hasn't changed identity, just its name. The code file is
 still `tz_engine_wtf.py` (not yet renamed).
 
+**Time frames:** TZ BUY is the SAME theory/engine regardless of candle
+period — DTF (Daily Time Frame), WTF (Weekly Time Frame), MTF (Monthly
+Time Frame), YTF (Yearly Time Frame) are not different theories, just
+different granularities of the same rules applied to the corresponding
+day/week/month/year candles. "WTF" showing up in this file's own name is
+a historical leftover from when it was first built against weekly data,
+not a claim that this theory is weekly-only. Given a series of OHLC
+candles at any of these periods, TZ BUY produces the complete, ongoing
+history of every event that occurred on that period's own cadence
+(day-to-day for DTF, week-to-week for WTF, and so on) — the engine itself
+(`TZEngine.process`) has no period-specific logic; it simply consumes
+whatever `Day` records it's given.
+
+**Cross-time-frame follow-up actions (specification only, NOT
+implemented):** a separate, not-yet-built layer maps a milestone reached
+on a HIGHER time frame (e.g. WTF) to which SETUP to watch for on a LOWER
+time frame (e.g. DTF) as the actual trade-entry trigger. User's exact
+mapping given so far:
+
+| WTF (higher time frame) event | DTF (lower time frame) follow-up action |
+|---|---|
+| TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 | TZ BUY → TZ BUY ENTRY |
+| BAR | TZ BUY → TZ BUY ENTRY, OR BAR → BAR ENTRY |
+
+This is the same thing the code's "Open items" section below calls the
+`extra_reentry_floor` cross-theory hook / "DTF-with-respect-to-TZ-BUY
+work" — not started, and this table alone isn't a complete spec yet: the
+BAR row's "OR" has no disambiguation rule (what decides which of the two
+DTF setups applies for a given WTF BAR?), and neither row says what
+"TZ BUY ENTRY" / "BAR ENTRY" actually require beyond the DTF chart
+reaching that same-named tier. Needs more worked examples before this can
+be implemented.
+
 **Status:** verified against real weekly OHLC (KALYANKJIL.NS, 2021-03-28
 through 2026-09-15) — reproduces that dataset's own Event column exactly.
 That run also exposed a real bug (engine going silent for 84 weeks after a
@@ -450,5 +483,7 @@ for them); PAYTM.NS diffs exactly and only in the affected window.
 ## Open items
 
 - The `extra_reentry_floor` cross-theory hook (deferred to
-  DTF-with-respect-to-TZ-BUY work, not started).
+  DTF-with-respect-to-TZ-BUY work, not started) — see "Cross-time-frame
+  follow-up actions" near the top of this file for the mapping given so
+  far and what's still missing before it can be built.
 - File itself (`tz_engine_wtf.py`) not yet renamed to match "TZ BUY".
