@@ -195,6 +195,26 @@ th:first-child, td:first-child {
   white-space: nowrap;
 }
 
+/* Candle-direction shading for the Date/Open/High/Low/Close cells --
+   fixed colors (not theme variables) matching standard up/down candle
+   colors, with numbers kept literally black in both themes so they stay
+   readable against these backgrounds regardless of light/dark mode. The
+   Event column is intentionally excluded (see .event-col above). */
+.candle-bull {
+  background: #26a69a;
+  color: #000000;
+}
+
+.candle-bear {
+  background: #ef5350;
+  color: #000000;
+}
+
+.candle-doji {
+  background: #a8e6cf;
+  color: #000000;
+}
+
 .event-th {
   display: flex;
   align-items: center;

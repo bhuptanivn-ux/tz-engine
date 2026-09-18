@@ -30,6 +30,18 @@ function fmt(n: number | null): string {
   return n === null ? "—" : n.toFixed(2);
 }
 
+// Candle-direction shading for the Date/Open/High/Low/Close cells (the
+// Event column deliberately stays unshaded — it has its own accent-color
+// styling and isn't part of this rule).
+type CandleKind = "bull" | "bear" | "doji" | null;
+
+function candleKind(open: number | null, close: number | null): CandleKind {
+  if (open === null || close === null) return null;
+  if (close > open) return "bull";
+  if (close < open) return "bear";
+  return "doji";
+}
+
 // Deliberately not derived from a symbol's firstTradeDate: weekly/monthly
 // candles are labeled by the START of their period (e.g. a week's Monday),
 // so if the real listing date falls mid-period, requesting period1 set to
@@ -546,16 +558,20 @@ export default function Home() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((r) => (
-                  <tr key={r.date}>
-                    <td>{r.date}</td>
-                    <td>{fmt(r.open)}</td>
-                    <td>{fmt(r.high)}</td>
-                    <td>{fmt(r.low)}</td>
-                    <td>{fmt(r.close)}</td>
-                    <td className="event-col">{events.get(r.date) || ""}</td>
-                  </tr>
-                ))}
+                {filteredRows.map((r) => {
+                  const kind = candleKind(r.open, r.close);
+                  const cellClass = kind ? `candle-${kind}` : undefined;
+                  return (
+                    <tr key={r.date}>
+                      <td className={cellClass}>{r.date}</td>
+                      <td className={cellClass}>{fmt(r.open)}</td>
+                      <td className={cellClass}>{fmt(r.high)}</td>
+                      <td className={cellClass}>{fmt(r.low)}</td>
+                      <td className={cellClass}>{fmt(r.close)}</td>
+                      <td className="event-col">{events.get(r.date) || ""}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
