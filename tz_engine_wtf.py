@@ -1386,6 +1386,16 @@ class TZEngine:
                 r2.sl_active = False
                 r2.reentry_threshold = None
                 ev.append(f"REAR 2({branch_label(pc.id)})")
+            elif cur.h > ref and (cur.h - ref) >= ANY:
+                # Same fix as TZ BUY 2's own SL/recovery (real-data bug,
+                # PAYTM.NS): a new high that clears the old level but
+                # closes back below it must still raise the recovery bar,
+                # not be silently ignored -- otherwise a LATER, actually
+                # lower high could wrongly confirm "recovered" against a
+                # stale level price had already cleared and abandoned.
+                r2.ref_high = cur.h
+                r2.reentry_threshold = cur.h
+                ev.append(f"INVALID REAR 2 HH({branch_label(pc.id)})")
             return ev
         if cur.l < r2.ref_low:
             gap = r2.ref_low - cur.l
@@ -1445,6 +1455,16 @@ class TZEngine:
                 r2.sl_active = False
                 r2.reentry_threshold = None
                 ev.append(f"REAR RE-ENTER 2({branch_label(pc.id)})")
+            elif cur.h > ref and (cur.h - ref) >= ANY:
+                # Same fix as TZ BUY 2's own SL/recovery (real-data bug,
+                # PAYTM.NS): a new high that clears the old level but
+                # closes back below it must still raise the recovery bar,
+                # not be silently ignored -- otherwise a LATER, actually
+                # lower high could wrongly confirm "recovered" against a
+                # stale level price had already cleared and abandoned.
+                r2.ref_high = cur.h
+                r2.reentry_threshold = cur.h
+                ev.append(f"INVALID REAR RE-ENTER 2 HH({branch_label(pc.id)})")
             return ev
         if cur.l < r2.ref_low:
             gap = r2.ref_low - cur.l

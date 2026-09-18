@@ -740,5 +740,64 @@ assert "TZ BUY 2(A)" in k8_events, \
     f"Test 18 FAILED: clearing the RAISED bar (104) with a confirming close must recover TZ BUY 2, got {k8_events}"
 print("Test 18: TZ BUY 2's post-SL recovery bar correctly keeps climbing on intervening highs.\n")
 
+# ---------------------------------------------------------------------------
+# Test 19: same fix, one tier over -- REAR 2's own post-SL recovery bar must
+# also keep climbing on intervening highs, not stay frozen at the stale
+# pre-SL peak (confirmed: "recovery bar above TZ BUY 2/REAR 2/REAR RE-ENTER
+# [2] reference after its SL was a basic requirement. Fix it permanent.").
+# Built on rows11's own REAR 2 SL setup (dropping its own final "recovers"
+# candle, which only cleared 101 -- rows11's OWN reentry_threshold is
+# actually 104, inherited from TZ BUY 2's earlier peak via
+# "whichever is higher", so that candle was never a real recovery anyway).
+# ---------------------------------------------------------------------------
+rows19 = rows11[:-1] + [
+    ("j21b", 99, 105, 98.5, 100),   # clears reentry_threshold(104) but closes
+    # back below it -- must NOT recover; must raise the bar to 105
+    ("j21c", 99, 104.5, 98, 99),    # a LOWER high (104.5) than the now-raised
+    # 105 -- must show NOTHING for REAR 2
+    ("j22b", 99, 107, 99, 107),     # genuinely clears the RAISED 105 --
+    # REAR 2 recovers here, not any candle before
+]
+seen19 = run(rows19, "Test 19: REAR 2's post-SL recovery bar must also keep climbing on intervening highs")
+assert "INVALID REAR 2 HH(A)" in seen19, "Test 19 MISSING: INVALID REAR 2 HH(A)"
+j21b_events = next(evs for date, evs in run.last_trace if date == "j21b")
+assert "REAR 2(A)" not in j21b_events, \
+    f"Test 19 FAILED: clearing the stale 104 with a non-confirming close must NOT recover REAR 2, got {j21b_events}"
+j21c_events = next(evs for date, evs in run.last_trace if date == "j21c")
+assert not any(e.startswith("REAR 2") for e in j21c_events), \
+    f"Test 19 FAILED: a high (104.5) below the already-raised bar (105) must show nothing for REAR 2, got {j21c_events}"
+j22b_events = next(evs for date, evs in run.last_trace if date == "j22b")
+assert "REAR 2(A)" in j22b_events, \
+    f"Test 19 FAILED: clearing the RAISED bar (105) with a confirming close must recover REAR 2, got {j22b_events}"
+print("Test 19: REAR 2's post-SL recovery bar correctly keeps climbing on intervening highs.\n")
+
+# ---------------------------------------------------------------------------
+# Test 20: same fix, one tier deeper still -- REAR RE-ENTER 2's own post-SL
+# recovery bar must also keep climbing on intervening highs. Built on
+# rows12's own REAR RE-ENTER 2 SL setup (dropping its own final "recovers"
+# candle, which correctly cleared 108 -- rows12's own reentry_threshold IS
+# genuinely 108 here, unlike rows11/rows19's case).
+# ---------------------------------------------------------------------------
+rows20 = rows12[:-1] + [
+    ("j26b", 92, 110, 91.8, 100),   # clears reentry_threshold(108) but closes
+    # back below it -- must NOT recover; must raise the bar to 110
+    ("j26c", 92, 109.5, 91.9, 95),  # a LOWER high (109.5) than the now-raised
+    # 110 -- must show NOTHING for REAR RE-ENTER 2
+    ("j27b", 92, 112, 92, 112),     # genuinely clears the RAISED 110 --
+    # REAR RE-ENTER 2 recovers here, not any candle before
+]
+seen20 = run(rows20, "Test 20: REAR RE-ENTER 2's post-SL recovery bar must also keep climbing on intervening highs")
+assert "INVALID REAR RE-ENTER 2 HH(A)" in seen20, "Test 20 MISSING: INVALID REAR RE-ENTER 2 HH(A)"
+j26b_events = next(evs for date, evs in run.last_trace if date == "j26b")
+assert "REAR RE-ENTER 2(A)" not in j26b_events, \
+    f"Test 20 FAILED: clearing the stale 108 with a non-confirming close must NOT recover REAR RE-ENTER 2, got {j26b_events}"
+j26c_events = next(evs for date, evs in run.last_trace if date == "j26c")
+assert not any(e.startswith("REAR RE-ENTER 2") for e in j26c_events), \
+    f"Test 20 FAILED: a high (109.5) below the already-raised bar (110) must show nothing for REAR RE-ENTER 2, got {j26c_events}"
+j27b_events = next(evs for date, evs in run.last_trace if date == "j27b")
+assert "REAR RE-ENTER 2(A)" in j27b_events, \
+    f"Test 20 FAILED: clearing the RAISED bar (110) with a confirming close must recover REAR RE-ENTER 2, got {j27b_events}"
+print("Test 20: REAR RE-ENTER 2's post-SL recovery bar correctly keeps climbing on intervening highs.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

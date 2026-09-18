@@ -547,6 +547,44 @@ recovers). Verified against all real datasets: KALYANKJIL.NS and all
 three BBOX.NS variants show zero diffs (this code path never triggers
 for them); PAYTM.NS diffs exactly and only in the affected window.
 
+**Same fix ported to REAR 2 and REAR RE-ENTER 2** (explicit user
+confirmation: "Recovery bar ABOVE TZ BUY 2/REAR 2/REAR RE ENTER
+reference high after it's SL was a basic requirement. Fix it
+permanent."). `_eval_rear2` and `_eval_rre2` had the identical gap --
+their `r2.sl_active` branches only ever checked the full close-confirmed
+recovery condition, with no fallback for an intervening high that clears
+the bar without confirming. Fixed identically: an `elif` branch emits
+`INVALID REAR 2 HH(label)` / `INVALID REAR RE-ENTER 2 HH(label)` and
+raises both `ref_high` and `reentry_threshold` on any qualifying new
+high that doesn't fully confirm. Test 19 (REAR 2) and Test 20 (REAR
+RE-ENTER 2) cover this the same way Test 18 covers TZ BUY 2. Explicitly
+NOT extended to BAR 2 (`_eval_bar2`) -- the user confirmed BAR 2's own
+SL correctly needs no LL tracking, and did not include BAR 2 in the "fix
+it permanent" instruction; BAR 2 is architecturally different anyway (a
+per-lineage object that gets dropped entirely once a newer sibling
+lineage's own BAR 2 confirms, per the already-established "once a new
+BAR 2 is confirmed, the earlier BAR becomes irrelevant" rule, so a stale
+BAR 2 rarely if ever survives long enough for this gap to matter the way
+it did for the three buy-level "2" tiers).
+
+Root cause, for the record (asked directly: "it was already coded
+earlier to the engine -- why did the bug arrive?"): the general
+principle -- keep the recovery bar climbing on any qualifying high, not
+just checking the original frozen peak -- was already coded, but only
+for ONE of the two situations that needed it. When the PARENT tier had
+ALSO already failed (`not buy.active` / `lin.sl is not None` / `rear.sl
+is not None`), the quiet-climb tracking already existed correctly
+(`INVALID TZ BUY 2 HH` / `INVALID BAR HH` / `INVALID REAR HH`). But when
+ONLY the "2" tier itself had failed while its parent was still fully
+alive -- actually the more common case, since a "2" tier typically fails
+well before its parent does -- there was no fallback branch at all, just
+a single "does this fully confirm, yes or no" check. That gap existed
+from when these tiers were first built; the original hand-built smoke
+tests never happened to have more than one candle between an SL and its
+recovery, so a failed intermediate attempt never got exercised until
+real weekly data (PAYTM.NS) had several weeks between the SL and the
+eventual genuine recovery.
+
 ## Open items
 
 - The `extra_reentry_floor` cross-theory hook (deferred to
