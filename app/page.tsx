@@ -53,17 +53,36 @@ const STRIPE_COLOR: Record<"bull" | "bear" | "doji", string> = {
 
 // Specific event kinds get their own fixed emphasis color regardless of
 // that day's own candle direction -- a deeper shade marking the stronger,
-// "2"-confirmed tier: TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 (all the same
-// darker green -- every one is a "2"-confirmed bullish milestone) and
-// BAR SL2 (darker red, the deeper stop). When any of these appear on a
-// day, its color governs the WHOLE row (see rowOverrideColor below), not
-// just the Event badge.
+// "2"-confirmed tier: TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 / BAR 2 / RED2
+// (all the same darker green -- every one is a "2"-confirmed milestone on
+// the way up) and BAR SL2 (darker red, the deeper stop -- only reachable
+// once BAR 2 has already formed, so it's unconditionally "deep"). When any
+// of these appear on a day, its color governs the WHOLE row (see
+// rowOverrideColor below), not just the Event badge.
 const EVENT_COLOR_OVERRIDE: Record<string, string> = {
   "TZ BUY 2": "#15803d",
   "REAR 2": "#15803d",
   "REAR RE-ENTER 2": "#15803d",
+  "BAR 2": "#15803d",
+  RED2: "#15803d",
   "BAR SL2": "#b91c1c",
 };
+
+// REAR SL / REAR RE-ENTER SL are NOT unconditionally "deep" the way BAR
+// SL2 is -- the engine lets either fire whether or not its own "2" tier
+// ever formed (unlike BAR SL2, which requires BAR 2 to already exist).
+// So these only get the darker red when THIS branch already reached the
+// listed "2" milestone at some earlier point in its history -- tracked in
+// tokenOverride below, not a simple per-token lookup like the map above.
+const CONDITIONAL_RED_AFTER: Record<string, string> = {
+  "REAR SL": "REAR 2",
+  "REAR RE-ENTER SL": "REAR RE-ENTER 2",
+};
+
+function tokenBranch(token: string): string {
+  const m = token.match(/\(([^)]*)\)\s*$/);
+  return m ? m[1] : "";
+}
 
 // The row-level wash for an overridden row deliberately does NOT dilute
 // the override's own dark hex -- alpha-blending a dark, muted color like
@@ -79,13 +98,13 @@ const OVERRIDE_ROW_WASH: Record<string, string> = {
 
 // Event badges: background is a ~12% tint of the same color as the text,
 // so a token always reads correctly regardless of the surrounding card
-// color. For plain hex colors that's a literal alpha-suffixed hex; doji's
-// default needs to swap with the theme (see --doji-event-color/-bg in
-// globals.css) since a dark-green-on-dark-tint pairing loses contrast in
-// dark mode the same way plain text did before badges existed.
-function eventBadgeStyle(kind: string, rowCandle: CandleKind): { background: string; color: string } {
-  const override = EVENT_COLOR_OVERRIDE[kind];
-  if (override) return { background: `${override}1f`, color: override };
+// color. Only the PLAIN (non-override) fallback -- overrides (both the
+// direct kind and the conditional REAR SL / REAR RE-ENTER SL red -- see
+// tokenOverride) are resolved before this is called. Doji's default needs
+// to swap with the theme (see --doji-event-color/-bg in globals.css)
+// since a dark-green-on-dark-tint pairing loses contrast in dark mode the
+// same way plain text did before badges existed.
+function plainEventBadgeStyle(rowCandle: CandleKind): { background: string; color: string } {
   if (rowCandle === "bull" || rowCandle === "bear") {
     const base = rowCandle === "bull" ? "#22c55e" : "#ef5350";
     return { background: `${base}1f`, color: base };
@@ -175,6 +194,35 @@ export default function Home() {
       splitEventTokens(events.get(r.date) || "").some((tok) => eventKind(tok) === eventFilter)
     );
   }, [rows, events, eventFilter]);
+
+  // Per-token override color (date + exact token -> hex), computed over the
+  // FULL chronological history (not filteredRows -- an event filter must
+  // never hide a "2" milestone from this branch-history tracking, even
+  // when its own row isn't currently displayed). Handles both the direct
+  // overrides (EVENT_COLOR_OVERRIDE) and the conditional ones
+  // (CONDITIONAL_RED_AFTER): REAR SL / REAR RE-ENTER SL only turn red once
+  // this SAME branch has already reached its own REAR 2 / REAR RE-ENTER 2
+  // at some earlier point -- tracked per branch label as we walk forward.
+  const tokenOverride = useMemo(() => {
+    const map = new Map<string, string>();
+    const seenTwo = new Set<string>(); // `${"2"-kind}::${branch}`
+    for (const r of rows) {
+      for (const tok of splitEventTokens(events.get(r.date) || "")) {
+        const kind = eventKind(tok);
+        const branch = tokenBranch(tok);
+        const direct = EVENT_COLOR_OVERRIDE[kind];
+        if (direct) map.set(`${r.date} ${tok}`, direct);
+        if (kind === "REAR 2" || kind === "REAR RE-ENTER 2") {
+          seenTwo.add(`${kind}::${branch}`);
+        }
+        const requiredTwo = CONDITIONAL_RED_AFTER[kind];
+        if (requiredTwo && seenTwo.has(`${requiredTwo}::${branch}`)) {
+          map.set(`${r.date} ${tok}`, "#b91c1c");
+        }
+      }
+    }
+    return map;
+  }, [rows, events]);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -612,13 +660,16 @@ export default function Home() {
                 {filteredRows.map((r) => {
                   const kind = candleKind(r.open, r.close);
                   const tokens = splitEventTokens(events.get(r.date) || "");
-                  // If any of TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 / BAR SL2
-                  // fired today, that event's color governs the WHOLE row --
-                  // Date/O/H/L/C, not just its own badge -- regardless of
-                  // what today's own candle direction would otherwise show.
+                  // If any of TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 / BAR 2 /
+                  // RED2 / BAR SL2 fired today -- or REAR SL / REAR
+                  // RE-ENTER SL fired after this branch already reached its
+                  // own "2" (tokenOverride) -- that event's color governs
+                  // the WHOLE row: Date/O/H/L/C, not just its own badge,
+                  // regardless of what today's own candle direction would
+                  // otherwise show.
                   let rowOverrideColor: string | null = null;
                   for (const tok of tokens) {
-                    const c = EVENT_COLOR_OVERRIDE[eventKind(tok)];
+                    const c = tokenOverride.get(`${r.date} ${tok}`);
                     if (c) {
                       rowOverrideColor = c;
                       break;
@@ -639,11 +690,17 @@ export default function Home() {
                       <td className={cellClass}>{fmt(r.low)}</td>
                       <td className={cellClass}>{fmt(r.close)}</td>
                       <td className="event-col">
-                        {tokens.map((tok, i) => (
-                          <span key={i} className="event-badge" style={eventBadgeStyle(eventKind(tok), kind)}>
-                            {tok}
-                          </span>
-                        ))}
+                        {tokens.map((tok, i) => {
+                          const override = tokenOverride.get(`${r.date} ${tok}`);
+                          const style = override
+                            ? { background: `${override}1f`, color: override }
+                            : plainEventBadgeStyle(kind);
+                          return (
+                            <span key={i} className="event-badge" style={style}>
+                              {tok}
+                            </span>
+                          );
+                        })}
                       </td>
                     </tr>
                   );
