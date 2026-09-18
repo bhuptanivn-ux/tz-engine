@@ -631,6 +631,68 @@ real breakout exactly, with the same fix additionally confirmed working
 earlier in the same file's own history (2025-03-09's TZ BUY 2 SL(A) no
 longer blocks 2025-05-11's TZ BUY(B)).
 
+## A BAR lineage's own RED1/RED2 progress must not freeze once REAR exists above it
+
+Major bug found against real data (NSEI, ~19 years of Nifty history): the
+per-candle dispatch in `_eval_buy` that decides who gets to advance
+RED1/RED2/BAR-SL progress this candle treated "REAR is live" and "a BAR
+lineage needs its own RED1/RED2/SL progress" as MUTUALLY EXCLUSIVE
+branches of one `if/elif` chain -- only one of `_eval_rear_progress`
+(attaches RED1 to REAR itself) or `_eval_bar_lineages_progress` (attaches
+RED1 to the newest BAR lineage, checks its own BAR SL/SL2) could ever run
+per candle, and the REAR branch was checked FIRST.
+
+This breaks the confirmed cascade the instant it actually happens: `REAR
+→ REAR 2 → RED1 → RED2 → BAR(1)` (REAR 2's own dual-role cascade,
+already-confirmed mechanic) consumes REAR's own `red2_ever` to spawn
+BAR(1). From that point on, per the ALREADY-confirmed design ("only the
+NEWEST lineage ever participates in RED1/RED2"), BAR(1)/BAR 2(1) should
+be the one racing toward its own RED1 → RED2 → BAR(2) escalation, or its
+own BAR SL/SL2. But REAR never goes dormant on its own just because a BAR
+cascade formed under it -- `buy.rear is not None and not buy.rear.dormant`
+stays true indefinitely -- so the dispatch kept calling
+`_eval_rear_progress` every candle instead. That function's own RED1
+attachment is gated on `not rear.red2_ever`, which is now permanently
+`True` (already consumed) -- so it does nothing either. Net effect: NO
+RED1/RED2 could EVER attach again for that buy, and
+`_eval_bar_lineages_progress` -- which also owns the lineage's own BAR
+SL/BAR SL2 checks -- never ran again either. The lineage sat permanently
+frozen, silently, for as long as REAR stayed non-dormant (REAR/REAR 2's
+own HH/LL/SL tracking, called separately/unconditionally earlier in the
+same function, kept running fine, which is why `BAR 2 HH`/`REAR 2 HH`
+kept showing and made the freeze easy to miss).
+
+Real trace: NSEI branch C's `BAR 2(C.1)` formed 2014-08-17 under REAR 2's
+dual role; the lineage then sat completely frozen -- no RED1, no RED2, no
+BAR SL, no BAR SL2 possible -- until a fix released it, at which point
+2014-10-05's already-qualifying pullback correctly fired `RED1(C)`,
+followed by `RED2(C)` and a fresh `BAR(C.2)`, exactly as the base cascade
+always specifies. User's framing, confirming the scale of the bug: "big
+bug... Following that, BAR, BAR 2, BAR SL, BAR SL2 I believe other events
+must be missing."
+
+Fixed by reordering the dispatch: `elif buy.bar_lineages:` now runs
+BEFORE the REAR/REAR RE-ENTER progress branches, not after. Whenever a
+BAR cascade is live, it owns RED1/RED2/its own SL/SL2 -- REAR/REAR
+RE-ENTER's own HH/LL/SL tracking is untouched by this reordering (that
+already runs unconditionally, earlier in the same function, regardless of
+this dispatch). Test 22 covers this (a genuine RED1 shape for the
+BAR lineage must attach, `RED1(A)`, even while REAR stays non-dormant
+with its own HH still climbing).
+
+**Verification scope, and why it wasn't caught until now**: this fix only
+changes output for a buy that has BOTH a live BAR lineage AND a
+still-non-dormant REAR/REAR RE-ENTER at the same time -- i.e. specifically
+the "REAR 2's own dual-role BAR cascade" scenario. Re-run against all
+eight real datasets used so far: **zero diffs** on KALYANKJIL.NS, all
+three BBOX.NS variants, PAYTM.NS, ADANIENT.NS, and MAXESTATES.NS (none of
+them happened to exercise this exact combination in a way that produced
+visible divergence) -- but **421 of 992 total events differ** on NSEI,
+whose ~19-year index history hits this combination repeatedly. This is
+the highest-impact fix found so far this session; treat any REAR-adjacent
+BAR-family analysis on other long-history tickers as suspect until
+re-verified against this fix.
+
 ## Open items
 
 - The `extra_reentry_floor` cross-theory hook (deferred to

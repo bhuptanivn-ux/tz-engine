@@ -974,12 +974,29 @@ class TZEngine:
         elif bar_confirms_today:
             ev = [e for e in ev if not (e.startswith("REAR HH(") or e.startswith("REAR RE-ENTER HH("))]
             ev += self._check_bar_pending(pc, buy, prev, cur, supersede_rear=False)
+        elif buy.bar_lineages:
+            # Real-data bug (NSEI): once a fresh BAR(1) cascade forms under
+            # REAR 2's own dual role, this branch MUST take priority over
+            # REAR/REAR RE-ENTER's own RED1 attachment below -- per the
+            # confirmed design ("only the NEWEST lineage ever participates
+            # in RED1/RED2"), the BAR lineage is now the tier RED1/RED2/its
+            # own SL/SL2 belong to, not REAR. Checking `buy.rear.dormant`
+            # first (the previous ordering) was wrong: REAR never goes
+            # dormant on its own just because a BAR cascade formed under
+            # it, so that ordering let REAR's own (already-consumed)
+            # red2_ever permanently block a fresh RED1 from ever attaching
+            # to this lineage again -- confirmed real trace: a lineage sat
+            # frozen for months with no RED1/RED2/BAR SL/BAR SL2 ever
+            # checked again, because REAR (still non-dormant, its own
+            # RED1/RED2 already used up) kept winning this elif every
+            # single candle. REAR/REAR RE-ENTER's own HH/LL/SL tracking is
+            # unaffected -- that already runs unconditionally above,
+            # regardless of this dispatch.
+            ev += self._eval_bar_lineages_progress(pc, buy, prev, cur, pre_today_bar2_ref)
         elif buy.rear_reenter is not None and not buy.rear_reenter.dormant:
             ev += self._eval_rear_reenter_progress(pc, buy, buy.rear_reenter, prev, cur)
         elif buy.rear_reenter is None and buy.rear is not None and not buy.rear.dormant:
             ev += self._eval_rear_progress(pc, buy, buy.rear, prev, cur)
-        elif buy.bar_lineages:
-            ev += self._eval_bar_lineages_progress(pc, buy, prev, cur, pre_today_bar2_ref)
         elif buy.bar_pending and buy.active:
             ev += self._check_bar_pending(pc, buy, prev, cur)
         elif not buy.active:

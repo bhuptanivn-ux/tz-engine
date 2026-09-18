@@ -830,5 +830,45 @@ assert "TZ BUY(B)" in i14_events, \
     f"Test 21 FAILED: B's own first TZ BUY must not be blocked by A's fully-collapsed buy, got {i14_events}"
 print("Test 21: a fully-collapsed buy no longer blocks a sibling's own first TZ BUY.\n")
 
+# ---------------------------------------------------------------------------
+# Test 22: real bug found against real data (NSEI) -- once a fresh BAR(1)
+# cascade forms under REAR 2's own dual role, that BAR lineage's own
+# RED1/RED2/BAR-SL progress must keep advancing even while REAR stays
+# non-dormant (REAR never goes dormant on its own just because a BAR
+# cascade formed under it). The dispatch previously treated "REAR is live"
+# and "a BAR lineage needs its own RED1/RED2/SL progress" as mutually
+# exclusive, so once REAR's own RED1/RED2 had already been consumed
+# (leading to this exact BAR(1) cascade), NEITHER REAR (its own red2_ever
+# already spent) NOR the BAR lineage (never reached at all) could ever
+# attach a fresh RED1 again -- the lineage sat permanently frozen, unable
+# to progress toward BAR(2) or even reach its own BAR SL/SL2. Real trace:
+# NSEI's branch C sat frozen for two months (2014-08-17 to 2014-10-05)
+# with no RED1/RED2/BAR SL/BAR SL2 ever checked again, purely because REAR
+# (still non-dormant, its own RED1/RED2 already used up) kept winning this
+# dispatch every single candle.
+# ---------------------------------------------------------------------------
+rows22 = rows7 + [
+    ("j15b", 93, 98, 80, 97),           # REAR LL(A) -- buffers rear.ref_low to 80
+    ("j16", 93.6, 106, 93.6, 106),      # REAR 2(A) ref_high=106 ref_low=93.6
+    ("j17", 94.2, 107, 94.2, 107),      # REAR 2 HH(A) -> 107
+    ("j18", 94.5, 94.5, 94.0, 94.0),    # RED1(A) attaches to REAR (consumes
+    # REAR's own red2_ever)
+    ("j19", 94.3, 94.3, 93.8, 93.8),    # RED2(A) -- bar_pending=True
+    ("j20", 93.9, 94.6, 93.9, 94.6),    # BAR(A.1) -- REAR 2's own dual-role
+    # cascade
+    ("j21", 94, 100, 94, 100),          # BAR 2(A.1) ref_high=100 ref_low=94
+    ("j22", 100, 108, 99.8, 108),       # REAR 2 HH(A) -> 108 -- REAR keeps
+    # tracking independently, confirming it stays non-dormant
+    ("j23", 99, 100, 97, 96),           # a genuine RED1 shape for A.1 (well
+    # clear of BAR 2's own ref_low 94 and REAR 2's own ref_low 93.6 -- a
+    # plain pullback, not an SL) -- must attach to A.1 itself (RED1(A)),
+    # NOT be silently dropped because REAR is still non-dormant
+]
+seen22 = run(rows22, "Test 22: a BAR lineage's own RED1/RED2 progress must not be permanently blocked once REAR exists above it")
+j23_events = next(evs for date, evs in run.last_trace if date == "j23")
+assert "RED1(A)" in j23_events, \
+    f"Test 22 FAILED: a fresh RED1 must attach to the live BAR lineage even while REAR stays non-dormant, got {j23_events}"
+print("Test 22: a BAR lineage's own RED1/RED2 progress correctly continues even while REAR stays non-dormant.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")
