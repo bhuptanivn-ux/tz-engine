@@ -27,16 +27,45 @@ mapping given so far:
 | WTF (higher time frame) event | DTF (lower time frame) follow-up action |
 |---|---|
 | TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 | TZ BUY → TZ BUY ENTRY |
-| BAR | TZ BUY → TZ BUY ENTRY, OR BAR → BAR ENTRY |
+| BAR | TZ BUY → TZ BUY ENTRY, OR BAR → BAR ENTRY (disambiguated below) |
 
 This is the same thing the code's "Open items" section below calls the
 `extra_reentry_floor` cross-theory hook / "DTF-with-respect-to-TZ-BUY
-work" — not started, and this table alone isn't a complete spec yet: the
-BAR row's "OR" has no disambiguation rule (what decides which of the two
-DTF setups applies for a given WTF BAR?), and neither row says what
-"TZ BUY ENTRY" / "BAR ENTRY" actually require beyond the DTF chart
-reaching that same-named tier. Needs more worked examples before this can
-be implemented.
+work" — not started (no DTF code exists yet; TZ BUY only runs on whatever
+single time frame's candles it's given, per the "Time frames" note
+above). The table alone isn't a complete spec, but the BAR row's "OR" is
+now disambiguated, per the user's exact confirmation:
+
+**Disambiguating the BAR row**: the choice is decided entirely by
+whether a BAR has EVER already formed for this specific TZ BUY's own
+lineage, checked at the moment TZ BUY SL / TZ BUY 2 SL fires on the WTF
+chart -- exactly the same `has_deeper_active`/`no_bar_yet` check the base
+engine already uses everywhere else (`bool(buy.bar_lineages) or
+buy.bar_pending or buy.rear is not None or buy.rear_reenter is not
+None`), no new mechanism needed:
+
+- **A BAR (through BAR 2) has ALREADY formed once for this lineage**,
+  at any point before or up to the same day as TZ BUY SL / TZ BUY 2 SL
+  (worked example: `TZ BUY → TZ BUY 2 → RED1 → RED2 → BAR → BAR 2 → BAR
+  SL → TZ BUY 2 SL`) -- once that RED1→RED2→BAR→BAR 2 escalation has
+  already completed for this buy, a fresh "BAR → BAR ENTRY" follow-up
+  can NEVER occur again below that TZ BUY / TZ BUY 2 SL. The DTF
+  follow-up is **TZ BUY → TZ BUY ENTRY** instead.
+- **No BAR has formed yet for this lineage** by the time TZ BUY SL /
+  TZ BUY 2 SL fires -- RED1→RED2→BAR never happened, either before or
+  after the original TZ BUY/TZ BUY 2 formation. In that case the DTF
+  follow-up CAN be **BAR → BAR ENTRY**, since this would be that
+  lineage's first, still-available BAR occurrence.
+
+Reactivation (TZ BUY's own SL recovering in place, per the base engine's
+already-confirmed rule) is unaffected by any of this -- it's the same
+mechanism either way, just decides which DTF setup to point at once WTF
+reactivates.
+
+Still open before this can be implemented: what "TZ BUY ENTRY" / "BAR
+ENTRY" require on the DTF chart itself beyond reaching that same-named
+tier (i.e. is any DTF-level TZ BUY/BAR formation a valid "entry," or does
+it need its own additional confirmation?).
 
 **Status:** verified against real weekly OHLC (KALYANKJIL.NS, 2021-03-28
 through 2026-09-15) — reproduces that dataset's own Event column exactly.
