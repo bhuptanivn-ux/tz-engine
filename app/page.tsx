@@ -53,19 +53,102 @@ const STRIPE_COLOR: Record<"bull" | "bear" | "doji", string> = {
 
 // Specific event kinds get their own fixed emphasis color regardless of
 // that day's own candle direction -- a deeper shade marking the stronger,
-// "2"-confirmed tier: TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 / BAR 2 / RED2
-// (all the same darker green -- every one is a "2"-confirmed milestone on
-// the way up) and BAR SL2 (darker red, the deeper stop -- only reachable
-// once BAR 2 has already formed, so it's unconditionally "deep"). When any
-// of these appear on a day, its color governs the WHOLE row (see
-// rowOverrideColor below), not just the Event badge.
+// "2"-confirmed tier: TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 / BAR 2 (all the
+// same darker green -- every one is a "2"-confirmed milestone on the way
+// up) and BAR SL2 (darker red, the deeper stop -- only reachable once
+// BAR 2 has already formed, so it's unconditionally "deep"). When any of
+// these appear on a day, its color governs the WHOLE row (see
+// rowOverrideColor below), not just the Event badge. RED2 is NOT part of
+// this -- it's a caution/gate event, not a milestone, so it gets its own
+// badge color (see EVENT_KIND_COLOR) without taking over the whole row.
 const EVENT_COLOR_OVERRIDE: Record<string, string> = {
   "TZ BUY 2": "#15803d",
   "REAR 2": "#15803d",
   "REAR RE-ENTER 2": "#15803d",
   "BAR 2": "#15803d",
-  RED2: "#15803d",
   "BAR SL2": "#b91c1c",
+};
+
+// The baseline Event badge color scheme, independent of that day's own
+// candle direction: green for every bullish/progress milestone (light for
+// the first tier, dark for the "2"-confirmed tier -- matching
+// EVENT_COLOR_OVERRIDE's row-level darker shade above), red for RED/RED1/
+// RED2, every LL, and every SL (light; SL2 specifically gets the same dark
+// red as the row-level override, for the deeper stop). Covers every event
+// kind the bar2-variant engine can emit; an unrecognized kind (e.g. New
+// Theory v3's different vocabulary) falls back to that day's own candle
+// color instead -- see plainEventBadgeStyle.
+const LIGHT_GREEN = "#22c55e";
+const DARK_GREEN = "#15803d";
+const LIGHT_RED = "#ef5350";
+const DARK_RED = "#b91c1c";
+
+const EVENT_KIND_COLOR: Record<string, string> = {
+  "TZ GREEN": LIGHT_GREEN,
+  "TZ GREEN HH": LIGHT_GREEN,
+  "TZ GREEN LL": LIGHT_RED,
+  "TZ GREEN SL": LIGHT_RED,
+
+  "TZ BUY": LIGHT_GREEN,
+  "TZ BUY HH": LIGHT_GREEN,
+  "TZ BUY LL": LIGHT_RED,
+  "TZ BUY SL": LIGHT_RED,
+
+  "TZ BUY 2": DARK_GREEN,
+  "TZ BUY 2 HH": DARK_GREEN,
+  "INVALID TZ BUY 2 HH": DARK_GREEN,
+  "TZ BUY 2 LL": LIGHT_RED,
+  "TZ BUY 2 SL": LIGHT_RED,
+
+  RED: LIGHT_RED,
+  RED1: LIGHT_RED,
+  "RED1 HH": LIGHT_RED,
+  "RED1 LL": LIGHT_RED,
+  "INVALID RED1": LIGHT_RED,
+  RED2: LIGHT_RED,
+  "RED2 HH": LIGHT_RED, // not currently emitted by the engine, kept for safety
+
+  BAR: LIGHT_GREEN,
+  "BAR HH": LIGHT_GREEN,
+  "INVALID BAR HH": LIGHT_GREEN,
+  "BAR LL": LIGHT_RED,
+  "INVALID BAR LL": LIGHT_RED,
+  "BAR SL": LIGHT_RED,
+  "BAR SL HH": LIGHT_RED,
+  "BAR SL LL": LIGHT_RED,
+  // Recovery back above the BAR SL zone -- a positive development, so
+  // green rather than staying with the rest of the SL/failure family.
+  "INVALID BAR SL": LIGHT_GREEN,
+  "BAR SL2": DARK_RED,
+
+  "BAR 2": DARK_GREEN,
+  "BAR 2 HH": DARK_GREEN,
+  "BAR 2 LL": LIGHT_RED,
+  "BAR 2 SL": LIGHT_RED,
+
+  REAR: LIGHT_GREEN,
+  "REAR HH": LIGHT_GREEN,
+  "INVALID REAR HH": LIGHT_GREEN,
+  "REAR LL": LIGHT_RED,
+  "REAR SL": LIGHT_RED,
+
+  "REAR 2": DARK_GREEN,
+  "REAR 2 HH": DARK_GREEN,
+  "INVALID REAR 2 HH": DARK_GREEN,
+  "REAR 2 LL": LIGHT_RED,
+  "REAR 2 SL": LIGHT_RED,
+
+  "REAR RE-ENTER": LIGHT_GREEN,
+  "REAR RE-ENTER HH": LIGHT_GREEN,
+  "INVALID REAR RE-ENTER HH": LIGHT_GREEN,
+  "REAR RE-ENTER LL": LIGHT_RED,
+  "REAR RE-ENTER SL": LIGHT_RED,
+
+  "REAR RE-ENTER 2": DARK_GREEN,
+  "REAR RE-ENTER 2 HH": DARK_GREEN,
+  "INVALID REAR RE-ENTER 2 HH": DARK_GREEN,
+  "REAR RE-ENTER 2 LL": LIGHT_RED,
+  "REAR RE-ENTER 2 SL": LIGHT_RED,
 };
 
 // REAR SL / REAR RE-ENTER SL are NOT unconditionally "deep" the way BAR
@@ -692,8 +775,10 @@ export default function Home() {
                       <td className="event-col">
                         {tokens.map((tok, i) => {
                           const override = tokenOverride.get(`${r.date} ${tok}`);
-                          const style = override
-                            ? { background: `${override}1f`, color: override }
+                          const kindColor = EVENT_KIND_COLOR[eventKind(tok)];
+                          const color = override ?? kindColor;
+                          const style = color
+                            ? { background: `${color}1f`, color }
                             : plainEventBadgeStyle(kind);
                           return (
                             <span key={i} className="event-badge" style={style}>
