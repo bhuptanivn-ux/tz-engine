@@ -246,14 +246,26 @@ export class TZEngine {
   // anything about the single-timeframe engine used elsewhere on the site.
 
   /**
-   * Reads the currently-governing TZ BUY 2 reference for this engine
-   * instance (intended to be run on WEEKLY-resampled data), i.e. the WTF
-   * anchor a DTF sequence should clear to originate. Returns null when no
+   * Reads this engine instance's (intended to be run on WEEKLY-resampled
+   * data) currently-governing TZ BUY 2 state -- returns null when no
    * active branch currently has a live, non-SL'd TZ BUY 2. When more than
    * one branch qualifies, the most recently spawned one (highest seq) wins
    * — the same "tip" notion `process()` uses elsewhere.
+   *
+   * - `tzBuy2Ref`: the WTF anchor a DTF sequence should clear to originate.
+   * - `barPeak`: the running peak of that buy's BAR/BAR 2 family (falling
+   *   back to tzBuy2Ref itself until a BAR has formed) -- the reference the
+   *   screener's "Highest High" column tracks. BAR 2's own refHigh keeps
+   *   drifting upward even after its lineage's BAR SL2 fires (as "INVALID
+   *   BAR HH" -- see the class comments on Bar2/BarLineage), so a caller
+   *   wanting the pre-SL2 peak specifically must stop reading this field
+   *   for that lineage once `barSl2Fired` first comes back true, not just
+   *   take whatever this returns afterward.
+   * - `barSl2Fired`: true once ANY of this buy's BAR lineages has reached
+   *   its own definitive BAR SL2 (a second, deeper breakdown of that BAR's
+   *   own stop -- see the BAR SL2 branch in evalBarLineagesProgress).
    */
-  currentGoverningTzBuy2Ref(): number | null {
+  currentWtfAnchor(): { tzBuy2Ref: number; barPeak: number; barSl2Fired: boolean } | null {
     let best: ParentCycle | null = null;
     for (const pc of this.branches.values()) {
       if (
@@ -266,7 +278,17 @@ export class TZEngine {
         if (best === null || pc.seq > best.seq) best = pc;
       }
     }
-    return best !== null ? (best.buy as Buy).tzBuy2!.refHigh : null;
+    if (best === null) return null;
+    const buy = best.buy as Buy;
+    const tzBuy2Ref = buy.tzBuy2!.refHigh;
+    let barPeak = tzBuy2Ref;
+    let barSl2Fired = false;
+    for (const lin of buy.barLineages) {
+      const linPeak = lin.bar2 !== null ? lin.bar2.refHigh : lin.refHigh;
+      if (linPeak > barPeak) barPeak = linPeak;
+      if (lin.sl !== null && lin.sl.sl2) barSl2Fired = true;
+    }
+    return { tzBuy2Ref, barPeak, barSl2Fired };
   }
 
   /**

@@ -70,7 +70,9 @@ export default function EntryZone() {
             Scanned {scanned} stocks (Nifty 50 placeholder universe — swap in the real NSE 200
             list once it&apos;s supplied) at {lastScanned}. Simplified first version: DTF is
             anchored off WTF&apos;s current TZ BUY 2 reference and then runs independently — the
-            full pause/dormant/race WTF state machine isn&apos;t ported yet.
+            full pause/dormant/race WTF state machine isn&apos;t ported yet. Highest high is
+            WTF&apos;s own BAR/BAR 2 peak (not DTF&apos;s daily price) — it keeps revising until
+            that lineage&apos;s own BAR SL2 fires, then freezes at that pre-SL2 value.
             {errors.length > 0 && ` ${errors.length} stock(s) failed to fetch and were skipped.`}
           </p>
         )}

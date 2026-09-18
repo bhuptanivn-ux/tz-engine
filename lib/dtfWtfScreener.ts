@@ -9,7 +9,7 @@
 //   1. WTF: the full engine (process()), run on WEEKLY-resampled candles,
 //      to find whichever branch is CURRENTLY governed by a live TZ BUY 2
 //      (buy.active && tzBuy2 !== null && !tzBuy2.slActive) and read its
-//      reference high -- see TZEngine.currentGoverningTzBuy2Ref().
+//      reference high -- see TZEngine.currentWtfAnchor().
 //   2. DTF: a freshly-seeded, synthetic single-branch TZEngine, run on
 //      DAILY candles, ANCHORED directly off that WTF reference (rather
 //      than via a normal TZ-GREEN breakout) -- see TZEngine.stepBuy() /
@@ -26,6 +26,12 @@
 // A stock only appears in a list while that tier is CURRENTLY still active
 // (buy.active for A-1; buy.active && tzBuy2 live for A-2) -- once its own
 // SL fires it drops off, per the "remove once it trades with SL" rule.
+//
+// "Highest High" is WTF-side, not DTF-side: the running peak of WTF's own
+// BAR/BAR 2 family (falling back to WTF's TZ BUY 2 reference until a BAR
+// has formed there), live-updating same as Activation Price -- right up
+// until that lineage's own BAR SL2 fires, at which point it freezes at
+// that pre-SL2 peak and stops tracking further WTF drift.
 
 import { ANY, Buy, Day, EPS, HistoryRowLike, ParentCycle, THRESH, TZEngine } from "./tzEngineBar2Variant";
 
@@ -100,10 +106,21 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
 
   const weekly = resampleWeekly(days);
   const wtf = new TZEngine("topref");
-  const weeklyRefs: { date: string; ref: number | null }[] = [];
+  const weeklySignals: {
+    date: string;
+    ref: number | null;
+    barPeak: number | null;
+    barSl2Fired: boolean;
+  }[] = [];
   for (let i = 1; i < weekly.length; i++) {
     wtf.process(weekly[i - 1], weekly[i]);
-    weeklyRefs.push({ date: weekly[i].date, ref: wtf.currentGoverningTzBuy2Ref() });
+    const anchor = wtf.currentWtfAnchor();
+    weeklySignals.push({
+      date: weekly[i].date,
+      ref: anchor !== null ? anchor.tzBuy2Ref : null,
+      barPeak: anchor !== null ? anchor.barPeak : null,
+      barSl2Fired: anchor !== null && anchor.barSl2Fired,
+    });
   }
 
   const dtfEngine = new TZEngine("topref");
@@ -111,12 +128,15 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
   let dtfBuy: Buy | null = null;
 
   let currentWtfRef: number | null = null;
-  let wRefIdx = 0;
+  let wSigIdx = 0;
+
+  // The screener's "Highest High" column: WTF's own BAR/BAR 2 peak, live
+  // until that lineage's BAR SL2 fires, then frozen at the pre-SL2 value.
+  let wtfHighWatermark = 0;
+  let wtfHighFrozen = false;
 
   let a1Since = "";
-  let a1HH = 0;
   let a2Since = "";
-  let a2HH = 0;
 
   for (let i = 1; i < days.length; i++) {
     const prev = days[i - 1];
@@ -124,9 +144,14 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
 
     // Only use weeks that have already closed on or before today -- a week
     // still in progress hasn't produced its final WTF read yet.
-    while (wRefIdx < weeklyRefs.length && weeklyRefs[wRefIdx].date <= cur.date) {
-      currentWtfRef = weeklyRefs[wRefIdx].ref;
-      wRefIdx += 1;
+    while (wSigIdx < weeklySignals.length && weeklySignals[wSigIdx].date <= cur.date) {
+      const sig = weeklySignals[wSigIdx];
+      currentWtfRef = sig.ref;
+      if (!wtfHighFrozen && sig.barPeak !== null) {
+        wtfHighWatermark = sig.barPeak;
+        if (sig.barSl2Fired) wtfHighFrozen = true;
+      }
+      wSigIdx += 1;
     }
 
     let ev: string[] = [];
@@ -145,26 +170,17 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
         dtfPc.redEver = true;
         dtfEngine.seedSyntheticBranch(dtfPc);
         a1Since = cur.date;
-        a1HH = cur.h;
         ev = dtfEngine.stepBuy(dtfPc, dtfBuy, prev, cur);
       }
     } else {
       ev = dtfEngine.stepBuy(dtfPc as ParentCycle, dtfBuy, prev, cur);
       if (ev.some((e) => e.startsWith("TZ BUY("))) {
         a1Since = cur.date;
-        a1HH = cur.h;
-      } else if (dtfBuy.active) {
-        a1HH = Math.max(a1HH, cur.h);
       }
     }
 
-    if (dtfBuy !== null) {
-      if (ev.some((e) => e.startsWith("TZ BUY 2("))) {
-        a2Since = cur.date;
-        a2HH = cur.h;
-      } else if (dtfBuy.tzBuy2 !== null && !dtfBuy.tzBuy2.slActive) {
-        a2HH = Math.max(a2HH, cur.h);
-      }
+    if (dtfBuy !== null && ev.some((e) => e.startsWith("TZ BUY 2("))) {
+      a2Since = cur.date;
     }
   }
 
@@ -174,7 +190,14 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
 
   return {
     tzBuy: a1Active
-      ? { symbol, name, activeAsOn: a1Since, activationPrice: dtfBuy!.refHigh, highestHigh: a1HH, currentClose }
+      ? {
+          symbol,
+          name,
+          activeAsOn: a1Since,
+          activationPrice: dtfBuy!.refHigh,
+          highestHigh: wtfHighWatermark,
+          currentClose,
+        }
       : null,
     tzBuyEntry: a2Active
       ? {
@@ -182,7 +205,7 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
           name,
           activeAsOn: a2Since,
           activationPrice: dtfBuy!.tzBuy2!.refHigh,
-          highestHigh: a2HH,
+          highestHigh: wtfHighWatermark,
           currentClose,
         }
       : null,
