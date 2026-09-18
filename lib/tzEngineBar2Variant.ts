@@ -328,23 +328,53 @@ export class TZEngine {
     return false;
   }
 
+  private barLineagesRacing(buy: Buy): boolean {
+    // A lineage whose own SL fired with no BAR 2 ever having formed is a
+    // permanent dead end -- sl.sl2 can never become true for it, so
+    // without this it would count as "still racing toward SL2" forever.
+    return buy.barLineages.some((lin) => lin.sl === null || (lin.bar2 !== null && !lin.sl.sl2));
+  }
+
   private buyCurrentlyLive(buy: Buy): boolean {
     if (!buy.active) return false;
     if (buy.rearReenter !== null) {
       if (buy.rearReenter.sl !== null) return false;
-      if (!buy.rearReenter.dormant) return true;
+      if (!buy.rearReenter.dormant) {
+        if (buy.barLineages.length > 0) return this.barLineagesRacing(buy);
+        // Real-data bug (MAXESTATES.NS): once REAR RE-ENTER 2's own SL
+        // fires with no fresh BAR cascade racing beneath it, nothing in
+        // this buy is actually live any more -- but this branch was
+        // unconditionally returning true just because REAR RE-ENTER
+        // itself hadn't failed, permanently blocking every sibling's own
+        // first TZ BUY from ever forming. REAR RE-ENTER 2's own SL
+        // already opens spawn eligibility (tipRre2Sl) -- it must release
+        // this gate too.
+        return !(buy.rearReenter.rre2 !== null && buy.rearReenter.rre2.slActive);
+      }
     } else if (buy.rear !== null) {
       if (buy.rear.sl !== null) return false;
-      if (!buy.rear.dormant) return true;
+      if (!buy.rear.dormant) {
+        if (buy.barLineages.length > 0) return this.barLineagesRacing(buy);
+        // Same fix, one tier up: REAR 2's own SL (tipRear2Sl) must also
+        // release this gate once nothing is racing beneath it.
+        return !(buy.rear.rear2 !== null && buy.rear.rear2.slActive);
+      }
     }
     if (buy.barLineages.length > 0) {
-      // A lineage whose own SL fired with no BAR 2 ever having formed is a
-      // permanent dead end -- sl.sl2 can never become true for it, so
-      // without this it would count as "still racing toward SL2" forever
-      // and wrongly keep the whole buy live.
-      return buy.barLineages.some((lin) => lin.sl === null || (lin.bar2 !== null && !lin.sl.sl2));
+      return this.barLineagesRacing(buy);
     }
-    return true;
+    // Real-data bug (MAXESTATES.NS): a plain buy whose own TZ BUY 2 has
+    // SL'd, with no BAR family or REAR ever having formed, was falling
+    // through to an unconditional true -- this buy has fully collapsed
+    // (TZ BUY 2's own SL already opens spawn eligibility, tipTzbuy2Sl,
+    // exactly like TZ BUY's own SL) but kept reporting itself as
+    // "currently live" forever, permanently blocking every OTHER branch's
+    // own redEver from ever escalating into its first TZ BUY -- confirmed
+    // real trace: branch B's RED(B) fired cleanly but TZ BUY(B) never got
+    // a chance to form for months, because a long-dead branch A's own TZ
+    // BUY 2 SL (with nothing else ever having formed for it) was silently
+    // holding this gate shut the entire time.
+    return !(buy.tzBuy2 !== null && buy.tzBuy2.slActive);
   }
 
   private milestoneBlocked(pc: ParentCycle): boolean {
@@ -1444,6 +1474,16 @@ export class TZEngine {
         r2.slActive = false;
         r2.reentryThreshold = null;
         ev.push(`REAR 2(${branchLabel(pc.id)})`);
+      } else if (cur.h > ref && cur.h - ref >= ANY) {
+        // Same fix as TZ BUY 2's own SL/recovery (real-data bug,
+        // PAYTM.NS): a new high that clears the old level but closes
+        // back below it must still raise the recovery bar, not be
+        // silently ignored -- otherwise a LATER, actually lower high
+        // could wrongly confirm "recovered" against a stale level price
+        // had already cleared and abandoned.
+        r2.refHigh = cur.h;
+        r2.reentryThreshold = cur.h;
+        ev.push(`INVALID REAR 2 HH(${branchLabel(pc.id)})`);
       }
       return ev;
     }
@@ -1517,6 +1557,16 @@ export class TZEngine {
         r2.slActive = false;
         r2.reentryThreshold = null;
         ev.push(`REAR RE-ENTER 2(${branchLabel(pc.id)})`);
+      } else if (cur.h > ref && cur.h - ref >= ANY) {
+        // Same fix as TZ BUY 2's own SL/recovery (real-data bug,
+        // PAYTM.NS): a new high that clears the old level but closes
+        // back below it must still raise the recovery bar, not be
+        // silently ignored -- otherwise a LATER, actually lower high
+        // could wrongly confirm "recovered" against a stale level price
+        // had already cleared and abandoned.
+        r2.refHigh = cur.h;
+        r2.reentryThreshold = cur.h;
+        ev.push(`INVALID REAR RE-ENTER 2 HH(${branchLabel(pc.id)})`);
       }
       return ev;
     }
