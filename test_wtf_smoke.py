@@ -799,5 +799,36 @@ assert "REAR RE-ENTER 2(A)" in j27b_events, \
     f"Test 20 FAILED: clearing the RAISED bar (110) with a confirming close must recover REAR RE-ENTER 2, got {j27b_events}"
 print("Test 20: REAR RE-ENTER 2's post-SL recovery bar correctly keeps climbing on intervening highs.\n")
 
+# ---------------------------------------------------------------------------
+# Test 21: real bug found against real data (MAXESTATES.NS) -- a fully
+# collapsed buy (its own TZ BUY 2 SL'd, with no BAR family or REAR ever
+# having formed) must NOT permanently report itself as "currently live" --
+# doing so silently blocked every OTHER branch's own red_ever from ever
+# escalating into its first TZ BUY, for months, in the real trace. Built on
+# rows9's own TZ BUY 2 SL(A) setup (which already proves the fresh sibling
+# TZ GREEN(B) spawns) -- extended here to prove B can ALSO reach its own
+# first TZ BUY, which the bug was blocking. User's exact framing: "One
+# branch TZ BUY would be active after a BAR SL2 or TZ BUY SL2. Hence... TZ
+# GREEN(N+1) CAN START FOLLOWED BY TZ BUY(N+1). It should never be a
+# problem in future."
+# ---------------------------------------------------------------------------
+rows21 = rows9 + [
+    ("i12", 90.8, 100, 95, 100),     # TZ GREEN HH(B) -> ref_high=100, keeps
+    # the "local low" for RED's own comparison well clear of pc.ref_low
+    # (90.6, from B's own formation) so the pullback below doesn't also
+    # collide with TZ GREEN's own SL boundary
+    ("i13", 94, 94, 90.5, 89),       # RED(B)
+    ("i14", 91, 102, 91, 102),       # TZ BUY(B) -- must NOT be blocked by
+    # A's fully-collapsed buy (TZ BUY 2 SL'd, no BAR/REAR ever formed)
+]
+seen21 = run(rows21, "Test 21: a fully-collapsed buy (TZ BUY 2 SL, no BAR/REAR ever formed) must not block a sibling's own first TZ BUY")
+expected21 = ["TZ GREEN(A)", "TZ BUY 2 SL(A)", "TZ GREEN(B)", "RED(B)", "TZ BUY(B)"]
+missing21 = [e for e in expected21 if e not in seen21]
+assert not missing21, f"Test 21 MISSING: {missing21}"
+i14_events = next(evs for date, evs in run.last_trace if date == "i14")
+assert "TZ BUY(B)" in i14_events, \
+    f"Test 21 FAILED: B's own first TZ BUY must not be blocked by A's fully-collapsed buy, got {i14_events}"
+print("Test 21: a fully-collapsed buy no longer blocks a sibling's own first TZ BUY.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

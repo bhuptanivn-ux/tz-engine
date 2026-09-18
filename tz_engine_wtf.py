@@ -374,6 +374,17 @@ class TZEngine:
                 return True
         return False
 
+    def _bar_lineages_racing(self, buy: Buy) -> bool:
+        # BAR 2 variant: a lineage whose own SL fired with no BAR 2 ever
+        # having formed is a permanent dead end (rulebook: "BAR SL with no
+        # BAR 2 -> straight to TZ BUY LL -> TZ BUY SL, nothing in
+        # between") -- sl.sl2 can never become True for it, so without
+        # this it would count as "still racing toward SL2" forever.
+        return any(
+            lin.sl is None or (lin.bar2 is not None and not lin.sl.sl2)
+            for lin in buy.bar_lineages
+        )
+
     def _buy_currently_live(self, buy: Buy) -> bool:
         if not buy.active:
             return False
@@ -381,25 +392,42 @@ class TZEngine:
             if buy.rear_reenter.sl is not None:
                 return False
             if not buy.rear_reenter.dormant:
-                return True
+                if buy.bar_lineages:
+                    return self._bar_lineages_racing(buy)
+                # Real-data bug (MAXESTATES.NS): once REAR RE-ENTER 2's own
+                # SL fires with no fresh BAR cascade racing beneath it,
+                # NOTHING in this buy is actually live any more -- but this
+                # branch was unconditionally returning True just because
+                # REAR RE-ENTER itself hadn't failed, permanently blocking
+                # every sibling's own first TZ BUY from ever forming.
+                # REAR RE-ENTER 2's own SL already opens spawn eligibility
+                # (tip_rre2_sl) -- it must release this gate too.
+                return not (buy.rear_reenter.rre2 is not None and buy.rear_reenter.rre2.sl_active)
         elif buy.rear is not None:
             if buy.rear.sl is not None:
                 return False
             if not buy.rear.dormant:
-                return True
+                if buy.bar_lineages:
+                    return self._bar_lineages_racing(buy)
+                # Same fix, one tier up: REAR 2's own SL (tip_rear2_sl)
+                # must also release this gate once nothing is racing
+                # beneath it.
+                return not (buy.rear.rear2 is not None and buy.rear.rear2.sl_active)
         if buy.bar_lineages:
-            # BAR 2 variant: a lineage whose own SL fired with no BAR 2
-            # ever having formed is a permanent dead end (rulebook: "BAR SL
-            # with no BAR 2 -> straight to TZ BUY LL -> TZ BUY SL, nothing
-            # in between") -- sl.sl2 can never become True for it, so
-            # without this it would count as "still racing toward SL2"
-            # forever and wrongly keep the whole buy live, blocking any new
-            # sibling TZ GREEN/TZ BUY branch from ever forming.
-            return any(
-                lin.sl is None or (lin.bar2 is not None and not lin.sl.sl2)
-                for lin in buy.bar_lineages
-            )
-        return True
+            return self._bar_lineages_racing(buy)
+        # Real-data bug (MAXESTATES.NS): a plain buy whose own TZ BUY 2 has
+        # SL'd, with no BAR family or REAR ever having formed, was falling
+        # through to an unconditional True -- this buy has fully collapsed
+        # (TZ BUY 2's own SL already opens spawn eligibility, tip_tzbuy2_sl,
+        # exactly like TZ BUY's own SL) but kept reporting itself as
+        # "currently live" forever, permanently blocking every OTHER
+        # branch's own red_ever from ever escalating into its first TZ BUY
+        # -- confirmed real trace: branch B's RED(B) fired cleanly but
+        # TZ BUY(B) never got a chance to form for months, because a
+        # long-dead branch A's own TZ BUY 2 SL (with nothing else ever
+        # having formed for it) was silently holding this gate shut the
+        # entire time.
+        return not (buy.tz_buy2 is not None and buy.tz_buy2.sl_active)
 
     def _milestone_blocked(self, pc: ParentCycle) -> bool:
         return any(pid != pc.id and other.seq > pc.seq and self._pre_today_live_buy.get(pid, False)

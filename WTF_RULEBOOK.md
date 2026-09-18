@@ -585,6 +585,52 @@ recovery, so a failed intermediate attempt never got exercised until
 real weekly data (PAYTM.NS) had several weeks between the SL and the
 eventual genuine recovery.
 
+## A fully-collapsed buy must not permanently block a sibling's first TZ BUY
+
+Bug found against real data (MAXESTATES.NS): `_buy_currently_live` decides
+whether a buy still counts as "currently live" -- and `not any(... for pc
+in self.branches.values())` over this function is the gate that a
+DIFFERENT branch's own `red_ever and buy is None` must clear before it can
+ever form its own first TZ BUY. The function correctly returned `False`
+once REAR/REAR RE-ENTER's own SL fired, and correctly checked whether a
+BAR family was still racing -- but its various fallback paths (no BAR
+family ever formed, or one existed and was later wiped by TZ BUY 2's own
+SL) all unconditionally fell through to `return True`, with no check for
+whether TZ BUY 2 / REAR 2 / REAR RE-ENTER 2's own SL had ALSO already
+fired. A buy whose entire BAR family was wiped by its own TZ BUY 2 SL --
+with no REAR ever formed -- had genuinely nothing left racing at all, yet
+kept reporting itself as "live" forever.
+
+Real trace: branch A's `TZ BUY 2 SL(A)` fired 2025-03-09 (BAR family
+already wiped, no REAR ever formed). From that point on, `any_live_buy`
+stayed `True` on every single subsequent candle -- for over a year --
+purely because of this stale, wrongly-"live" A. Branch B's own `RED(B)`
+fired cleanly on 2026-06-07, but its own `TZ BUY(B)` could not form no
+matter how large the breakout, because the `not any_live_buy` gate never
+released. User's exact framing, confirming this must never recur: "In
+almost all the stocks with history, one branch['s] TZ BUY would be active
+after a BAR SL2 or TZ BUY [2] SL. Hence... TZ GREEN(N+1) CAN START
+FOLLOWED BY TZ BUY(N+1). It should never be a problem in future. Likewise,
+new lineage can start after BAR SL2 / REAR SL2 / REAR RE-ENTER SL2 along
+with TZ BUY/TZ BUY 2 SL."
+
+Fixed by extending `_buy_currently_live`'s three fallback points
+(top-level, under a non-dormant REAR, under a non-dormant REAR RE-ENTER)
+to also return `False` when that tier's own "2" has SL'd
+(`tz_buy2.sl_active` / `rear2.sl_active` / `rre2.sl_active`) with no BAR
+lineage still racing beneath it -- exactly the same conditions already
+used for spawn eligibility (`tip_tzbuy2_sl`/`tip_rear2_sl`/`tip_rre2_sl`),
+just applied consistently to this function too. Factored the repeated
+"is any BAR lineage still racing" check into `_bar_lineages_racing` to
+keep the three call sites in sync. Test 21 covers the top-level TZ BUY 2
+case (the one the real trace hit); the REAR 2 / REAR RE-ENTER 2 cases are
+the identical pattern, one and two tiers up. Verified: full smoke suite
+(24/24) passes; re-run against the real MAXESTATES.NS file, `TZ BUY(B)`
+now correctly fires 2026-08-16 and `TZ BUY 2(B)` 2026-08-23, matching the
+real breakout exactly, with the same fix additionally confirmed working
+earlier in the same file's own history (2025-03-09's TZ BUY 2 SL(A) no
+longer blocks 2025-05-11's TZ BUY(B)).
+
 ## Open items
 
 - The `extra_reentry_floor` cross-theory hook (deferred to
