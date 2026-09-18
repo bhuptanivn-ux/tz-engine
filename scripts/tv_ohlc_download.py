@@ -96,7 +96,7 @@ def parse_listing(value: str) -> dt.date | None:
     value = (value or "").strip()
     if not value:
         return None
-    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y"):
+    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y", "%d-%b-%y", "%d-%B-%y"):
         try:
             return dt.datetime.strptime(value, fmt).date()
         except ValueError:
@@ -121,7 +121,7 @@ def load_universe(path: Path) -> list[dict[str, str]]:
                     "symbol": filename,
                     "tv_symbol": tv_symbol,
                     "name": (row.get("name") or "").strip(),
-                    "listing": "",
+                    "listing": (row.get("listing") or "").strip(),
                     "category": (row.get("category") or "other").strip(),
                 }
             )
@@ -136,11 +136,22 @@ def load_symbols(path: Path) -> list[dict[str, str]]:
             symbol = (row.get("SYMBOL") or "").strip()
             if not symbol:
                 continue
+            name = (
+                row.get("NAME OF COMPANY")
+                or row.get("NAME_OF_COMPANY")
+                or ""
+            ).strip()
+            listing = (
+                row.get(" DATE OF LISTING")
+                or row.get("DATE OF LISTING")
+                or row.get("DATE_OF_LISTING")
+                or ""
+            ).strip()
             rows.append(
                 {
                     "symbol": symbol,
-                    "name": (row.get("NAME OF COMPANY") or "").strip(),
-                    "listing": (row.get(" DATE OF LISTING") or row.get("DATE OF LISTING") or "").strip(),
+                    "name": name,
+                    "listing": listing,
                 }
             )
     return rows
