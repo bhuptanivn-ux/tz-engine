@@ -42,17 +42,13 @@ function candleKind(open: number | null, close: number | null): CandleKind {
   return "doji";
 }
 
-// Same fixed hex values as .candle-bull / .candle-bear / .candle-doji in
-// globals.css -- kept in sync manually since one lives in CSS (cell
-// backgrounds) and the other here (per-token Event text color). Doji uses
-// the --doji-event-color CSS variable instead of a flat hex: the pale doji
-// fill (#d9f9e5) has unreadable contrast on a white card in light mode
-// (but is fine light-on-dark in dark mode), so that token swaps to a
-// darker green per theme -- see globals.css.
-const CANDLE_COLOR: Record<"bull" | "bear" | "doji", string> = {
+// Row stripe (Date cell's left border) and the translucent Date/O/H/L/C
+// tint backgrounds (.candle-bull etc. in globals.css) use these same fixed
+// hex values -- kept in sync manually since one lives in CSS, one here.
+const STRIPE_COLOR: Record<"bull" | "bear" | "doji", string> = {
   bull: "#22c55e",
   bear: "#ef5350",
-  doji: "var(--doji-event-color)",
+  doji: "#15803d",
 };
 
 // Specific event kinds get their own fixed emphasis color regardless of
@@ -63,8 +59,20 @@ const EVENT_COLOR_OVERRIDE: Record<string, string> = {
   "BAR SL2": "#b91c1c",
 };
 
-function eventTokenColor(kind: string, rowCandle: CandleKind): string {
-  return EVENT_COLOR_OVERRIDE[kind] ?? CANDLE_COLOR[rowCandle ?? "bull"];
+// Event badges: background is a ~12% tint of the same color as the text,
+// so a token always reads correctly regardless of the surrounding card
+// color. For plain hex colors that's a literal alpha-suffixed hex; doji's
+// default needs to swap with the theme (see --doji-event-color/-bg in
+// globals.css) since a dark-green-on-dark-tint pairing loses contrast in
+// dark mode the same way plain text did before badges existed.
+function eventBadgeStyle(kind: string, rowCandle: CandleKind): { background: string; color: string } {
+  const override = EVENT_COLOR_OVERRIDE[kind];
+  if (override) return { background: `${override}1f`, color: override };
+  if (rowCandle === "bull" || rowCandle === "bear") {
+    const base = rowCandle === "bull" ? "#22c55e" : "#ef5350";
+    return { background: `${base}1f`, color: base };
+  }
+  return { background: "var(--doji-event-bg)", color: "var(--doji-event-color)" };
 }
 
 // Deliberately not derived from a symbol's firstTradeDate: weekly/monthly
@@ -552,7 +560,7 @@ export default function Home() {
             before it.
           </p>
           <div className="table-wrap">
-            <table>
+            <table className="ledger-table">
               <thead>
                 <tr>
                   <th>Date</th>
@@ -585,20 +593,20 @@ export default function Home() {
               <tbody>
                 {filteredRows.map((r) => {
                   const kind = candleKind(r.open, r.close);
-                  const cellClass = kind ? `candle-${kind}` : undefined;
+                  const cellClass = kind ? `candle-${kind} mono` : "mono";
+                  const stripeStyle = kind ? { borderLeft: `4px solid ${STRIPE_COLOR[kind]}` } : undefined;
                   const tokens = splitEventTokens(events.get(r.date) || "");
                   return (
                     <tr key={r.date}>
-                      <td className={cellClass}>{r.date}</td>
+                      <td className={cellClass} style={stripeStyle}>{r.date}</td>
                       <td className={cellClass}>{fmt(r.open)}</td>
                       <td className={cellClass}>{fmt(r.high)}</td>
                       <td className={cellClass}>{fmt(r.low)}</td>
                       <td className={cellClass}>{fmt(r.close)}</td>
                       <td className="event-col">
                         {tokens.map((tok, i) => (
-                          <span key={i}>
-                            {i > 0 && " + "}
-                            <span style={{ color: eventTokenColor(eventKind(tok), kind) }}>{tok}</span>
+                          <span key={i} className="event-badge" style={eventBadgeStyle(eventKind(tok), kind)}>
+                            {tok}
                           </span>
                         ))}
                       </td>

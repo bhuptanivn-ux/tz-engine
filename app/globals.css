@@ -6,12 +6,15 @@
   --border: #e2e2e5;
   --accent: #2563eb;
   --muted: #6b7280;
-  /* Doji (open == close) Event text color. The pale doji cell fill
-     (#d9f9e5) has ~1.1:1 contrast against a white card -- unreadable in
-     light mode -- but works fine as light-on-dark against the dark card,
-     so this token swaps per theme while the cell background itself stays
-     the fixed pale value in both themes. */
+  /* Doji (open == close) Event badge color. A dark green reads fine as
+     badge text on the light wash its own tint produces in light mode, but
+     that same dark-on-dark pairing loses contrast once the badge's tint
+     blends against a dark card -- so both tokens swap per theme, instead
+     of deriving the badge tint from a single fixed hex (as the bull/bear/
+     override badges do -- see the EVENT_COLOR_OVERRIDE comment in
+     page.tsx) the way the other event colors do. */
   --doji-event-color: #15803d;
+  --doji-event-bg: rgba(21, 128, 61, 0.12);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,6 +26,7 @@
     --accent: #4f8cff;
     --muted: #9aa0ab;
     --doji-event-color: #d9f9e5;
+    --doji-event-bg: rgba(217, 249, 229, 0.18);
   }
 }
 
@@ -198,29 +202,58 @@ th:first-child, td:first-child {
 
 .event-col {
   text-align: left;
-  font-weight: 700;
-  white-space: nowrap;
 }
 
-/* Candle-direction shading for the Date/Open/High/Low/Close cells --
-   fixed colors (not theme variables) matching standard up/down candle
-   colors, with numbers kept literally black in both themes so they stay
-   readable against these backgrounds regardless of light/dark mode. The
-   Event column keeps no background of its own -- see .event-col above and
-   the per-token color logic in page.tsx (candleColor / EVENT_COLOR_OVERRIDE). */
+/* The results table only -- "Terminal Ledger" typography: a monospace,
+   tabular-figure face for OHLC data paired with a plain sans for labels.
+   The rest of the page keeps the existing system-font stack. */
+.ledger-table {
+  font-family: var(--font-plex-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.ledger-table .mono {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-table thead th {
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.7rem;
+}
+
+/* Candle-direction shading for the Date/Open/High/Low/Close cells: a faint
+   translucent tint (not an opaque fill) so numbers can use the normal --fg
+   text color in both themes instead of a forced black -- the tint blends
+   correctly over either a light or dark card on its own. A solid 4px
+   left-border stripe on the Date cell (set inline in page.tsx, since the
+   color is per-row) carries the same signal more assertively. The Event
+   column keeps no background/tint of its own -- see .event-col above and
+   the per-badge color logic in page.tsx (CANDLE_COLOR / EVENT_COLOR_OVERRIDE). */
 .candle-bull {
-  background: #22c55e;
-  color: #000000;
+  background: rgba(34, 197, 94, 0.07);
 }
 
 .candle-bear {
-  background: #ef5350;
-  color: #000000;
+  background: rgba(239, 83, 80, 0.07);
 }
 
 .candle-doji {
-  background: #d9f9e5;
-  color: #000000;
+  background: rgba(21, 128, 61, 0.06);
+}
+
+/* Event tokens as small rounded badges (background + text both set inline
+   per token in page.tsx, from the same color as .candle-* / the TZ BUY 2
+   and BAR SL2 overrides) instead of plain colored bold text. */
+.event-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin: 2px 4px 2px 0;
+  white-space: nowrap;
 }
 
 .event-th {
