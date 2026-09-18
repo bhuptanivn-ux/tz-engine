@@ -131,7 +131,14 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
   let wSigIdx = 0;
 
   // The screener's "Highest High" column: WTF's own BAR/BAR 2 peak, live
-  // until that lineage's BAR SL2 fires, then frozen at the pre-SL2 value.
+  // until that lineage's BAR SL2 fires, then frozen at the pre-SL2 value
+  // -- but NOT a one-way latch: currentWtfAnchor() only ever reports on
+  // the CURRENT (newest) BAR lineage, so barSl2Fired goes back to false
+  // (and tracking resumes live) the moment a fresh BAR lineage supersedes
+  // an old, already-dead one. Without this, the first BAR SL2 a stock
+  // EVER had -- even years earlier, on a long-superseded lineage -- would
+  // freeze this value forever and produce a huge, stale gap against the
+  // stock's real current price.
   let wtfHighWatermark = 0;
   let wtfHighFrozen = false;
 
@@ -147,9 +154,21 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
     while (wSigIdx < weeklySignals.length && weeklySignals[wSigIdx].date <= cur.date) {
       const sig = weeklySignals[wSigIdx];
       currentWtfRef = sig.ref;
-      if (!wtfHighFrozen && sig.barPeak !== null) {
-        wtfHighWatermark = sig.barPeak;
-        if (sig.barSl2Fired) wtfHighFrozen = true;
+      if (sig.barPeak !== null) {
+        if (sig.barSl2Fired) {
+          // Snapshot only on the transition INTO frozen (the pre-SL2
+          // peak) -- once already frozen for this same lineage, hold that
+          // value rather than following its post-SL2 "INVALID BAR HH"
+          // drift (see currentWtfAnchor's own doc comment).
+          if (!wtfHighFrozen) wtfHighWatermark = sig.barPeak;
+          wtfHighFrozen = true;
+        } else {
+          // No SL2 on the current lineage -- either it's still live, or a
+          // fresh lineage has superseded an old frozen one. Either way,
+          // resume live tracking.
+          wtfHighWatermark = sig.barPeak;
+          wtfHighFrozen = false;
+        }
       }
       wSigIdx += 1;
     }

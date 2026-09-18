@@ -253,17 +253,25 @@ export class TZEngine {
    * — the same "tip" notion `process()` uses elsewhere.
    *
    * - `tzBuy2Ref`: the WTF anchor a DTF sequence should clear to originate.
-   * - `barPeak`: the running peak of that buy's BAR/BAR 2 family (falling
-   *   back to tzBuy2Ref itself until a BAR has formed) -- the reference the
-   *   screener's "Highest High" column tracks. BAR 2's own refHigh keeps
-   *   drifting upward even after its lineage's BAR SL2 fires (as "INVALID
-   *   BAR HH" -- see the class comments on Bar2/BarLineage), so a caller
-   *   wanting the pre-SL2 peak specifically must stop reading this field
-   *   for that lineage once `barSl2Fired` first comes back true, not just
-   *   take whatever this returns afterward.
-   * - `barSl2Fired`: true once ANY of this buy's BAR lineages has reached
-   *   its own definitive BAR SL2 (a second, deeper breakdown of that BAR's
-   *   own stop -- see the BAR SL2 branch in evalBarLineagesProgress).
+   * - `barPeak`: the peak of that buy's CURRENT (newest) BAR/BAR 2 lineage
+   *   only -- falling back to tzBuy2Ref itself until a BAR has formed --
+   *   the reference the screener's "Highest High" column tracks. An OLDER,
+   *   already-superseded lineage (the engine can always start a fresh
+   *   BAR(n+1) once the newest one is no longer pre-SL -- see the
+   *   "fresh-BAR mechanism" note at the top of this file) is deliberately
+   *   ignored here: including it would let a peak -- or an SL2 -- from a
+   *   long-dead lineage keep governing this value indefinitely. BAR 2's
+   *   own refHigh keeps drifting upward even after ITS lineage's own BAR
+   *   SL2 fires (as "INVALID BAR HH" -- see the class comments on
+   *   Bar2/BarLineage), so a caller wanting the pre-SL2 peak specifically
+   *   must stop reading this field once `barSl2Fired` first comes back
+   *   true for that same (then-newest) lineage, not just take whatever
+   *   this returns afterward once a fresh lineage has taken over.
+   * - `barSl2Fired`: true only while the CURRENT (newest) BAR lineage has
+   *   reached its own definitive BAR SL2 (a second, deeper breakdown of
+   *   that BAR's own stop -- see the BAR SL2 branch in
+   *   evalBarLineagesProgress). Goes back to false the moment a fresh BAR
+   *   lineage supersedes it.
    */
   currentWtfAnchor(): { tzBuy2Ref: number; barPeak: number; barSl2Fired: boolean } | null {
     let best: ParentCycle | null = null;
@@ -283,10 +291,11 @@ export class TZEngine {
     const tzBuy2Ref = buy.tzBuy2!.refHigh;
     let barPeak = tzBuy2Ref;
     let barSl2Fired = false;
-    for (const lin of buy.barLineages) {
-      const linPeak = lin.bar2 !== null ? lin.bar2.refHigh : lin.refHigh;
+    const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    if (newest !== null) {
+      const linPeak = newest.bar2 !== null ? newest.bar2.refHigh : newest.refHigh;
       if (linPeak > barPeak) barPeak = linPeak;
-      if (lin.sl !== null && lin.sl.sl2) barSl2Fired = true;
+      barSl2Fired = newest.sl !== null && newest.sl.sl2;
     }
     return { tzBuy2Ref, barPeak, barSl2Fired };
   }
