@@ -74,10 +74,12 @@ export default function EntryZone() {
             Scanned {scanned} stocks (Nifty 50 placeholder universe — swap in the real NSE 200
             list once it&apos;s supplied) at {lastScanned}. Simplified first version: DTF is
             anchored off WTF&apos;s current TZ BUY 2 reference and then runs independently — the
-            full pause/dormant/race WTF state machine isn&apos;t ported yet. Activation price is
-            DTF&apos;s own TZ BUY reference high (same number on both lists). Highest high is the
-            running max of WTF&apos;s own weekly high while it has a governing TZ BUY 2 — it only
-            ever climbs. % Return is the change from Activation price to Highest high.
+            full pause/dormant/race WTF state machine isn&apos;t ported yet. Activation price is a
+            one-time snapshot of DTF&apos;s own TZ BUY reference, taken when this list&apos;s
+            milestone formed (can differ between the two lists). Highest high is WTF&apos;s own
+            weekly high, live — but freezes the moment WTF hits RED2 or BAR SL2, resuming only
+            once price trades back above that frozen level. % Return is the change from
+            Activation price to Highest high.
             {errors.length > 0 && ` ${errors.length} stock(s) failed to fetch and were skipped.`}
           </p>
         )}

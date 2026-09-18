@@ -27,22 +27,29 @@
 // (buy.active for A-1; buy.active && tzBuy2 live for A-2) -- once its own
 // SL fires it drops off, per the "remove once it trades with SL" rule.
 //
-// Activation Price (BOTH dropdowns) is DTF's own TZ BUY reference high
-// (dtfBuy.refHigh) -- the level a TZ BUY ENTRY (DTF's TZ BUY 2) forms
-// above. It keeps revising live as DTF's own TZ BUY reference climbs
-// (buy.refHigh keeps tracking internally even once TZ BUY 2 exists -- see
-// the "permanently suppressed from display" comment in evalBuy), so this
-// is the same single number for a stock whether it's on the A-1 or A-2
-// list; A-2 is just the narrower "...and it's ALSO gotten TZ BUY 2
-// confirmation" subset of A-1.
+// Activation Price is a ONE-TIME snapshot, not a live value: DTF's own TZ
+// BUY reference high (dtfBuy.refHigh), captured at the exact moment the
+// relevant milestone (most recently) formed -- TZ BUY itself for the A-1
+// list, TZ BUY 2 ("TZ BUY ENTRY") for the A-2 list -- and then frozen from
+// then on. It is NOT re-read later even though buy.refHigh itself keeps
+// climbing internally forever (see the "permanently suppressed from
+// display" comment in evalBuy) -- reading it live at scan-end, as an
+// earlier version of this file did, let a DTF position that happened to
+// never hit its own SL for years just become "whatever the stock's
+// current price is", which is meaningless as an "activation" reference.
+// A-1 and A-2 can now show DIFFERENT numbers for the same stock, since
+// they snapshot at different moments (TZ BUY 2 forms after TZ BUY, so its
+// snapshot can be higher if buy.refHigh climbed in between).
 //
-// Highest High is WTF-side, not DTF-side: the running maximum of WTF's own
-// weekly High price for as long as WTF currently has a governing TZ BUY 2
-// -- no BAR-tier distinction, no freeze condition. It only ever goes up
-// (a new, higher weekly high -- whether from the same BAR continuing to
-// climb or a fresh BAR(n+1) breaking above the prior record -- always
-// updates it) and resets only if WTF's governing anchor disappears
-// entirely and a later, different one takes over.
+// Highest High IS live, WTF-side: the running maximum of WTF's own weekly
+// High price for as long as WTF currently has a governing TZ BUY 2 --
+// climbing with every new higher weekly high -- but FREEZES the moment
+// WTF hits its own RED2 or BAR SL2 (holding at whatever peak was reached
+// up to and including that week), and only resumes live tracking once
+// price later trades back ABOVE that frozen level -- at which point it
+// keeps climbing again until the next RED2/BAR SL2. Resets (restarts from
+// scratch) only if WTF's governing anchor disappears entirely and a
+// later, different one takes over.
 //
 // % Return = (Highest High - Activation Price) / Activation Price * 100.
 
@@ -120,14 +127,15 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
 
   const weekly = resampleWeekly(days);
   const wtf = new TZEngine("topref");
-  const weeklySignals: { date: string; ref: number | null; weekHigh: number }[] = [];
+  const weeklySignals: { date: string; ref: number | null; weekHigh: number; resetEvent: boolean }[] = [];
   for (let i = 1; i < weekly.length; i++) {
-    wtf.process(weekly[i - 1], weekly[i]);
+    const weekEvents = wtf.process(weekly[i - 1], weekly[i]);
     const anchor = wtf.currentWtfAnchor();
     weeklySignals.push({
       date: weekly[i].date,
       ref: anchor !== null ? anchor.tzBuy2Ref : null,
       weekHigh: weekly[i].h,
+      resetEvent: weekEvents.some((e) => e.startsWith("RED2(") || e.startsWith("BAR SL2(")),
     });
   }
 
@@ -141,13 +149,21 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
   // The screener's "Highest High" column: the running max of WTF's own
   // weekly High price for as long as WTF currently has a governing TZ
   // BUY 2 -- (re)starts from that week's own high the moment a governing
-  // anchor (re)appears, and only ever climbs from there; no BAR-tier
-  // distinction, no freeze condition.
+  // anchor (re)appears -- but FREEZES the instant WTF hits its own RED2
+  // or BAR SL2 (holding the peak reached up to and including that week),
+  // resuming live tracking only once a later week's high trades back
+  // above that frozen level.
   let wtfHighWatermark = 0;
   let wtfHighActive = false;
+  let wtfHighFrozen = false;
+  let wtfHighFrozenLevel = 0;
 
   let a1Since = "";
   let a2Since = "";
+  // Activation Price: a ONE-TIME snapshot of dtfBuy.refHigh, taken at the
+  // moment each milestone (most recently) formed -- NOT re-read later.
+  let a1ActivationPrice = 0;
+  let a2ActivationPrice = 0;
 
   for (let i = 1; i < days.length; i++) {
     const prev = days[i - 1];
@@ -162,11 +178,24 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
         if (!wtfHighActive) {
           wtfHighWatermark = sig.weekHigh;
           wtfHighActive = true;
+          wtfHighFrozen = false;
+        } else if (wtfHighFrozen) {
+          if (sig.weekHigh > wtfHighFrozenLevel) {
+            wtfHighFrozen = false;
+            wtfHighWatermark = sig.weekHigh;
+          }
+          // else: stays frozen at wtfHighFrozenLevel (wtfHighWatermark unchanged)
         } else if (sig.weekHigh > wtfHighWatermark) {
           wtfHighWatermark = sig.weekHigh;
         }
+
+        if (!wtfHighFrozen && sig.resetEvent) {
+          wtfHighFrozenLevel = wtfHighWatermark;
+          wtfHighFrozen = true;
+        }
       } else {
         wtfHighActive = false;
+        wtfHighFrozen = false;
       }
       wSigIdx += 1;
     }
@@ -188,16 +217,19 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
         dtfEngine.seedSyntheticBranch(dtfPc);
         a1Since = cur.date;
         ev = dtfEngine.stepBuy(dtfPc, dtfBuy, prev, cur);
+        a1ActivationPrice = dtfBuy.refHigh;
       }
     } else {
       ev = dtfEngine.stepBuy(dtfPc as ParentCycle, dtfBuy, prev, cur);
       if (ev.some((e) => e.startsWith("TZ BUY("))) {
         a1Since = cur.date;
+        a1ActivationPrice = dtfBuy.refHigh;
       }
     }
 
     if (dtfBuy !== null && ev.some((e) => e.startsWith("TZ BUY 2("))) {
       a2Since = cur.date;
+      a2ActivationPrice = dtfBuy.refHigh;
     }
   }
 
@@ -205,10 +237,10 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
   const a1Active = dtfBuy !== null && dtfBuy.active;
   const a2Active = a1Active && dtfBuy!.tzBuy2 !== null && !dtfBuy!.tzBuy2.slActive;
 
-  // Same activation price for both dropdowns -- DTF's own TZ BUY
-  // reference high (see the file-header comment for why).
-  const activationPrice = a1Active ? dtfBuy!.refHigh : 0;
-  const percentReturn = activationPrice > 0 ? ((wtfHighWatermark - activationPrice) / activationPrice) * 100 : 0;
+  const a1PercentReturn =
+    a1ActivationPrice > 0 ? ((wtfHighWatermark - a1ActivationPrice) / a1ActivationPrice) * 100 : 0;
+  const a2PercentReturn =
+    a2ActivationPrice > 0 ? ((wtfHighWatermark - a2ActivationPrice) / a2ActivationPrice) * 100 : 0;
 
   return {
     tzBuy: a1Active
@@ -216,9 +248,9 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
           symbol,
           name,
           activeAsOn: a1Since,
-          activationPrice,
+          activationPrice: a1ActivationPrice,
           highestHigh: wtfHighWatermark,
-          percentReturn,
+          percentReturn: a1PercentReturn,
           currentClose,
         }
       : null,
@@ -227,9 +259,9 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
           symbol,
           name,
           activeAsOn: a2Since,
-          activationPrice,
+          activationPrice: a2ActivationPrice,
           highestHigh: wtfHighWatermark,
-          percentReturn,
+          percentReturn: a2PercentReturn,
           currentClose,
         }
       : null,
