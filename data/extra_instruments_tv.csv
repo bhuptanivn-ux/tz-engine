@@ -1,0 +1,21 @@
+category,filename,tv_symbol,name
+crypto,BITCOIN,BINANCE:BTCUSDT,Bitcoin
+crypto,ETHEREUM,BINANCE:ETHUSDT,Ethereum
+crypto,SOLANA,BINANCE:SOLUSDT,Solana
+crypto,TETHER_GOLD,BINANCE:XAUTUSDT,Tether Gold
+crypto,BNB,BINANCE:BNBUSDT,BNB
+forex,USDINR,FX_IDC:USDINR,USDINR
+forex,EURINR,FX_IDC:EURINR,EURINR
+forex,GBPINR,FX_IDC:GBPINR,GBPINR
+forex,JPYINR,FX_IDC:JPYINR,JPYINR
+forex,CNYINR,FX_IDC:CNYINR,CNYINR
+international,SPX,SP:SPX,S&P 500
+international,DJI,DJ:DJI|TVC:DJI,Dow Jones Industrial Average
+international,IXIC,NASDAQ:IXIC|TVC:IXIC,NASDAQ Composite
+equities,BAJAJ-AUTO,NSE:BAJAJ_AUTO,Bajaj Auto Limited
+equities,BOSCH-HCIL,NSE:BOSCHLTD,Bosch Limited
+equities,HCL-INSYS,NSE:HCL_INSYS,HCL Infosystems Limited
+equities,KLBRENG-B,NSE:KLBRENG_B,Kilburn Engineering Ltd
+equities,MCCHRLS-B,NSE:MCCHRLS_B,Mac Charles India Ltd
+equities,NAM-INDIA,NSE:NAM_INDIA,Nippon Life India Asset Management Ltd
+equities,UMIYA-MRO,NSE:UMIYA_MRO,Umiya Buildcon Limited

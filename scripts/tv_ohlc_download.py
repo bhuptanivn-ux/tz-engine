@@ -75,6 +75,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sleep", type=float, default=0.4, help="Pause between requests")
     p.add_argument("--retries", type=int, default=3, help="Retries per symbol/timeframe")
     p.add_argument("--force", action="store_true", help="Re-download even if CSV already exists")
+    p.add_argument(
+        "--universe",
+        default=None,
+        help="CSV with category,filename,tv_symbol,name (tv_symbol may be pipe-separated fallbacks)",
+    )
     return p.parse_args()
 
 
@@ -100,6 +105,27 @@ def parse_listing(value: str) -> dt.date | None:
             except ValueError:
                 continue
     return None
+
+
+def load_universe(path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            filename = (row.get("filename") or "").strip()
+            tv_symbol = (row.get("tv_symbol") or "").strip()
+            if not filename or not tv_symbol:
+                continue
+            rows.append(
+                {
+                    "symbol": filename,
+                    "tv_symbol": tv_symbol,
+                    "name": (row.get("name") or "").strip(),
+                    "listing": "",
+                    "category": (row.get("category") or "other").strip(),
+                }
+            )
+    return rows
 
 
 def load_symbols(path: Path) -> list[dict[str, str]]:
@@ -279,6 +305,25 @@ def already_done(out_root: Path, ticker: str) -> bool:
     return all((out_root / tf / f"{ticker}.csv").is_file() for tf in TIMEFRAMES)
 
 
+def category_out_root(base: Path, category: str | None) -> Path:
+    if not category or category == "equities":
+        return base
+    return base / category
+
+
+def pick_working_symbol(candidates: list[str], token: str, retries: int) -> str:
+    last: Exception | None = None
+    for cand in candidates:
+        try:
+            fetch_with_retry(cand, "1D", 80, token, max(1, retries))
+            return cand
+        except Exception as exc:
+            last = exc
+            print(f"    candidate {cand} failed: {exc}")
+    assert last is not None
+    raise last
+
+
 def fetch_with_retry(symbol: str, interval: str, n_bars: int, token: str, retries: int) -> list[list[float]]:
     last: Exception | None = None
     for attempt in range(1, retries + 1):
@@ -296,11 +341,16 @@ def fetch_with_retry(symbol: str, interval: str, n_bars: int, token: str, retrie
 def main() -> int:
     args = parse_args()
     equity_path = Path(args.equity)
-    out_root = Path(args.out)
-    for tf in TIMEFRAMES:
-        (out_root / tf).mkdir(parents=True, exist_ok=True)
+    out_base = Path(args.out)
 
-    symbols = load_symbols(equity_path)
+    if args.universe:
+        symbols = load_universe(Path(args.universe))
+    else:
+        symbols = load_symbols(equity_path)
+        for item in symbols:
+            item["tv_symbol"] = f"NSE:{item['symbol']}"
+            item["category"] = "equities"
+
     if args.batch is not None:
         start = args.batch * args.batch_size
         symbols = symbols[start : start + args.batch_size]
@@ -313,33 +363,54 @@ def main() -> int:
         print("No symbols in this batch.")
         return 0
 
+    cats = {item.get("category") or "equities" for item in symbols}
+    for cat in cats:
+        root = category_out_root(out_base, cat)
+        for tf in TIMEFRAMES:
+            (root / tf).mkdir(parents=True, exist_ok=True)
+
     end = args.end or dt.datetime.now(IST).strftime("%d/%m/%Y")
     end_ts = parse_date(end, end_of_day=True)
     token = "unauthorized_user_token"
     if args.username:
         token = tv_login(args.username, args.password or "") or token
 
-    log_path = out_root / "download_failures.csv"
+    log_path = out_base / "download_failures.csv"
     failures: list[list[str]] = []
     ok = 0
     skipped = 0
 
-    print(f"Processing {len(symbols)} symbols -> {out_root}")
+    print(f"Processing {len(symbols)} symbols -> {out_base}")
     for i, item in enumerate(symbols, 1):
         ticker = item["symbol"]
-        tv_symbol = f"NSE:{ticker}"
-        start = effective_start(args.start, item["listing"])
+        category = item.get("category") or "equities"
+        dest_root = category_out_root(out_base, category)
+        candidates = [c.strip() for c in item["tv_symbol"].split("|") if c.strip()]
+        start = effective_start(args.start, item.get("listing") or "")
         start_ts = parse_date(start)
-        print(f"[{i}/{len(symbols)}] {tv_symbol}  start={start} listing={item['listing'] or '-'}")
+        print(
+            f"[{i}/{len(symbols)}] {ticker}  category={category}  "
+            f"candidates={candidates}  start={start}"
+        )
 
-        if not args.force and already_done(out_root, ticker):
+        if not args.force and already_done(dest_root, ticker):
             print("  skip (already downloaded)")
             skipped += 1
             continue
 
+        try:
+            tv_symbol = pick_working_symbol(candidates, token, args.retries) if len(candidates) > 1 else candidates[0]
+            if len(candidates) > 1:
+                print(f"  using {tv_symbol}")
+        except Exception as exc:
+            for tf_name in TIMEFRAMES:
+                failures.append([ticker, tf_name, str(exc)])
+            print(f"  FAILED to resolve symbol: {exc}")
+            continue
+
         all_ok = True
         for tf_name, (interval, n_bars) in TIMEFRAMES.items():
-            dest = out_root / tf_name / f"{ticker}.csv"
+            dest = dest_root / tf_name / f"{ticker}.csv"
             if dest.is_file() and not args.force:
                 print(f"  {tf_name}: exists")
                 continue
