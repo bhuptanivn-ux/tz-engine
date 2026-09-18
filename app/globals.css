@@ -261,6 +261,16 @@ th:first-child, td:first-child {
 /* Event tokens as small rounded badges (background + text both set inline
    per token in page.tsx, from the same color as .candle-* / the TZ BUY 2
    and BAR SL2 overrides) instead of plain colored bold text. */
+.return-pos {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.return-neg {
+  color: #ef5350;
+  font-weight: 600;
+}
+
 .event-badge {
   display: inline-flex;
   align-items: center;

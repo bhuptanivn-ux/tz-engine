@@ -9,6 +9,10 @@ function fmt(n: number): string {
   return n.toFixed(2);
 }
 
+function fmtPercent(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
 export default function EntryZone() {
   const [choice, setChoice] = useState<ListChoice>("tzBuyEntry");
   const [tzBuy, setTzBuy] = useState<ScreenerRow[]>([]);
@@ -70,9 +74,10 @@ export default function EntryZone() {
             Scanned {scanned} stocks (Nifty 50 placeholder universe — swap in the real NSE 200
             list once it&apos;s supplied) at {lastScanned}. Simplified first version: DTF is
             anchored off WTF&apos;s current TZ BUY 2 reference and then runs independently — the
-            full pause/dormant/race WTF state machine isn&apos;t ported yet. Highest high is
-            WTF&apos;s own BAR/BAR 2 peak (not DTF&apos;s daily price) — it keeps revising until
-            that lineage&apos;s own BAR SL2 fires, then freezes at that pre-SL2 value.
+            full pause/dormant/race WTF state machine isn&apos;t ported yet. Activation price is
+            DTF&apos;s own TZ BUY reference high (same number on both lists). Highest high is the
+            running max of WTF&apos;s own weekly high while it has a governing TZ BUY 2 — it only
+            ever climbs. % Return is the change from Activation price to Highest high.
             {errors.length > 0 && ` ${errors.length} stock(s) failed to fetch and were skipped.`}
           </p>
         )}
@@ -88,6 +93,7 @@ export default function EntryZone() {
                   <th>Active as on</th>
                   <th>{choice === "tzBuy" ? "TZ BUY entry above" : "Activation price"}</th>
                   <th>Highest high</th>
+                  <th>% Return</th>
                   <th>Current close</th>
                 </tr>
               </thead>
@@ -100,6 +106,9 @@ export default function EntryZone() {
                     <td>{r.activeAsOn}</td>
                     <td>{fmt(r.activationPrice)}</td>
                     <td>{fmt(r.highestHigh)}</td>
+                    <td className={r.percentReturn >= 0 ? "return-pos" : "return-neg"}>
+                      {fmtPercent(r.percentReturn)}
+                    </td>
                     <td>{fmt(r.currentClose)}</td>
                   </tr>
                 ))}

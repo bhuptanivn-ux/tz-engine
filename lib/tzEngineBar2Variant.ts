@@ -247,33 +247,19 @@ export class TZEngine {
 
   /**
    * Reads this engine instance's (intended to be run on WEEKLY-resampled
-   * data) currently-governing TZ BUY 2 state -- returns null when no
-   * active branch currently has a live, non-SL'd TZ BUY 2. When more than
-   * one branch qualifies, the most recently spawned one (highest seq) wins
-   * — the same "tip" notion `process()` uses elsewhere.
+   * data) currently-governing TZ BUY 2 reference -- the WTF anchor a DTF
+   * sequence should clear to originate -- or null when no active branch
+   * currently has a live, non-SL'd TZ BUY 2. When more than one branch
+   * qualifies, the most recently spawned one (highest seq) wins -- the
+   * same "tip" notion `process()` uses elsewhere.
    *
-   * - `tzBuy2Ref`: the WTF anchor a DTF sequence should clear to originate.
-   * - `barPeak`: the peak of that buy's CURRENT (newest) BAR/BAR 2 lineage
-   *   only -- falling back to tzBuy2Ref itself until a BAR has formed --
-   *   the reference the screener's "Highest High" column tracks. An OLDER,
-   *   already-superseded lineage (the engine can always start a fresh
-   *   BAR(n+1) once the newest one is no longer pre-SL -- see the
-   *   "fresh-BAR mechanism" note at the top of this file) is deliberately
-   *   ignored here: including it would let a peak -- or an SL2 -- from a
-   *   long-dead lineage keep governing this value indefinitely. BAR 2's
-   *   own refHigh keeps drifting upward even after ITS lineage's own BAR
-   *   SL2 fires (as "INVALID BAR HH" -- see the class comments on
-   *   Bar2/BarLineage), so a caller wanting the pre-SL2 peak specifically
-   *   must stop reading this field once `barSl2Fired` first comes back
-   *   true for that same (then-newest) lineage, not just take whatever
-   *   this returns afterward once a fresh lineage has taken over.
-   * - `barSl2Fired`: true only while the CURRENT (newest) BAR lineage has
-   *   reached its own definitive BAR SL2 (a second, deeper breakdown of
-   *   that BAR's own stop -- see the BAR SL2 branch in
-   *   evalBarLineagesProgress). Goes back to false the moment a fresh BAR
-   *   lineage supersedes it.
+   * The screener's "Highest High" column does NOT read anything BAR-tier
+   * specific from here -- it's simply the running max of WTF's own weekly
+   * High price for as long as this returns non-null (see
+   * lib/dtfWtfScreener.ts), so this only needs to report whether/what is
+   * currently governing, not any deeper BAR-family state.
    */
-  currentWtfAnchor(): { tzBuy2Ref: number; barPeak: number; barSl2Fired: boolean } | null {
+  currentWtfAnchor(): { tzBuy2Ref: number } | null {
     let best: ParentCycle | null = null;
     for (const pc of this.branches.values()) {
       if (
@@ -288,16 +274,7 @@ export class TZEngine {
     }
     if (best === null) return null;
     const buy = best.buy as Buy;
-    const tzBuy2Ref = buy.tzBuy2!.refHigh;
-    let barPeak = tzBuy2Ref;
-    let barSl2Fired = false;
-    const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    if (newest !== null) {
-      const linPeak = newest.bar2 !== null ? newest.bar2.refHigh : newest.refHigh;
-      if (linPeak > barPeak) barPeak = linPeak;
-      barSl2Fired = newest.sl !== null && newest.sl.sl2;
-    }
-    return { tzBuy2Ref, barPeak, barSl2Fired };
+    return { tzBuy2Ref: buy.tzBuy2!.refHigh };
   }
 
   /**
