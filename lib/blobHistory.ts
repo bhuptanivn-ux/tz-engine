@@ -34,12 +34,22 @@ export function blobLocationForSymbol(
   return { segment, ticker };
 }
 
-async function findBlobUrl(pathname: string): Promise<string | null> {
+async function findBlobUrl(pathname: string): Promise<string> {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!token) return null;
+  if (!token) {
+    throw new Error("BLOB_READ_WRITE_TOKEN is not set in this environment.");
+  }
   const { blobs } = await list({ prefix: pathname, token, limit: 10 });
   const match = blobs.find((b) => b.pathname === pathname);
-  return match ? match.url : null;
+  if (!match) {
+    const nearby = blobs.map((b) => b.pathname).join(", ");
+    throw new Error(
+      `No blob at path "${pathname}" (token present, list() returned ${blobs.length} result(s)` +
+        (nearby ? `: ${nearby}` : "") +
+        ").",
+    );
+  }
+  return match.url;
 }
 
 function splitCsvLine(line: string): string[] {
@@ -136,9 +146,12 @@ function parseCsvToHistory(text: string): HistoryRow[] {
 }
 
 /**
- * Returns history for `symbol` from Blob storage if we have it there,
- * or `null` if the symbol/timeframe isn't uploaded (caller should fall
- * back to another source) -- never throws for a plain "not found".
+ * Returns history for `symbol` from Blob storage if we have it there, or
+ * `null` only for the one expected non-error case: the symbol's suffix
+ * isn't mapped to a Blob segment (e.g. not ".NS"). Every other failure
+ * (missing token, path not found, empty/unreadable file) throws with a
+ * specific message so the caller (lib/marketData.ts) can surface exactly
+ * why Blob was skipped, instead of a generic "no data" message.
  */
 export async function fetchHistoryFromBlob(
   symbol: string,
@@ -153,14 +166,17 @@ export async function fetchHistoryFromBlob(
   const pathname = `data/${location.segment}/${timeframe}/${location.ticker}.csv`;
 
   const url = await findBlobUrl(pathname);
-  if (!url) return null;
 
   const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    throw new Error(`Blob file fetch failed with status ${res.status} for "${pathname}".`);
+  }
 
   const text = await res.text();
   const rows = parseCsvToHistory(text);
-  if (rows.length === 0) return null;
+  if (rows.length === 0) {
+    throw new Error(`Blob file "${pathname}" had no parseable OHLC rows (length ${text.length}).`);
+  }
 
   return rows.filter((r) => r.date >= start && r.date <= end);
 }
