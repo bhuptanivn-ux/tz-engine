@@ -870,5 +870,36 @@ assert "RED1(A)" in j23_events, \
     f"Test 22 FAILED: a fresh RED1 must attach to the live BAR lineage even while REAR stays non-dormant, got {j23_events}"
 print("Test 22: a BAR lineage's own RED1/RED2 progress correctly continues even while REAR stays non-dormant.\n")
 
+# ---------------------------------------------------------------------------
+# Test 23: real crash found against real data (ADANIENT, 2018-03-05) --
+# _eval_buy snapshots red1_preexisting_at_buy_level at the very top of the
+# method, BEFORE _eval_tzbuy2 (called later that same candle) can fire TZ
+# BUY 2's own decisive SL and wipe buy.red1 to None. Trusting the stale
+# snapshot let a candle where both things happen at once still fall into
+# the "RED1 already exists" branch with buy.red1 now None, crashing
+# _eval_red1_generic on None.ref_high. Fix: re-check buy.red1 fresh at the
+# point of use instead of trusting the snapshot. Confirmed this exact
+# sequence crashes under the pre-fix code with
+# "AttributeError: 'NoneType' object has no attribute 'ref_high'" at n6.
+# ---------------------------------------------------------------------------
+rows23 = [
+    ("n0", 100, 100, 99.0, 99.5),
+    ("n1", 100, 101, 99.2, 101),      # TZ GREEN(A)
+    ("n1b", 100.5, 100.5, 99.5, 100), # consolidation
+    ("n2", 99.4, 100, 99.3, 99.4),    # RED(A)
+    ("n3", 99.5, 102, 99.4, 102),     # TZ BUY(A) ref_high=102 ref_low=99.4
+    ("n4", 99.5, 103, 99.5, 103),     # TZ BUY 2(A) via rally -- ref_high=103 ref_low=99.5
+    ("n4b", 100, 106, 100, 106),      # rally -- TZ BUY 2 HH -> 106, local low raised to 100
+    ("n4c", 100.5, 107, 100.5, 107),  # rally -- TZ BUY 2 HH -> 107, local low raised to 100.5
+    ("n5", 103, 104, 99.8, 99.6),     # RED1(A) attaches
+    ("n6", 99.6, 99.8, 99.25, 99.3),  # fires TZ BUY 2 SL(A), wiping buy.red1
+    # on the SAME candle -- must not crash
+]
+seen23 = run(rows23, "Test 23: TZ BUY 2 SL wiping buy.red1 on the same candle a stale RED1 snapshot would have trusted")
+expected23 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "RED1(A)", "TZ BUY 2 SL(A)"]
+missing23 = [e for e in expected23 if e not in seen23]
+assert not missing23, f"Test 23 MISSING: {missing23}"
+print("Test 23: TZ BUY 2 SL correctly wipes a same-candle RED1 without crashing on the stale snapshot.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

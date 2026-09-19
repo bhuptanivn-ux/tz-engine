@@ -693,6 +693,52 @@ the highest-impact fix found so far this session; treat any REAR-adjacent
 BAR-family analysis on other long-history tickers as suspect until
 re-verified against this fix.
 
+## Crash fix: a stale RED1-preexistence snapshot could outlive the same-candle TZ BUY 2 SL that wipes it (ADANIENT.NS, 2018-03-05)
+
+`_eval_buy` computes `red1_preexisting_at_buy_level` once, near the very
+top of the method, as a snapshot of whether `buy.red1` already existed
+BEFORE any of that candle's processing runs. Later in the same method,
+after several other tiers have already been evaluated (including
+`_eval_tzbuy2`, which can fire TZ BUY 2's own decisive SL and wipe
+`buy.red1` back to `None` as part of that collapse), the code used to
+branch on the STALE snapshot instead of re-checking `buy.red1` fresh:
+
+```python
+elif not red1_preexisting_at_buy_level:
+    ...attach a fresh RED1...
+else:
+    ev += self._eval_red1_generic(pc, buy, buy, prev, cur)
+```
+
+On a candle where TZ BUY 2's own SL fires and wipes `buy.red1` to `None`,
+the stale snapshot (taken before that wipe) could still read `True`
+("RED1 already existed"), sending execution into the `else` branch with
+`buy.red1` now `None` -- crashing `_eval_red1_generic` on
+`None.ref_high` with `AttributeError: 'NoneType' object has no attribute
+'ref_high'`.
+
+This is the same "stale pre-candle snapshot" bug class already called out
+elsewhere in this file's own comments, just one that had never actually
+been hit by a same-candle wipe until this dataset did.
+
+**Fix**: re-check `buy.red1` fresh at the point of use instead of
+trusting the early snapshot:
+
+```python
+elif buy.red1 is None or not buy.red1.active:
+    ...attach a fresh RED1...
+else:
+    ev += self._eval_red1_generic(pc, buy, buy, prev, cur)
+```
+
+Real trace: ADANIENT.csv (2006-09-18 to 2026-09-15, 1044 rows) crashed
+exactly at 2018-03-05 with the `AttributeError` above. Test 23 reproduces
+the same shape synthetically (RED1 attaches on `n5`; TZ BUY 2's own SL
+fires on `n6`, wiping `buy.red1` on that same candle) -- confirmed this
+exact sequence crashes under the pre-fix code, and the fixed code
+processes it (and the full 1044-row ADANIENT dataset, 507 event-days)
+cleanly with no crash.
+
 ## Open items
 
 - The `extra_reentry_floor` cross-theory hook (deferred to

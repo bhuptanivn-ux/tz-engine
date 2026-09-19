@@ -1001,7 +1001,20 @@ class TZEngine:
             ev += self._check_bar_pending(pc, buy, prev, cur)
         elif not buy.active:
             pass
-        elif not red1_preexisting_at_buy_level:
+        elif buy.red1 is None or not buy.red1.active:
+            # Real-data bug (ADANIENT, crash): re-checks buy.red1 FRESH here
+            # instead of trusting red1_preexisting_at_buy_level, which was
+            # snapshotted at the very top of this method, BEFORE
+            # _eval_tzbuy2 (called later this same candle) can wipe
+            # buy.red1 to None via TZ BUY 2's own decisive SL. Trusting the
+            # stale snapshot let a candle where TZ BUY 2's SL fires and
+            # buy.red1 is wiped in the same breath still fall into the
+            # `else` below with buy.red1 now None, crashing
+            # _eval_red1_generic (same ordering-bug class as every other
+            # "pre-today" snapshot in this file, just one that was never
+            # actually reactive to a same-candle wipe until this dataset
+            # hit it).
+            #
             # TZ BUY 2 gate: mirrors BAR 2 gating RED1 on a BAR lineage --
             # a fresh RED1 cannot attach to TZ BUY unless TZ BUY 2 is
             # currently ACTIVE, not merely "has existed once" (explicit user
