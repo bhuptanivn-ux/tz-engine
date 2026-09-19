@@ -922,12 +922,28 @@ export class TZEngine {
     } else if (barConfirmsToday) {
       ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(")));
       ev.push(...this.checkBarPending(pc, buy, prev, cur, false));
+    } else if (buy.barLineages.length > 0) {
+      // Real-data bug (NSEI): once a fresh BAR(1) cascade forms under
+      // REAR 2's own dual role, this branch MUST take priority over
+      // REAR/REAR RE-ENTER's own RED1 attachment below -- per the
+      // confirmed design ("only the NEWEST lineage ever participates in
+      // RED1/RED2"), the BAR lineage is now the tier RED1/RED2/its own
+      // SL/SL2 belong to, not REAR. Checking rear.dormant first (the
+      // previous ordering) was wrong: REAR never goes dormant on its own
+      // just because a BAR cascade formed under it, so that ordering let
+      // REAR's own (already-consumed) redEver permanently block a fresh
+      // RED1 from ever attaching to this lineage again -- confirmed real
+      // trace: a lineage sat frozen for months with no RED1/RED2/BAR
+      // SL/BAR SL2 ever checked again, because REAR (still non-dormant,
+      // its own RED1/RED2 already used up) kept winning this branch
+      // every single candle. REAR/REAR RE-ENTER's own HH/LL/SL tracking
+      // is unaffected -- that already runs unconditionally above,
+      // regardless of this dispatch.
+      ev.push(...this.evalBarLineagesProgress(pc, buy, prev, cur, preTodayBar2Ref));
     } else if (buy.rearReenter !== null && !buy.rearReenter.dormant) {
       ev.push(...this.evalRearReenterProgress(pc, buy, buy.rearReenter, prev, cur));
     } else if (buy.rearReenter === null && buy.rear !== null && !buy.rear.dormant) {
       ev.push(...this.evalRearProgress(pc, buy, buy.rear, prev, cur));
-    } else if (buy.barLineages.length > 0) {
-      ev.push(...this.evalBarLineagesProgress(pc, buy, prev, cur, preTodayBar2Ref));
     } else if (buy.barPending && buy.active) {
       ev.push(...this.checkBarPending(pc, buy, prev, cur, true));
     } else if (!buy.active) {
