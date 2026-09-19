@@ -1135,6 +1135,20 @@ export class TZEngine {
         if (hasRed2Ever(stageObj)) {
           stageObj.red2Ever = true;
         }
+        if (stageObj instanceof BarLineage && stageObj.bar2 === null) {
+          // User rule: RED1/RED2 completing against a BAR generation that
+          // never got its own confirming BAR 2 is a failure pattern,
+          // exactly like a no-BAR-2 BAR SL -- this generation never
+          // "really amounted to anything", so it terminates outright and
+          // frees its label for reuse, same as the no-BAR-2 dead-end
+          // mechanism elsewhere in this file.
+          const idx = buy.barLineages.indexOf(stageObj);
+          if (idx !== -1) {
+            buy.barLineages.splice(idx, 1);
+            const n = parseInt(stageObj.label.split(".").pop() as string, 10);
+            buy.barDeadLabels.add(n);
+          }
+        }
         this.clearForNewBarGeneration(buy);
       } else {
         red1.refLow = cur.l;
@@ -1370,10 +1384,19 @@ export class TZEngine {
   }
 
   // Forms off lin's own reference high, only while lin itself is pre-SL.
-  // Gates RED1/RED2 on lin, and gates BAR SL2 being reachable at all. Has
-  // its own independent SL/recovery cycle -- no escalation. Frozen (no
-  // independent recovery) once lin's own SL fires, but keeps quietly
-  // climbing as INVALID BAR HH.
+  // Gates BAR SL2 being reachable at all (no BAR 2 = SL is a permanent
+  // dead end). Has its own independent SL/recovery cycle -- no
+  // escalation. Frozen (no independent recovery) once lin's own SL
+  // fires, but keeps quietly climbing as INVALID BAR HH.
+  //
+  // Does NOT gate RED1/RED2 (user rule reversal, ADANIENT.NS real data):
+  // RED1 attaches to a BAR lineage on the shape test alone, whether or
+  // not this lineage's own BAR 2 has ever formed -- see
+  // evalBarLineagesProgress's attachFreshRed1 call. If RED2 then
+  // completes while bar2 is still null, the lineage terminates outright
+  // and frees its label, exactly like a no-BAR-2 BAR SL already did (see
+  // evalRed1Generic). If BAR 2 already existed, nothing changes -- the
+  // lineage survives and keeps racing in parallel.
   private evalBar2(
     pc: ParentCycle,
     buy: Buy,
@@ -1644,9 +1667,13 @@ export class TZEngine {
           const red1Preexisting = buy.red1 !== null && buy.red1.active;
           if (red1Preexisting) {
             linEv.push(...this.evalRed1Generic(pc, buy, lin, prev, cur));
-          } else if (lin.bar2 !== null && !lin.red2Ever) {
-            // A fresh RED1 cannot attach to this lineage until its own
-            // BAR 2 has formed.
+          } else if (!lin.red2Ever) {
+            // User rule reversal: RED1 no longer requires this lineage's
+            // own BAR 2 to exist first -- it attaches on the shape test
+            // alone, whether or not BAR 2 has ever formed. If RED2 then
+            // completes with bar2 still null, evalRed1Generic terminates
+            // this lineage outright (see there) rather than letting it
+            // keep racing, mirroring the no-BAR-2 SL dead end.
             linEv.push(...this.attachFreshRed1(pc, buy, lin, prev, cur));
           }
         }
