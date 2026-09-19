@@ -178,7 +178,10 @@ export async function fetchHistoryFromBlob(
     headers: token ? { authorization: `Bearer ${token}` } : undefined,
   });
   if (!res.ok) {
-    throw new Error(`Blob file fetch failed with status ${res.status} for "${pathname}".`);
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `Blob file fetch failed with status ${res.status} for "${pathname}". URL: ${url}. Body: ${body.slice(0, 300)}`
+    );
   }
 
   const text = await res.text();
