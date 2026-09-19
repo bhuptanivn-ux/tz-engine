@@ -1,12 +1,20 @@
 import { NextResponse } from "next/server";
-import { fetchHistory } from "@/lib/yahoo";
+import { fetchHistory } from "@/lib/marketData";
 import { scanStock, ScreenerRow } from "@/lib/dtfWtfScreener";
 import { SCREENER_UNIVERSE } from "@/lib/screenerUniverse";
 
 // Scanning the whole universe means one full-history fetch per stock, run
 // through two engine passes each -- give it real headroom rather than the
-// platform's short default.
-export const maxDuration = 60;
+// platform's short default. The universe grew from 50 stocks to the full
+// NSE list (2,578) now that fetchHistory checks Blob storage first (faster,
+// no live-API round trip) -- but this is still untested at that scale in
+// production. 300s is the ceiling this code asks for; Vercel's Hobby plan
+// hard-caps functions at 60s regardless (Pro/Fluid Compute allow more). If
+// this route times out or the plan doesn't allow the higher duration,
+// options are: raise concurrency further, cache scan results and refresh
+// on a schedule instead of per-request, or split the universe into
+// multiple parallel requests from the client.
+export const maxDuration = 300;
 
 // Same reasoning as the main page's ENGINE_HISTORY_FLOOR: request from far
 // enough back that Yahoo returns everything it has, since both the WTF and
@@ -38,7 +46,7 @@ export async function GET() {
   const tzBuyEntry: ScreenerRow[] = [];
   const errors: string[] = [];
 
-  await mapWithConcurrency(SCREENER_UNIVERSE, 8, async (entry) => {
+  await mapWithConcurrency(SCREENER_UNIVERSE, 24, async (entry) => {
     try {
       const rows = await fetchHistory(entry.symbol, ENGINE_HISTORY_FLOOR, end, "1d");
       const result = scanStock(entry.symbol, entry.name, rows);

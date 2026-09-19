@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchHistory, Interval } from "@/lib/yahoo";
+import { fetchHistory, Interval } from "@/lib/marketData";
 
 const SYMBOL_RE = /^[A-Za-z0-9.\-^&]{1,20}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
