@@ -1,0 +1,64 @@
+category,filename,tv_symbol,name
+indexes,NIFTY,NSE:NIFTY,Nifty 50
+indexes,BANKNIFTY,NSE:BANKNIFTY,Nifty Bank
+indexes,NIFTY_SMALLCAP_100,NSE:CNXSMALLCAP,Nifty SmallCap 100
+indexes,NIFTY_200,NSE:CNX200,Nifty 200
+indexes,NIFTY_500,NSE:CNX500,Nifty 500
+indexes,NIFTY_IT,NSE:CNXIT,Nifty IT
+indexes,NIFTY_AUTO,NSE:CNXAUTO,Nifty Auto
+indexes,NIFTY_FMCG,NSE:CNXFMCG,Nifty FMCG
+indexes,NIFTY_PHARMA,NSE:CNXPHARMA,Nifty Pharma
+indexes,NIFTY_100,NSE:CNX100,Nifty 100
+indexes,INDIAVIX,NSE:INDIAVIX,India VIX
+indexes,SENSEX,BSE:SENSEX,BSE Sensex
+indexes,NIFTY_OIL_AND_GAS,NSE:NIFTY_OIL_AND_GAS,Nifty Oil and Gas
+indexes,NIFTY_COMMODITIES,NSE:CNXCOMMODITIES,Nifty Commodities
+indexes,NIFTY_FINANCIAL_SERVICES,NSE:CNXFINANCE,Nifty Financial Services
+commodities,ALUMINI,MCX:ALUMINI,Aluminium Mini
+commodities,ALUMINIUM,MCX:ALUMINIUM,Aluminium
+commodities,COPPER,MCX:COPPER,Copper
+commodities,CARDAMOM,MCX:CARDAMOM,Cardamom
+commodities,COTTON,MCX:COTTON,Cotton
+commodities,COTTONOIL,MCX:COTTONOIL,Cotton Oil
+commodities,CRUDEOILM,MCX:CRUDEOILM,Crude Oil Mini
+commodities,CRUDEOIL,MCX:CRUDEOIL,Crude Oil
+commodities,GOLD,MCX:GOLD,Gold
+commodities,GOLDGUINEA,MCX:GOLDGUINEA,Gold Guinea
+commodities,GOLDM,MCX:GOLDM,Gold Mini
+commodities,GOLDPETAL,MCX:GOLDPETAL,Gold Petal
+commodities,GOLDTEN,MCX:GOLDTEN,Gold Ten
+commodities,KAPAS,MCX:KAPAS,Kapas
+commodities,LEADMINI,MCX:LEADMINI,Lead Mini
+commodities,LEAD,MCX:LEAD,Lead
+commodities,MENTHAOIL,MCX:MENTHAOIL,Mentha Oil
+commodities,NATGASMINI,MCX:NATGASMINI,Natural Gas Mini
+commodities,NATURALGAS,MCX:NATURALGAS,Natural Gas
+commodities,NICKEL,MCX:NICKEL,Nickel
+commodities,SILVER,MCX:SILVER,Silver
+commodities,SILVERM,MCX:SILVERM,Silver Mini
+commodities,SILVERMIC,MCX:SILVERMIC,Silver Micro
+commodities,STEELREBAR,MCX:STEELREBAR,Steel Rebar
+commodities,ZINCMINI,MCX:ZINCMINI,Zinc Mini
+commodities,ZINC,MCX:ZINC,Zinc
+commodities,MCXBULLDEX,MCX:MCXBULLDEX,MCX ICOMDEX Bullion
+commodities,MCXMETLDEX,MCX:MCXMETLDEX,MCX ICOMDEX Base Metal
+crypto,BITCOIN,BINANCE:BTCUSDT,Bitcoin
+crypto,ETHEREUM,BINANCE:ETHUSDT,Ethereum
+crypto,SOLANA,BINANCE:SOLUSDT,Solana
+crypto,TETHER_GOLD,BINANCE:XAUTUSDT,Tether Gold
+crypto,BNB,BINANCE:BNBUSDT,BNB
+forex,USDINR,FX_IDC:USDINR|ICE:USDINR|NSE:USDINR,USDINR
+forex,EURINR,FX_IDC:EURINR|ICE:EURINR|NSE:EURINR,EURINR
+forex,GBPINR,FX_IDC:GBPINR|ICE:GBPINR|NSE:GBPINR,GBPINR
+forex,JPYINR,FX_IDC:JPYINR|ICE:JPYINR|NSE:JPYINR,JPYINR
+forex,CNYINR,FX_IDC:CNYINR|ICE:CNYINR,CNYINR
+international,SPX,SP:SPX|TVC:SPX,S&P 500
+international,DJI,DJ:DJI|TVC:DJI,Dow Jones Industrial Average
+international,IXIC,NASDAQ:IXIC|TVC:IXIC,NASDAQ Composite
+equities,BAJAJ-AUTO,NSE:BAJAJ_AUTO,Bajaj Auto Limited
+equities,BOSCH-HCIL,NSE:BOSCH_HCIL|NSE:BOSCHLTD,Bosch
+equities,HCL-INSYS,NSE:HCL_INSYS,HCL Infosystems Limited
+equities,KLBRENG-B,NSE:KLBRENG_B,Kilburn Engineering Ltd
+equities,MCCHRLS-B,NSE:MCCHRLS_B,Mac Charles India Ltd
+equities,NAM-INDIA,NSE:NAM_INDIA,Nippon Life India Asset Management Ltd
+equities,UMIYA-MRO,NSE:UMIYA_MRO,Umiya Buildcon Limited
