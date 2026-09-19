@@ -57,7 +57,17 @@ TIMEFRAMES = {
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EQUITY = ROOT / "data" / "EQUITY_L.csv"
-DEFAULT_OUT = ROOT / "data" / "historical"
+DEFAULT_OUT = ROOT / "data"
+
+CATEGORY_DIRS = {
+    "equities": "NSE",
+    "sme": "SME",
+    "commodities": "Commodities",
+    "indexes": "Indexes",
+    "crypto": "CRYPTO",
+    "forex": "Forex",
+    "international": "International Indexes",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -317,9 +327,10 @@ def already_done(out_root: Path, ticker: str) -> bool:
 
 
 def category_out_root(base: Path, category: str | None) -> Path:
-    if not category or category == "equities":
-        return base
-    return base / category
+    folder = CATEGORY_DIRS.get(category or "equities")
+    if folder:
+        return base / folder
+    return base / (category or "other")
 
 
 def pick_working_symbol(candidates: list[str], token: str, retries: int) -> str:
