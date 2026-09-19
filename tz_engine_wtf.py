@@ -53,8 +53,18 @@ Specifics:
   occurred last". Always opens spawn eligibility.
 - BAR 2 forms off its own BAR lineage's reference high (Low >= PrevLow,
   High > ref by >= 0.20, Close >= ref), only while the lineage is pre-SL.
-  Gates RED1/RED2 on its lineage and gates BAR SL2 being reachable at all.
-  Does NOT persist through BAR-level reactivation.
+  Gates BAR SL2 being reachable at all (no BAR 2 = SL is a permanent dead
+  end). Does NOT persist through BAR-level reactivation.
+- RED1/RED2 on a BAR lineage does NOT require that lineage's own BAR 2 to
+  exist first (user rule reversal, ADANIENT.NS real data: an entire year
+  of RED1-shaped pullbacks inside a BAR's own range were being silently
+  absorbed as plain "BAR LL" resets because BAR 2 never formed) -- RED1
+  attaches on the shape test alone, same as everywhere else. If RED2 then
+  completes while that lineage's own BAR 2 is still None, the lineage is a
+  genuine dead end (it never got confirmed) and terminates outright,
+  freeing its label for reuse -- exactly like a no-BAR-2 BAR SL already
+  did. If BAR 2 already existed when RED2 completes, the lineage survives
+  and keeps racing in parallel, unchanged from before.
 - Multi-lineage racing: an older, already-post-SL lineage that already has
   its own BAR 2 and hasn't shown INVALID BAR SL yet is NEVER terminated
   just because a fresh independent BAR(n+1) forms elsewhere -- it keeps
@@ -1158,6 +1168,17 @@ class TZEngine:
                 ev.append(f"RED2({branch_label(pc.id)})")
                 if isinstance(stage_obj, (BarLineage, Rear, RearReenter)):
                     stage_obj.red2_ever = True
+                if isinstance(stage_obj, BarLineage) and stage_obj.bar2 is None:
+                    # User rule: RED1/RED2 completing against a BAR
+                    # generation that never got its own confirming BAR 2 is
+                    # a failure pattern, exactly like a no-BAR-2 BAR SL --
+                    # this generation never "really amounted to anything",
+                    # so it terminates outright and frees its label for
+                    # reuse, same as the no-BAR-2 dead-end mechanism below.
+                    if stage_obj in buy.bar_lineages:
+                        buy.bar_lineages.remove(stage_obj)
+                        n = int(stage_obj.label.rsplit(".", 1)[-1])
+                        buy.bar_dead_labels.add(n)
                 self._clear_for_new_bar_generation(buy)
             else:
                 red1.ref_low = cur.l
@@ -1589,9 +1610,14 @@ class TZEngine:
                     red1_preexisting = buy.red1 is not None and buy.red1.active
                     if red1_preexisting:
                         ev += self._eval_red1_generic(pc, buy, lin, prev, cur)
-                    elif lin.bar2 is not None and not lin.red2_ever:
-                        # BAR 2 variant gate: a fresh RED1 cannot attach to
-                        # this lineage until its own BAR 2 has formed.
+                    elif not lin.red2_ever:
+                        # User rule reversal: RED1 no longer requires this
+                        # lineage's own BAR 2 to exist first -- it attaches
+                        # on the shape test alone, whether or not BAR 2 has
+                        # ever formed. If RED2 then completes with bar2
+                        # still None, _eval_red1_generic terminates this
+                        # lineage outright (see there) rather than letting
+                        # it keep racing, mirroring the no-BAR-2 SL dead end.
                         ev += self._attach_fresh_red1(pc, buy, lin, prev, cur)
                 continue
 

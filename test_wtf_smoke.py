@@ -901,5 +901,60 @@ missing23 = [e for e in expected23 if e not in seen23]
 assert not missing23, f"Test 23 MISSING: {missing23}"
 print("Test 23: TZ BUY 2 SL correctly wipes a same-candle RED1 without crashing on the stale snapshot.\n")
 
+# ---------------------------------------------------------------------------
+# Test 24: user rule reversal, ADANIENT.NS real data -- RED1/RED2 no longer
+# requires a BAR lineage's own BAR 2 to exist first. Previously, an entire
+# year of RED1-shaped pullbacks inside BAR(C.2)'s own range (ADANIENT.NS,
+# 2018-12-03 through 2019-10-22) were silently absorbed as plain "BAR LL"
+# reference updates because BAR 2(C.2) never formed -- RED1 could not
+# attach at all. User's exact framing: "I believe any RED 1 - RED 2
+# OCCURING WITHIN THE RANGE (HIGH AND LOW) OF BAR 1 are not being
+# considered... The correct logic is: If BAR A.1 - RED 1 - RED 2
+# (OCCURING WITHIN THE RANGE OF BAR A.1) - BAR A.1. Hence, RED 1 - RED 2
+# AFTER BAR A.1 will terminate the BAR A.1 and will lead to another BAR
+# (when BAR occurs) with the same name as it will be available."
+#
+# Built on rows1 (reaches BAR(A.1), ref_high=100 ref_low=85.0, with NO
+# BAR 2 ever having formed for it): a deep dip+reclaim buffers the
+# lineage's own ref_low down to 60 (BAR LL, not SL -- close reclaims well
+# above it), a consolidation candle raises the local low to 87 without
+# setting a new low, then a genuine two-candle RED1 shape against that
+# consolidation candle attaches (k2) while staying comfortably above the
+# lineage's own ref_low (62 vs 60 -- no BAR SL collision), RED2 confirms
+# (k3, again staying above ref_low), and a fresh breakout (k4) reforms
+# BAR(A.1) -- same label, reused because RED2 completing while bar2 was
+# still None terminated the old A.1 and freed it, exactly as specified.
+# Discriminates cleanly against the pre-fix code: k2/k3/k4 all fire
+# nothing there (RED1 blocked by the old BAR-2 gate; k4's breakout (65)
+# doesn't clear the still-alive old lineage's frozen ref_high of 100).
+# ---------------------------------------------------------------------------
+rows24 = rows1 + [
+    ("k1", 84, 84.5, 60.0, 90),       # deep dip+reclaim -- BAR LL(A.1), lineage's
+    # own ref_low drops to 60 (close reclaims well above it, so BAR SL does not fire)
+    ("k1b", 88, 90, 87, 89),          # consolidation -- local low raised to 87,
+    # no new low set, lineage's own ref_low stays at 60
+    ("k2", 87.5, 88, 62, 63),         # genuine RED1 shape vs k1b (h<=90, l<87 by
+    # >=0.20, c<=87) -- attaches with NO BAR 2 ever having formed for this lineage
+    ("k3", 61.2, 61.5, 61.0, 61.3),   # RED2 confirms (l<62 by >=0.20, c<=62,
+    # h<=88) -- still above lineage's own ref_low(60), so no BAR SL collision;
+    # terminates lineage A.1 outright and frees label "1" for reuse
+    ("k4", 62, 65, 61.5, 65),         # fresh breakout -- BAR(A.1) reforms, reusing
+    # the freed label
+]
+seen24 = run(rows24, "Test 24: RED1/RED2 on a BAR lineage no longer requires BAR 2 to exist first -- terminates and frees the label")
+expected24 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "BAR(A.1)", "RED2(A)"]
+missing24 = [e for e in expected24 if e not in seen24]
+assert not missing24, f"Test 24 MISSING: {missing24}"
+k2_events = next(evs for date, evs in run.last_trace if date == "k2")
+assert "RED1(A)" in k2_events, \
+    f"Test 24 FAILED: RED1 must attach to a BAR lineage even with no BAR 2 ever formed, got {k2_events}"
+k3_events = next(evs for date, evs in run.last_trace if date == "k3")
+assert "RED2(A)" in k3_events, \
+    f"Test 24 FAILED: RED2 must confirm against the no-BAR-2 lineage's own RED1, got {k3_events}"
+k4_events = next(evs for date, evs in run.last_trace if date == "k4")
+assert "BAR(A.1)" in k4_events, \
+    f"Test 24 FAILED: a fresh BAR must reform reusing the freed label 'A.1' after RED2 terminated the old one, got {k4_events}"
+print("Test 24: RED1/RED2 on a BAR lineage attaches without needing BAR 2 first, and completing it frees the label for reuse.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")

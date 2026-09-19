@@ -739,8 +739,70 @@ exact sequence crashes under the pre-fix code, and the fixed code
 processes it (and the full 1044-row ADANIENT dataset, 507 event-days)
 cleanly with no crash.
 
+## Rule reversal: RED1/RED2 on a BAR lineage no longer requires that lineage's own BAR 2 to exist first (ADANIENT.NS)
+
+Previously, a fresh RED1 could only attach to a BAR lineage once that
+lineage's own BAR 2 had formed and confirmed — documented at the top of
+`tz_engine_wtf.py` as "BAR 2... Gates RED1/RED2 on its lineage." Real
+data (ADANIENT.NS) showed the cost of this: `BAR(C.2)` formed
+2018-10-15 and never got its own BAR 2 until 2019-10-22, a full year
+later. Every pullback in between that had a genuine RED1 shape — the
+first one, 2018-12-03 (`cur.h<=prev.h`, `cur.l<prev.l` by ≥0.20,
+`cur.c<=prev.l`, checked by hand against the real OHLC) — was silently
+absorbed as a plain `BAR LL(C.2)` reference update instead, because the
+gate blocked `_attach_fresh_red1` from ever running. User's framing: "I
+believe any RED 1 - RED 2 occurring within the range (high and low) of
+BAR 1 are not being considered... The correct logic is: If BAR A.1 -
+RED 1 - RED 2 (occurring within the range of BAR A.1) - BAR A.1. Hence,
+RED 1 - RED 2 after BAR A.1 will terminate the BAR A.1 and will lead to
+another BAR (when BAR occurs) with the same name as it will be
+available."
+
+**Fix, two parts** (`_eval_bar_lineages_progress` and
+`_eval_red1_generic`):
+
+1. The BAR-2 precondition on attaching a fresh RED1 to the newest BAR
+   lineage is removed — RED1 now attaches on the same shape test used
+   everywhere else, whether or not that lineage's own BAR 2 has ever
+   formed:
+   ```python
+   elif not lin.red2_ever:
+       ev += self._attach_fresh_red1(pc, buy, lin, prev, cur)
+   ```
+2. If RED2 then completes while that lineage's own `bar2` is still
+   `None`, the lineage never really got confirmed — it terminates
+   outright (removed from `buy.bar_lineages`) and its label frees for
+   reuse, exactly like a no-BAR-2 BAR SL already does:
+   ```python
+   if isinstance(stage_obj, BarLineage) and stage_obj.bar2 is None:
+       if stage_obj in buy.bar_lineages:
+           buy.bar_lineages.remove(stage_obj)
+           n = int(stage_obj.label.rsplit(".", 1)[-1])
+           buy.bar_dead_labels.add(n)
+   ```
+   If BAR 2 already existed when RED2 completes, nothing changes from
+   before — the lineage survives and keeps racing in parallel.
+
+**Verification scope**: re-run against the full ADANIENT.csv dataset
+(1044 rows) — 11 rows differ from the pre-fix trace, all additive (a
+`RED1`/`RED1 LL`/`RED1 HH`/`INVALID RED1` appended alongside an
+already-firing `BAR LL`, or a previously-silent day now showing
+`RED1`), no event lost, no crash; total event-days rose from 507 to
+509. Test 24 covers the full cycle synthetically end to end: RED1
+attaches with no BAR 2 ever formed, RED2 confirms and terminates the
+lineage, and a fresh breakout reforms `BAR(A.1)` reusing the freed
+label — confirmed to discriminate cleanly against the pre-fix code
+(which shows nothing at any of those three steps). Per explicit user
+instruction, this fix has **not yet been re-verified against the other
+real datasets** (KALYANKJIL.NS, PAYTM.NS, MAXESTATES.NS, the three
+BBOX.NS variants, NSEI, EICHERMOT.NS) — that check is still pending.
+
 ## Open items
 
+- Re-verify the RED1/RED2-without-BAR-2 rule reversal above against the
+  other real datasets already used this session (KALYANKJIL.NS,
+  PAYTM.NS, MAXESTATES.NS, BBOX.NS ×3, NSEI, EICHERMOT.NS) once
+  instructed to do so.
 - The `extra_reentry_floor` cross-theory hook (deferred to
   DTF-with-respect-to-TZ-BUY work, not started) — see "Cross-time-frame
   follow-up actions" near the top of this file for the mapping given so
