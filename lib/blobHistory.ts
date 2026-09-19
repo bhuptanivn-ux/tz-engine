@@ -167,7 +167,16 @@ export async function fetchHistoryFromBlob(
 
   const url = await findBlobUrl(pathname);
 
-  const res = await fetch(url, { cache: "no-store" });
+  // Send the token on the read too, not just the list() lookup above --
+  // a store created with Private access rejects an unauthenticated GET
+  // to the file's own URL with 403, even though list() (which is always
+  // authenticated) can see and return that same URL just fine. Harmless
+  // to include this if the store actually is Public.
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: token ? { authorization: `Bearer ${token}` } : undefined,
+  });
   if (!res.ok) {
     throw new Error(`Blob file fetch failed with status ${res.status} for "${pathname}".`);
   }
