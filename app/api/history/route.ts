@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchHistory, Interval } from "@/lib/marketData";
+import { fetchHistoryWithSource, Interval } from "@/lib/marketData";
 
 const SYMBOL_RE = /^[A-Za-z0-9.\-^&]{1,20}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -26,8 +26,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const rows = await fetchHistory(symbol, start, end, interval);
-    return NextResponse.json({ symbol, interval, rows });
+    const { rows, source, blobError } = await fetchHistoryWithSource(symbol, start, end, interval);
+    return NextResponse.json({ symbol, interval, source, blobDebug: blobError, rows });
   } catch (err) {
     const message = err instanceof Error ? err.message : "History fetch failed";
     return NextResponse.json({ error: message }, { status: 502 });
