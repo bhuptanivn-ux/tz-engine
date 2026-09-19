@@ -16,7 +16,7 @@ import { put } from "@vercel/blob";
 
 const SEGMENTS = [
   { slug: "nse", folderName: "NSE" },
-  { slug: "commodity", folderName: "COMMODITY" },
+  { slug: "commodity", folderName: "Commodities" },
   { slug: "crypto", folderName: "CRYPTO" },
   { slug: "forex", folderName: "FOREX" },
   { slug: "indexes", folderName: "INDEXES" },

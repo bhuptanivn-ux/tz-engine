@@ -16,7 +16,7 @@ export type Timeframe = {
 
 export const SEGMENTS: Segment[] = [
   { slug: "nse", folderName: "NSE", label: "NSE" },
-  { slug: "commodity", folderName: "COMMODITY", label: "Commodity" },
+  { slug: "commodity", folderName: "Commodities", label: "Commodities" },
   { slug: "crypto", folderName: "CRYPTO", label: "Crypto" },
   { slug: "forex", folderName: "FOREX", label: "Forex" },
   { slug: "indexes", folderName: "INDEXES", label: "Indexes" },
