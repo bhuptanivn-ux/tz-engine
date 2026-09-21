@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchFirstTradeDate } from "@/lib/yahoo";
+import { fetchFirstTradeDate } from "@/lib/marketData";
 
-const SYMBOL_RE = /^[A-Za-z0-9.\-^&]{1,20}$/;
+// Underscore and a longer max length accommodate the pseudo-suffixed Blob
+// symbols in lib/otherMarkets.ts (e.g. "NIFTY_FINANCIAL_SERVICES.IDX"),
+// alongside plain Yahoo tickers like "^NSEI" or "RELIANCE.NS".
+const SYMBOL_RE = /^[A-Za-z0-9._\-^&]{1,40}$/;
 
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get("symbol")?.trim() || "";

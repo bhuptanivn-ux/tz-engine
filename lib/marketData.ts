@@ -8,11 +8,32 @@
 // reachable -- important now that the screener scans the full NSE universe
 // rather than just 50 stocks.
 
-import { fetchHistory as fetchHistoryFromYahoo, type HistoryRow, type Interval } from "./yahoo";
-import { fetchHistoryFromBlob } from "./blobHistory";
+import {
+  fetchHistory as fetchHistoryFromYahoo,
+  fetchFirstTradeDate as fetchFirstTradeDateFromYahoo,
+  type HistoryRow,
+  type Interval,
+} from "./yahoo";
+import { fetchHistoryFromBlob, fetchFirstTradeDateFromBlob } from "./blobHistory";
 
 export type { HistoryRow, Interval };
-export { searchSymbols, fetchFirstTradeDate } from "./yahoo";
+export { searchSymbols } from "./yahoo";
+
+/**
+ * Blob-first, same reasoning as fetchHistoryWithSource below. Required for
+ * the non-NSE segments (Commodities, Crypto, Forex, indices, SME) in
+ * lib/otherMarkets.ts, whose pseudo-suffixed symbols (e.g. "GOLD.COMM")
+ * aren't real Yahoo tickers and would otherwise always 502 from Yahoo.
+ */
+export async function fetchFirstTradeDate(symbol: string): Promise<string | null> {
+  try {
+    const blobDate = await fetchFirstTradeDateFromBlob(symbol);
+    if (blobDate) return blobDate;
+  } catch {
+    // Fall through to Yahoo.
+  }
+  return fetchFirstTradeDateFromYahoo(symbol);
+}
 
 export type HistorySource = "blob" | "yahoo";
 

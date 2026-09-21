@@ -23,12 +23,21 @@ const CHUNK_PLAN: Record<string, Record<string, number>> = {
   "international-indexes": { daily: 1, weekly: 1, monthly: 1, yearly: 1 },
 };
 
-// Only NSE is wired up for now -- the other uploaded segments use
-// different Yahoo suffix conventions (or none) that this app doesn't
-// request symbols under yet. Extend this map if/when those become
-// relevant here.
+// NSE stocks use their real Yahoo Finance suffix (".NS"), so they can also
+// fall back to a live Yahoo fetch if ever missing from Blob. The other
+// segments (Commodities, Crypto, Forex, Indian/International indices,
+// SME) aren't standard Yahoo tickers at all -- their pseudo-suffixes below
+// exist purely to route a lookup to the right Blob segment, matching the
+// symbols generated in lib/otherMarkets.ts. There's no live-fetch fallback
+// for these; Blob storage is the only source.
 const SEGMENT_FOR_SUFFIX: Record<string, string> = {
   NS: "nse",
+  COMM: "commodity",
+  CRYPTO: "crypto",
+  FX: "forex",
+  IDX: "indexes",
+  INTLIDX: "international-indexes",
+  SME: "sme",
 };
 
 const TIMEFRAME_SLUG: Record<Interval, string> = {
@@ -155,4 +164,23 @@ export async function fetchHistoryFromBlob(
   }));
 
   return rows.filter((r) => r.date >= start && r.date <= end);
+}
+
+/**
+ * Earliest date we have for `symbol` in Blob storage, or `null` if the
+ * symbol isn't Blob-backed or has no rows. Tuples within a chunk are
+ * uploaded pre-sorted ascending by date (see bulk-upload-consolidated.mjs),
+ * so the first tuple is the earliest without needing to scan the array.
+ */
+export async function fetchFirstTradeDateFromBlob(symbol: string): Promise<string | null> {
+  const location = blobLocationForSymbol(symbol);
+  if (!location) return null;
+
+  const timeframe = TIMEFRAME_SLUG["1d"];
+  const chunkCount = CHUNK_PLAN[location.segment]?.[timeframe] ?? 1;
+  const chunkIndex = chunkIndexFor(location.ticker, chunkCount);
+
+  const bundle = await loadChunkBundle(location.segment, timeframe, chunkIndex);
+  const tuples = bundle[location.ticker];
+  return tuples && tuples.length > 0 ? tuples[0][0] : null;
 }
