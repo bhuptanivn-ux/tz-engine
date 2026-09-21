@@ -36,6 +36,28 @@ function loadEnvLocal() {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function deleteBatchWithRetry(batch, token, maxAttempts = 6) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await del(batch, { token });
+      return;
+    } catch (err) {
+      const message = err?.message || String(err);
+      const isRateLimit = /too many requests/i.test(message);
+      if (isRateLimit && attempt < maxAttempts) {
+        console.log(`  Rate limited, waiting 65s before retry (attempt ${attempt}/${maxAttempts})...`);
+        await sleep(65000);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function main() {
   loadEnvLocal();
   const token = process.env.BLOB_READ_WRITE_TOKEN;
@@ -61,12 +83,14 @@ async function main() {
   }
 
   const BATCH = 100;
+  const PAUSE_MS = 1500; // stay under Vercel Blob's rate limit between batches
   let deleted = 0;
   for (let i = 0; i < urls.length; i += BATCH) {
     const batch = urls.slice(i, i + BATCH);
-    await del(batch, { token });
+    await deleteBatchWithRetry(batch, token);
     deleted += batch.length;
     console.log(`Deleted ${deleted}/${urls.length}`);
+    if (i + BATCH < urls.length) await sleep(PAUSE_MS);
   }
 
   console.log("\nDone. Store should now be well under any object-count limit.");

@@ -174,6 +174,32 @@ function parseCsvToTuples(text) {
   return out;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function putWithRetry(blobPath, body, token, maxAttempts = 6) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await put(blobPath, body, {
+        access: "public",
+        contentType: "application/json",
+        addRandomSuffix: false,
+        token,
+      });
+    } catch (err) {
+      const message = err?.message || String(err);
+      const isRateLimit = /too many requests/i.test(message);
+      if (isRateLimit && attempt < maxAttempts) {
+        console.log(`  Rate limited, waiting 65s before retry (attempt ${attempt}/${maxAttempts})...`);
+        await sleep(65000);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function main() {
   loadEnvLocal();
   const token = process.env.BLOB_READ_WRITE_TOKEN;
@@ -222,16 +248,12 @@ async function main() {
         const blobPath = `data/${segment.slug}/${timeframe.slug}/chunk-${i}.json`;
         const body = JSON.stringify(chunks[i]);
         const sizeMB = (Buffer.byteLength(body) / 1024 / 1024).toFixed(1);
-        await put(blobPath, body, {
-          access: "public",
-          contentType: "application/json",
-          addRandomSuffix: false,
-          token,
-        });
+        await putWithRetry(blobPath, body, token);
         totalUploaded++;
         console.log(
           `[${totalUploaded}] OK  ${blobPath}  (${Object.keys(chunks[i]).length} instruments, ${sizeMB} MB)`
         );
+        await sleep(500);
       }
     }
   }
