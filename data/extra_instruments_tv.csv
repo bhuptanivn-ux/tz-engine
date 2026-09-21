@@ -1,5 +1,5 @@
 category,filename,tv_symbol,name
-crypto,BITCOIN,BINANCE:BTCUSDT,Bitcoin
+crypto,BITCOIN,BITSTAMP:BTCUSD,Bitcoin
 crypto,ETHEREUM,BINANCE:ETHUSDT,Ethereum
 crypto,SOLANA,BINANCE:SOLUSDT,Solana
 crypto,TETHER_GOLD,BINANCE:XAUTUSDT,Tether Gold
