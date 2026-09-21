@@ -38,6 +38,7 @@ on:
           - weekly
           - monthly
           - yearly
+          - verify
 
 jobs:
   refresh-daily:
@@ -99,3 +100,29 @@ jobs:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
         run: node scripts/rollup-period.mjs --period yearly
+
+  verify-yahoo-coverage:
+    # Manual-only diagnostic: checks whether Yahoo Finance actually has
+    # data for every uploaded ticker across every segment. Read-only --
+    # doesn't touch Blob storage or change anything. Run this any time to
+    # answer "are we missing anything?" directly, instead of guessing from
+    # ticker-mapping confidence notes.
+    if: github.event_name == 'workflow_dispatch' && inputs.job == 'verify'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Check every uploaded ticker against Yahoo Finance
+        env:
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/verify-yahoo-coverage.mjs
+      - name: Upload full failure list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-coverage-failures
+          path: yahoo-coverage-failures.txt
+          if-no-files-found: ignore
