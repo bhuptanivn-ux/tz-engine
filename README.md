@@ -58,11 +58,49 @@ setup. Reads also construct the blob's URL directly from `BLOB_STORE_ID`
 rather than calling `list()`, since `list()` is billed at a much lower
 monthly allowance than plain reads.
 
-To (re)populate Blob storage: run `scripts/cleanup-blob.mjs` then
+To (re)populate Blob storage from scratch: run `scripts/cleanup-blob.mjs` then
 `scripts/bulk-upload-consolidated.mjs <path-to-data-folder>`, either locally
 (needs `BLOB_READ_WRITE_TOKEN` in `.env.local`) or via the
 **"Sync Blob Storage"** GitHub Actions workflow (`workflow_dispatch`, no
 local setup needed — see `.github/workflows/sync-blob-storage.yml`).
+
+### Keeping the data current: scheduled auto-refresh
+
+Once populated, data stays current on its own via
+`.github/workflows/refresh-blob-data.yml` (needs both `BLOB_READ_WRITE_TOKEN`
+and `BLOB_STORE_ID` as GitHub repo secrets — the sync workflow above only
+needed the token, since it uploads via the `@vercel/blob` SDK; this one also
+downloads existing chunks directly by URL, the same way `lib/blobHistory.ts`
+does):
+
+- **Daily** (every day, 05:00 IST — after NSE and US markets have both
+  closed for the day): `scripts/refresh-daily.mjs` fetches each
+  instrument's latest daily bar(s) from Yahoo Finance and appends only the
+  rows newer than what's already stored. Existing historical rows are never
+  modified or removed, regardless of what happens with any individual
+  ticker's fetch.
+- **Weekly / monthly / yearly** (Saturday / the 1st of the month / Jan 1st,
+  each shortly after that day's daily refresh): `scripts/rollup-period.mjs
+  --period <weekly|monthly|yearly>` derives one new bar for the
+  just-completed period directly from the (already refreshed) daily data —
+  it never fetches weekly/monthly candles from Yahoo directly, which keeps
+  every timeframe consistent with the same underlying daily series and
+  sidesteps Yahoo's own period-boundary conventions.
+
+NSE and SME tickers are refreshed via their real `.NS` Yahoo suffix (high
+confidence — same lookup already proven correct for the app's own reads).
+The other five segments use a hand-built ticker → Yahoo-symbol map in
+`scripts/otherMarketsYahooMap.mjs`; confidence per entry is noted in that
+file's comments (major commodities/currencies/indices are high-confidence,
+some Indian sector indices and a couple of others are best-guess and worth
+spot-checking against the app after the first scheduled run). A wrong or
+missing mapping only means that one instrument doesn't get new rows — it
+can't corrupt existing data — and is a one-line fix in that file once
+noticed.
+
+Each workflow job can also be triggered manually from the Actions tab
+(`workflow_dispatch`, with a dropdown to pick daily/weekly/monthly/yearly)
+to catch up after a missed run or to verify the setup works.
 
 Proxying Yahoo server-side avoids browser CORS issues and keeps the endpoint
 details out of client code. Yahoo has no official partner API for this data,
