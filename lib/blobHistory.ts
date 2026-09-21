@@ -11,7 +11,6 @@
 // than a live Yahoo Finance fetch and doesn't depend on Yahoo's
 // undocumented endpoints staying reachable.
 
-import { list } from "@vercel/blob";
 import type { HistoryRow, Interval } from "./yahoo";
 
 const CHUNK_PLAN: Record<string, Record<string, number>> = {
@@ -63,22 +62,20 @@ export function blobLocationForSymbol(
   return { segment, ticker };
 }
 
-async function findBlobUrl(pathname: string): Promise<string> {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!token) {
-    throw new Error("BLOB_READ_WRITE_TOKEN is not set in this environment.");
+// Vercel Blob URLs are deterministic: <storeId-without-"store_"-prefix,
+// lowercased>.public.blob.vercel-storage.com/<pathname> -- since uploads
+// use addRandomSuffix: false, the exact pathname is always known ahead of
+// time. Constructing it directly avoids list(), which is billed as an
+// "Advanced Operation" with a much lower monthly allowance than plain
+// reads -- calling it on every history lookup is what burned through a
+// 2,000/month quota in a single afternoon of testing.
+function blobUrlFor(pathname: string): string {
+  const storeId = process.env.BLOB_STORE_ID;
+  if (!storeId) {
+    throw new Error("BLOB_STORE_ID is not set in this environment.");
   }
-  const { blobs } = await list({ prefix: pathname, token, limit: 10 });
-  const match = blobs.find((b) => b.pathname === pathname);
-  if (!match) {
-    const nearby = blobs.map((b) => b.pathname).join(", ");
-    throw new Error(
-      `No blob at path "${pathname}" (token present, list() returned ${blobs.length} result(s)` +
-        (nearby ? `: ${nearby}` : "") +
-        ").",
-    );
-  }
-  return match.url;
+  const hostPrefix = storeId.replace(/^store_/, "").toLowerCase();
+  return `https://${hostPrefix}.public.blob.vercel-storage.com/${pathname}`;
 }
 
 type ChunkBundle = Record<string, [string, number, number, number, number, number][]>;
@@ -99,7 +96,7 @@ async function loadChunkBundle(segment: string, timeframe: string, chunkIndex: n
 
   const promise = (async () => {
     const pathname = `data/${segment}/${timeframe}/chunk-${chunkIndex}.json`;
-    const url = await findBlobUrl(pathname);
+    const url = blobUrlFor(pathname);
 
     const token = process.env.BLOB_READ_WRITE_TOKEN;
     const res = await fetch(url, {
