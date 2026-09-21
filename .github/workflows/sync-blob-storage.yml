@@ -1,0 +1,41 @@
+name: Sync Blob Storage
+
+# Manual button in the GitHub Actions tab -- runs entirely on GitHub's own
+# servers (which have full internet access, unlike some sandboxed dev
+# environments), so this is the way to get data into Vercel Blob storage
+# without needing a local computer/terminal at all. Steps:
+#   1. Delete whatever is currently in Blob storage (safe: the source CSVs
+#      live untouched on the cursor/nse-historical-prices-9439 branch).
+#   2. Rebuild it in the new consolidated-chunk format.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  sync-blob:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Fetch the data files from the data branch
+        run: |
+          git fetch origin cursor/nse-historical-prices-9439
+          git checkout origin/cursor/nse-historical-prices-9439 -- data
+
+      - name: Delete old Blob storage objects
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: node scripts/cleanup-blob.mjs
+
+      - name: Upload consolidated data to Blob storage
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: node scripts/bulk-upload-consolidated.mjs data
