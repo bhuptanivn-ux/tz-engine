@@ -22,9 +22,7 @@ and as a region hint that narrows stock search to that market.
 ## How it works
 
 The frontend (`app/page.tsx`) never calls an external API directly. It talks
-to two server-side route handlers, which proxy Yahoo Finance's public
-(unofficial, undocumented) endpoints — the same ones tools like `yfinance`
-use:
+to server-side route handlers, which go through `lib/marketData.ts`:
 
 - `GET /api/search?q=<text>&region=<2-letter code>` — resolves a search
   string to matching stocks/indices globally, optionally weighted toward a
@@ -32,12 +30,35 @@ use:
   hard filter — Yahoo's non-US exchange codes aren't reliably documented
   enough to filter on exactly.
 - `GET /api/history?symbol=<sym>&start=YYYY-MM-DD&end=YYYY-MM-DD&interval=1d|1wk|1mo`
-  — returns OHLC rows for that symbol (stock or index) and range
-  (`lib/yahoo.ts` → `fetchHistory`).
+  — returns OHLC rows for that symbol (stock or index) and range.
 
-Proxying server-side avoids browser CORS issues and keeps the Yahoo endpoint
+### Data sources: Blob storage first, Yahoo Finance as fallback
+
+`lib/marketData.ts` tries Vercel Blob storage first (`lib/blobHistory.ts`) for
+symbols we've bulk-uploaded (currently NSE stocks, `.NS` suffix) — faster,
+and doesn't depend on Yahoo's endpoints staying reachable. It falls back to a
+live Yahoo Finance fetch (`lib/yahoo.ts` → `fetchHistory`) for anything not
+in Blob storage.
+
+Blob storage holds the data in **consolidated chunk files**, not one file per
+instrument — grouping ~2,578 NSE stocks into ~20-25 files per timeframe
+(see `CHUNK_PLAN` in `lib/blobHistory.ts` and
+`scripts/bulk-upload-consolidated.mjs`) instead of one object per stock. This
+matters: Vercel Blob plans have a monthly cap on operation counts, and one
+object per instrument (12,776 of them) blew through that cap during initial
+setup. Reads also construct the blob's URL directly from `BLOB_STORE_ID`
+rather than calling `list()`, since `list()` is billed at a much lower
+monthly allowance than plain reads.
+
+To (re)populate Blob storage: run `scripts/cleanup-blob.mjs` then
+`scripts/bulk-upload-consolidated.mjs <path-to-data-folder>`, either locally
+(needs `BLOB_READ_WRITE_TOKEN` in `.env.local`) or via the
+**"Sync Blob Storage"** GitHub Actions workflow (`workflow_dispatch`, no
+local setup needed — see `.github/workflows/sync-blob-storage.yml`).
+
+Proxying Yahoo server-side avoids browser CORS issues and keeps the endpoint
 details out of client code. Yahoo has no official partner API for this data,
-so these endpoints can change or start rate-limiting without notice — treat
+so its endpoints can change or start rate-limiting without notice — treat
 failures from them as expected, not as bugs in this app.
 
 ## Development
