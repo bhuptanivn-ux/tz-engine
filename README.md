@@ -35,10 +35,18 @@ to server-side route handlers, which go through `lib/marketData.ts`:
 ### Data sources: Blob storage first, Yahoo Finance as fallback
 
 `lib/marketData.ts` tries Vercel Blob storage first (`lib/blobHistory.ts`) for
-symbols we've bulk-uploaded (currently NSE stocks, `.NS` suffix) — faster,
-and doesn't depend on Yahoo's endpoints staying reachable. It falls back to a
-live Yahoo Finance fetch (`lib/yahoo.ts` → `fetchHistory`) for anything not
-in Blob storage.
+symbols we've bulk-uploaded — faster, and doesn't depend on Yahoo's endpoints
+staying reachable. It falls back to a live Yahoo Finance fetch
+(`lib/yahoo.ts` → `fetchHistory`) for anything not in Blob storage.
+
+Blob-backed segments: NSE mainboard stocks (real Yahoo `.NS` suffix, so they
+can also fall back to a live Yahoo fetch), plus Commodities, Crypto, Forex,
+Indian indices, International indices, and SME (NSE Emerge) stocks — these
+six use a pseudo-suffix (`.COMM` / `.CRYPTO` / `.FX` / `.IDX` / `.INTLIDX` /
+`.SME`) purely to route the lookup to the right Blob segment, since they
+aren't real Yahoo tickers and have no live-fetch fallback. The curated
+symbol/name lists for these six live in `lib/otherMarkets.ts` and back the
+"Markets" tab on the main page (`app/page.tsx`).
 
 Blob storage holds the data in **consolidated chunk files**, not one file per
 instrument — grouping ~2,578 NSE stocks into ~20-25 files per timeframe

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { GLOBAL_INDICES } from "@/lib/indices";
+import { OTHER_MARKETS } from "@/lib/otherMarkets";
 import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
 import { computeBar2VariantEvents, type TzBuyReentryRule } from "@/lib/tzEngineBar2Variant";
 
@@ -19,7 +20,7 @@ interface HistoryRow {
   close: number | null;
 }
 
-type Mode = "stock" | "index";
+type Mode = "stock" | "index" | "market";
 type EngineChoice = "bar2" | "newtheory";
 
 function todayISO(): string {
@@ -244,6 +245,11 @@ export default function Home() {
   // Index-tab state
   const [indexSymbol, setIndexSymbol] = useState(GLOBAL_INDICES[0].symbol);
 
+  // Market-tab state (Commodities / Crypto / Forex / Indian & International
+  // indices / SME -- see lib/otherMarkets.ts)
+  const [marketSegmentKey, setMarketSegmentKey] = useState(OTHER_MARKETS[0].key);
+  const [marketSymbol, setMarketSymbol] = useState(OTHER_MARKETS[0].instruments[0].symbol);
+
   // Shared selection + range
   const [selected, setSelected] = useState<SymbolMatch | null>(null);
   const [start, setStart] = useState("2021-03-28");
@@ -400,6 +406,11 @@ export default function Home() {
     if (next === "index") {
       const idx = GLOBAL_INDICES.find((i) => i.symbol === indexSymbol) || GLOBAL_INDICES[0];
       setSelected({ symbol: idx.symbol, name: idx.label, exchange: idx.market });
+    } else if (next === "market") {
+      const segment = OTHER_MARKETS.find((s) => s.key === marketSegmentKey) || OTHER_MARKETS[0];
+      const instrument =
+        segment.instruments.find((i) => i.symbol === marketSymbol) || segment.instruments[0];
+      setSelected({ symbol: instrument.symbol, name: instrument.name, exchange: segment.label });
     } else {
       setSelected(null);
       setQuery("");
@@ -411,6 +422,23 @@ export default function Home() {
     const idx = GLOBAL_INDICES.find((i) => i.symbol === symbol);
     if (idx) {
       setSelected({ symbol: idx.symbol, name: idx.label, exchange: idx.market });
+    }
+  }
+
+  function handleMarketSegmentChange(key: string) {
+    setMarketSegmentKey(key);
+    const segment = OTHER_MARKETS.find((s) => s.key === key) || OTHER_MARKETS[0];
+    const instrument = segment.instruments[0];
+    setMarketSymbol(instrument.symbol);
+    setSelected({ symbol: instrument.symbol, name: instrument.name, exchange: segment.label });
+  }
+
+  function handleMarketSymbolChange(symbol: string) {
+    setMarketSymbol(symbol);
+    const segment = OTHER_MARKETS.find((s) => s.key === marketSegmentKey) || OTHER_MARKETS[0];
+    const instrument = segment.instruments.find((i) => i.symbol === symbol);
+    if (instrument) {
+      setSelected({ symbol: instrument.symbol, name: instrument.name, exchange: segment.label });
     }
   }
 
@@ -505,7 +533,8 @@ export default function Home() {
     <main className="container">
       <h1>Trading Zone</h1>
       <p className="subtitle">
-        Pull OHLC data for a major world index, or search any stock across global markets.
+        Pull OHLC data for a major world index, search any stock across global markets, or browse
+        Commodities, Crypto, Forex, Indian/International indices, and SME stocks.
       </p>
 
       <div className="card">
@@ -522,9 +551,48 @@ export default function Home() {
           >
             Index
           </button>
+          <button
+            className={mode === "market" ? "tab active" : "tab"}
+            onClick={() => switchMode("market")}
+          >
+            Markets
+          </button>
         </div>
 
-        {mode === "index" ? (
+        {mode === "market" ? (
+          <>
+            <div className="field">
+              <label htmlFor="market-segment-select">Segment</label>
+              <select
+                id="market-segment-select"
+                value={marketSegmentKey}
+                onChange={(e) => handleMarketSegmentChange(e.target.value)}
+              >
+                {OTHER_MARKETS.map((segment) => (
+                  <option key={segment.key} value={segment.key}>
+                    {segment.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="market-instrument-select">Instrument</label>
+              <select
+                id="market-instrument-select"
+                value={marketSymbol}
+                onChange={(e) => handleMarketSymbolChange(e.target.value)}
+              >
+                {(OTHER_MARKETS.find((s) => s.key === marketSegmentKey) || OTHER_MARKETS[0]).instruments.map(
+                  (instrument) => (
+                    <option key={instrument.symbol} value={instrument.symbol}>
+                      {instrument.name}
+                    </option>
+                  )
+                )}
+              </select>
+            </div>
+          </>
+        ) : mode === "index" ? (
           <div className="field">
             <label htmlFor="index-select">Index</label>
             <select
