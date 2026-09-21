@@ -1,16 +1,33 @@
-// Reads OHLC history for symbols already bulk-uploaded to Vercel Blob
-// storage (see the separate "Market Data Vault" tool and its
-// scripts/bulk-upload.mjs, which populate data/<segment>/<timeframe>/<TICKER>.csv).
-// Checked first by lib/marketData.ts for symbols we have -- it's faster and
-// doesn't depend on Yahoo Finance's undocumented, rate-limited endpoints.
+// Reads OHLC history for symbols bulk-uploaded to Vercel Blob storage in
+// CONSOLIDATED form: instead of one blob per instrument (which exceeded
+// the plan's object-count limit and got the store blocked at 12,776
+// objects), instruments are grouped into a small, fixed number of "chunk"
+// files per segment+timeframe -- see CHUNK_PLAN below, which MUST match
+// scripts/bulk-upload-consolidated.mjs exactly (duplicated rather than
+// shared, since that script runs standalone via `node`, outside the
+// Next.js/TypeScript build).
+//
+// Checked first by lib/marketData.ts for symbols we have -- it's faster
+// than a live Yahoo Finance fetch and doesn't depend on Yahoo's
+// undocumented endpoints staying reachable.
 
 import { list } from "@vercel/blob";
 import type { HistoryRow, Interval } from "./yahoo";
 
-// Only NSE is wired up for now -- the other uploaded segments (Commodity,
-// Crypto, Forex, Indexes, International Indexes, SME) use different Yahoo
-// suffix conventions (or none) that this app doesn't request symbols under
-// yet. Extend this map if/when those become relevant here.
+const CHUNK_PLAN: Record<string, Record<string, number>> = {
+  nse: { daily: 20, weekly: 4, monthly: 1, yearly: 1 },
+  sme: { daily: 1, weekly: 1, monthly: 1, yearly: 1 },
+  commodity: { daily: 1, weekly: 1, monthly: 1, yearly: 1 },
+  crypto: { daily: 1, weekly: 1, monthly: 1, yearly: 1 },
+  forex: { daily: 1, weekly: 1, monthly: 1, yearly: 1 },
+  indexes: { daily: 1, weekly: 1, monthly: 1, yearly: 1 },
+  "international-indexes": { daily: 1, weekly: 1, monthly: 1, yearly: 1 },
+};
+
+// Only NSE is wired up for now -- the other uploaded segments use
+// different Yahoo suffix conventions (or none) that this app doesn't
+// request symbols under yet. Extend this map if/when those become
+// relevant here.
 const SEGMENT_FOR_SUFFIX: Record<string, string> = {
   NS: "nse",
 };
@@ -20,6 +37,18 @@ const TIMEFRAME_SLUG: Record<Interval, string> = {
   "1wk": "weekly",
   "1mo": "monthly",
 };
+
+// Deterministic ticker -> chunk index, identical to the copy in
+// scripts/bulk-upload-consolidated.mjs. Hash-based rather than
+// alphabetical so it doesn't depend on knowing the full ticker list.
+function chunkIndexFor(ticker: string, chunkCount: number): number {
+  if (chunkCount <= 1) return 0;
+  let h = 0;
+  for (let i = 0; i < ticker.length; i++) {
+    h = (h * 31 + ticker.charCodeAt(i)) >>> 0;
+  }
+  return h % chunkCount;
+}
 
 export function blobLocationForSymbol(
   symbol: string
@@ -52,106 +81,52 @@ async function findBlobUrl(pathname: string): Promise<string> {
   return match.url;
 }
 
-function splitCsvLine(line: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        if (line[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cur += ch;
-      }
-    } else if (ch === '"') {
-      inQuotes = true;
-    } else if (ch === ",") {
-      out.push(cur);
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  out.push(cur);
-  return out.map((c) => c.trim());
-}
+type ChunkBundle = Record<string, [string, number, number, number, number, number][]>;
 
-function findColumn(header: string[], aliases: string[]): number {
-  const lower = header.map((h) => h.toLowerCase().trim());
-  for (const alias of aliases) {
-    const idx = lower.indexOf(alias);
-    if (idx !== -1) return idx;
-  }
-  return -1;
-}
+// Promise-memoized per warm serverless instance: the screener scans 2,578
+// NSE stocks concurrently, and without this every one of them would
+// independently re-fetch the same ~14MB chunk file before any single
+// fetch completed (a thundering herd). Caching the in-flight promise
+// itself (not just the resolved value) means concurrent callers share one
+// fetch. Failures are NOT cached, so a transient error doesn't poison the
+// cache for the rest of the instance's lifetime.
+const bundleCache = new Map<string, Promise<ChunkBundle>>();
 
-function toIsoDate(raw: string): string | null {
-  const value = raw.trim();
-  if (!value) return null;
-  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  const dmy = value.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
-  if (dmy) {
-    const day = dmy[1].padStart(2, "0");
-    const month = dmy[2].padStart(2, "0");
-    return `${dmy[3]}-${month}-${day}`;
-  }
-  return null;
-}
+async function loadChunkBundle(segment: string, timeframe: string, chunkIndex: number): Promise<ChunkBundle> {
+  const key = `${segment}/${timeframe}/${chunkIndex}`;
+  const cached = bundleCache.get(key);
+  if (cached) return cached;
 
-function parseCsvToHistory(text: string): HistoryRow[] {
-  const lines = text
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .filter((l) => l.trim().length > 0);
-  if (lines.length === 0) return [];
+  const promise = (async () => {
+    const pathname = `data/${segment}/${timeframe}/chunk-${chunkIndex}.json`;
+    const url = await findBlobUrl(pathname);
 
-  const rows = lines.map(splitCsvLine);
-  const header = rows[0];
-  const dateIdx = findColumn(header, ["date", "time", "datetime"]);
-  const openIdx = findColumn(header, ["open"]);
-  const highIdx = findColumn(header, ["high"]);
-  const lowIdx = findColumn(header, ["low"]);
-  const closeIdx = findColumn(header, ["close", "adj close", "adjclose"]);
-
-  if (dateIdx === -1 || openIdx === -1 || highIdx === -1 || lowIdx === -1 || closeIdx === -1) {
-    return [];
-  }
-
-  const out: HistoryRow[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const date = toIsoDate(row[dateIdx] ?? "");
-    if (!date) continue;
-    const open = Number(row[openIdx]);
-    const high = Number(row[highIdx]);
-    const low = Number(row[lowIdx]);
-    const close = Number(row[closeIdx]);
-    out.push({
-      date,
-      open: Number.isNaN(open) ? null : open,
-      high: Number.isNaN(high) ? null : high,
-      low: Number.isNaN(low) ? null : low,
-      close: Number.isNaN(close) ? null : close,
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: token ? { authorization: `Bearer ${token}` } : undefined,
     });
-  }
-  out.sort((a, b) => a.date.localeCompare(b.date));
-  return out;
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `Blob chunk fetch failed with status ${res.status} for "${pathname}". Body: ${body.slice(0, 300)}`
+      );
+    }
+    return (await res.json()) as ChunkBundle;
+  })();
+
+  bundleCache.set(key, promise);
+  promise.catch(() => bundleCache.delete(key));
+  return promise;
 }
 
 /**
  * Returns history for `symbol` from Blob storage if we have it there, or
  * `null` only for the one expected non-error case: the symbol's suffix
  * isn't mapped to a Blob segment (e.g. not ".NS"). Every other failure
- * (missing token, path not found, empty/unreadable file) throws with a
+ * (missing token, chunk not found, ticker not in its chunk) throws with a
  * specific message so the caller (lib/marketData.ts) can surface exactly
- * why Blob was skipped, instead of a generic "no data" message.
+ * why Blob was skipped.
  */
 export async function fetchHistoryFromBlob(
   symbol: string,
@@ -163,32 +138,24 @@ export async function fetchHistoryFromBlob(
   if (!location) return null;
 
   const timeframe = TIMEFRAME_SLUG[interval];
-  const pathname = `data/${location.segment}/${timeframe}/${location.ticker}.csv`;
+  const chunkCount = CHUNK_PLAN[location.segment]?.[timeframe] ?? 1;
+  const chunkIndex = chunkIndexFor(location.ticker, chunkCount);
 
-  const url = await findBlobUrl(pathname);
-
-  // Send the token on the read too, not just the list() lookup above --
-  // a store created with Private access rejects an unauthenticated GET
-  // to the file's own URL with 403, even though list() (which is always
-  // authenticated) can see and return that same URL just fine. Harmless
-  // to include this if the store actually is Public.
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  const res = await fetch(url, {
-    cache: "no-store",
-    headers: token ? { authorization: `Bearer ${token}` } : undefined,
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
+  const bundle = await loadChunkBundle(location.segment, timeframe, chunkIndex);
+  const tuples = bundle[location.ticker];
+  if (!tuples) {
     throw new Error(
-      `Blob file fetch failed with status ${res.status} for "${pathname}". URL: ${url}. Body: ${body.slice(0, 300)}`
+      `Ticker "${location.ticker}" not found in chunk ${chunkIndex} of ${location.segment}/${timeframe} (${Object.keys(bundle).length} tickers in that chunk).`
     );
   }
 
-  const text = await res.text();
-  const rows = parseCsvToHistory(text);
-  if (rows.length === 0) {
-    throw new Error(`Blob file "${pathname}" had no parseable OHLC rows (length ${text.length}).`);
-  }
+  const rows: HistoryRow[] = tuples.map(([date, open, high, low, close]) => ({
+    date,
+    open,
+    high,
+    low,
+    close,
+  }));
 
   return rows.filter((r) => r.date >= start && r.date <= end);
 }
