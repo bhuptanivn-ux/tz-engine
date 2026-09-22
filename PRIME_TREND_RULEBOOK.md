@@ -171,17 +171,50 @@ Stage-1-level SL/reactivation before Stage 2 ever confirmed — in both
 cases correctly discarded per the dependency rule above, with the final
 reported entry being whichever one survived to the WTF-side exit.
 
+## Bug fix: WTF branch letters get recycled — an instance's own boundary must track the underlying branch id, not its display letter (ICICIBANK.NS)
+
+Found while running `prime_trend.py` against a second scrip
+(ICICIBANK.NS): branch "E" formed WTF TZ BUY 2 in 2014-03-24, then was
+**collaterally terminated** by the multi-branch leadership rules —
+no `TZ BUY 2 SL(`, `TZ BUY SL(`, or `BAR SL2(` event ever fired for it,
+it was simply removed once a newer sibling's own milestone terminated
+it. Its letter freed up, and a wholly unrelated fresh `TZ GREEN(E)`
+reused the same letter in 2022. Matching a WTF TZ BUY 2 instance's own
+end purely by scanning for `TZ BUY 2 SL(E)` / `TZ BUY SL(E)` /
+`BAR SL2(E.*)` in the visible event text therefore found nothing for
+the *real* 2014 instance and kept searching straight through the
+unrelated 2022+ branch's own entire history — surfacing as a nonsensical
+11-year gap between the 2014 WTF formation and an "entry" that actually
+belonged to the later, unrelated branch.
+
+**Fix**: every WTF TZ BUY 2 instance is now tracked by the engine's own
+internal branch id (`pid`), never by its display letter alone — a
+letter is only resolved from a `pid` at the point of use, valid only
+while that specific branch is still the one holding it. The search for
+an instance's own end still looks for the practical exit event first
+(whichever of `BAR SL2` / `TZ BUY 2 SL` / `TZ BUY SL` fires first, per
+the Exit section above — none of these necessarily wipe `tz_buy2` to
+`None` by themselves), but **never searches past the point that specific
+pid's own `tz_buy2` state actually disappears** (wiped to `None`, or the
+whole branch dies) — labelled `collaterally terminated (no explicit SL
+event)` when that's what ends it with no explicit exit event ever
+firing.
+
+**Verification**: `test_prime_trend_smoke.py` now locks in both
+ADANIENT.NS (unaffected by this bug — re-confirmed unchanged) and
+ICICIBANK.NS (10 confirmed instances, all now landing on sane, bounded
+entry/exit windows) exactly.
+
 ## Open items
 
 - Implemented in Python (`prime_trend.py`) and verified against real
-  ADANIENT.NS data (`test_prime_trend_smoke.py`). Not yet ported to
-  TypeScript/`main`, not yet wired into any UI in the live app, and not
-  yet verified against any other scrip.
+  ADANIENT.NS and ICICIBANK.NS data (`test_prime_trend_smoke.py`, 14
+  confirmed instances total across both). Not yet ported to
+  TypeScript/`main`, not yet wired into any UI in the live app.
 - The "BAR ENTRY" side of the original cross-time-frame table (WTF
   BAR → DTF TZ BUY/TZ BUY ENTRY or BAR/BAR ENTRY, disambiguated by
   whether a BAR has ever formed for that lineage) has not been worked
   through to this same depth yet — see `WTF_RULEBOOK.md`'s
   "Cross-time-frame follow-up actions" section for what's specified
   there so far.
-- Only verified against one scrip (ADANIENT.NS) and one sibling branch's
-  worth of WTF TZ BUY 2 instances so far.
+- Only verified against two scrips so far (ADANIENT.NS, ICICIBANK.NS).

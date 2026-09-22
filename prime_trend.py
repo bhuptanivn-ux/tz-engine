@@ -78,22 +78,35 @@ def _sl_shape(cur: Day, ref_low: float) -> bool:
 # --------------------------------------------------------------------------
 
 def _run_wtf_trace(wtf_days: list[Day]):
+    """Branch LETTERS get recycled -- once a branch dies (whether via an
+    explicit SL or via collateral termination from the multi-branch
+    leadership rules, which emits no SL-type event at all), its id frees
+    up and a later, wholly unrelated branch can reuse the same letter.
+    So every snapshot here is keyed by `pid` (stable for one branch's
+    whole life), never by letter alone -- letter is only resolved from
+    `pid` at the point of use, since it's a pure function of `pid` for as
+    long as that specific branch is alive."""
     engine = TZEngine()
-    trace = []  # (Day, events, {letter: pre_candle_tz_buy2_ref_low})
+    trace = []  # (Day, events, {pid: pre_candle_tz_buy2_ref_low}, {pid: letter of every pid alive AFTER this candle})
     for i in range(1, len(wtf_days)):
         prev, cur = wtf_days[i - 1], wtf_days[i]
         pre_ref_low = {}
         for pid, pc in engine.branches.items():
             if pc.buy is not None and pc.buy.tz_buy2 is not None:
-                pre_ref_low[branch_label(pc.id)] = pc.buy.tz_buy2.ref_low
+                pre_ref_low[pid] = pc.buy.tz_buy2.ref_low
         evs = engine.process(prev, cur)
-        trace.append((cur, evs, pre_ref_low))
+        alive_after = {pid: branch_label(pid) for pid in engine.branches}
+        has_tzbuy2_after = {pid for pid, pc in engine.branches.items()
+                             if pc.buy is not None and pc.buy.tz_buy2 is not None}
+        trace.append((cur, evs, pre_ref_low, alive_after, has_tzbuy2_after))
     return trace
 
 
 # --------------------------------------------------------------------------
 # Step 2: every WTF TZ BUY 2 instance and its own window (formation -> that
 # instance's own failure), with the exact WTF-side exit price resolved.
+# Tracked by pid, not by letter, so a recycled letter's later, unrelated
+# instance never gets stitched onto an earlier one's own lifetime.
 # --------------------------------------------------------------------------
 
 @dataclass
@@ -101,33 +114,54 @@ class _WtfInstance:
     letter: str
     formation_date: str
     end_date: str                    # this instance's own failure date, or the last WTF date if it never fails
-    end_event: Optional[str]         # None if it never fails within the data
+    end_event: Optional[str]         # None if it never fails (or fails with no explicit SL-type event) within the data
     end_price: Optional[float]       # BAR SL2 -> that week's close; TZ BUY 2 SL / TZ BUY SL -> TZ BUY 2's own ref_low
 
 
 def _wtf_tzbuy2_instances(wtf_trace) -> list[_WtfInstance]:
     instances = []
     last_date = wtf_trace[-1][0].date if wtf_trace else None
-    for i, (day, evs, _pre) in enumerate(wtf_trace):
+    for i, (day, evs, pre_ref_low, alive_after, has_tzbuy2_after) in enumerate(wtf_trace):
         for e in evs:
-            if e.startswith("TZ BUY 2("):
-                letter = e[len("TZ BUY 2("):-1]
-                end_date, end_event, end_price = last_date, None, None
-                for day2, evs2, pre2 in wtf_trace[i + 1:]:
-                    hit = None
-                    for e2 in evs2:
-                        if e2 == f"TZ BUY 2 SL({letter})" or e2 == f"TZ BUY SL({letter})":
-                            hit = e2
-                            end_price = pre2.get(letter)  # TZ BUY 2's own ref_low just before this candle wiped/SL'd it
-                            break
-                        if e2.startswith(f"BAR SL2({letter}."):
-                            hit = e2
-                            end_price = day2.c  # that WTF week's own close
-                            break
-                    if hit is not None:
-                        end_date, end_event = day2.date, hit
+            if not e.startswith("TZ BUY 2("):
+                continue
+            letter = e[len("TZ BUY 2("):-1]
+            # Which pid does this formation belong to? Whichever pid holds
+            # this exact letter right after this candle -- unambiguous,
+            # since only one pid can hold a given letter at a time.
+            pid = next((p for p, l in alive_after.items() if l == letter), None)
+            if pid is None:
+                continue  # shouldn't happen, but don't fabricate an instance if it does
+            end_date, end_event, end_price = last_date, None, None
+            for day2, evs2, pre2, alive2, has2 in wtf_trace[i + 1:]:
+                # Practical exit first (the session-established rule:
+                # whichever of BAR SL2 / TZ BUY 2 SL / TZ BUY SL fires
+                # first) -- none of these necessarily wipe buy.tz_buy2 to
+                # None by themselves (TZ BUY 2 SL just freezes it,
+                # recoverable later), so check this before the ceiling.
+                hit = None
+                for e2 in evs2:
+                    if e2 == f"TZ BUY 2 SL({letter})" or e2 == f"TZ BUY SL({letter})":
+                        hit = e2
+                        end_price = pre2.get(pid)
                         break
-                instances.append(_WtfInstance(letter, day.date, end_date, end_event, end_price))
+                    if e2.startswith(f"BAR SL2({letter}."):
+                        hit = e2
+                        end_price = day2.c
+                        break
+                if hit is not None:
+                    end_date, end_event = day2.date, hit
+                    break
+                # Ceiling: this specific pid's own tz_buy2 has genuinely
+                # ended (wiped to None, or the whole branch died) with no
+                # explicit SL-type event ever firing -- never search past
+                # this, or a later, unrelated instance that recycles the
+                # same letter gets wrongly stitched onto this one.
+                if pid not in alive2 or pid not in has2:
+                    end_date = day2.date
+                    end_event = "collaterally terminated (no explicit SL event)"
+                    break
+            instances.append(_WtfInstance(letter, day.date, end_date, end_event, end_price))
     return instances
 
 
@@ -137,9 +171,13 @@ def _wtf_tzbuy2_instances(wtf_trace) -> list[_WtfInstance]:
 
 def _wtf_checkpoints(wtf_trace, letter: str, start_date: str, end_date: str):
     """(date, ref_high) for every TZ BUY 2( / TZ BUY 2 HH( this letter fires
-    within [start_date, end_date] -- the raw material for the live anchor."""
+    within [start_date, end_date] -- the raw material for the live anchor.
+    Safe to match by letter alone here: [start_date, end_date] is already
+    bounded to this exact branch instance's own lifetime (see
+    _wtf_tzbuy2_instances), so no other pid can hold this same letter
+    within that window."""
     checkpoints = []
-    for day, evs, _pre in wtf_trace:
+    for day, evs, *_rest in wtf_trace:
         if day.date < start_date or day.date > end_date:
             continue
         for e in evs:
