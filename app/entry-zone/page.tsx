@@ -42,7 +42,10 @@ export default function EntryZone() {
     }
   }
 
-  const rows = choice === "tzBuy" ? tzBuy : tzBuyEntry;
+  // Newest activation first -- oldest at the bottom.
+  const rows = [...(choice === "tzBuy" ? tzBuy : tzBuyEntry)].sort((a, b) =>
+    b.activeAsOn.localeCompare(a.activeAsOn)
+  );
 
   return (
     <main className="container">
@@ -54,17 +57,25 @@ export default function EntryZone() {
       </p>
 
       <div className="card">
-        <div className="field">
-          <label htmlFor="list-select">List</label>
-          <select
-            id="list-select"
-            value={choice}
-            onChange={(e) => setChoice(e.target.value as ListChoice)}
+        <div className="tabs">
+          <button
+            className={choice === "tzBuy" ? "tab active" : "tab"}
+            onClick={() => setChoice("tzBuy")}
           >
-            <option value="tzBuy">DTF trading with TZ BUY (above WTF TZ BUY 2 reference high)</option>
-            <option value="tzBuyEntry">DTF – TZ BUY ENTRY above TZ BUY</option>
-          </select>
+            DTF trading with TZ BUY
+          </button>
+          <button
+            className={choice === "tzBuyEntry" ? "tab active" : "tab"}
+            onClick={() => setChoice("tzBuyEntry")}
+          >
+            DTF TZ BUY ENTRY
+          </button>
         </div>
+        <p className="muted" style={{ marginTop: "-0.5rem", marginBottom: "1rem" }}>
+          {choice === "tzBuy"
+            ? "Above WTF TZ BUY 2 reference high"
+            : "DTF's own TZ BUY 2, above DTF TZ BUY"}
+        </p>
         <button onClick={runScan} disabled={loading}>
           {loading ? "Scanning…" : "Scan universe"}
         </button>
