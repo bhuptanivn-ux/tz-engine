@@ -11,14 +11,19 @@ it. See `WTF_RULEBOOK.md` for the TZ BUY theory itself; read that first
 if any term below (TZ BUY, TZ BUY 2, BAR SL2, THRESH/ANY, "whichever is
 higher" reactivation, etc.) is unfamiliar.
 
-**Status**: specification only, worked out by hand against real
-ADANIENT.NS data (separate WTF weekly and DTF daily CSVs for the same
-scrip). Not implemented in `TZEngine`/`tz_engine_wtf.py` — computed by a
-separate manual/external analysis script that reads both timeframes' own
-OHLC and, for WTF, an already-computed `TZEngine` event trace. Future
-theories may reuse pieces of TZ BUY's or PRIME TREND's own mechanics as
-a starting point, but each is tracked as its own theory going forward,
-not folded into one another.
+**Status**: implemented in Python as `prime_trend.py` (`compute_prime_trend(wtf_rows,
+dtf_rows) -> list[PrimeTrendResult]`), worked out by hand and verified
+against real ADANIENT.NS data (separate WTF weekly and DTF daily CSVs
+for the same scrip) — `test_prime_trend_smoke.py` locks in the exact
+worked table below against that real dataset. It does NOT modify or
+extend `TZEngine`/`tz_engine_wtf.py` — it's a separate, dependent
+consumer: run `TZEngine` once over the WTF series to get its event
+trace (plus a per-candle snapshot of each branch's own TZ BUY 2
+reference low, needed to resolve the exact WTF-side exit price), then
+walk the DTF series independently using that trace as a live anchor.
+Not yet ported to TypeScript/`main`. Future theories may reuse pieces of
+TZ BUY's or PRIME TREND's own mechanics as a starting point, but each is
+tracked as its own theory going forward, not folded into one another.
 
 ## Naming
 
@@ -168,8 +173,10 @@ reported entry being whichever one survived to the WTF-side exit.
 
 ## Open items
 
-- Not implemented in `TZEngine`/`tz_engine_wtf.py` — currently a manual
-  analysis script only.
+- Implemented in Python (`prime_trend.py`) and verified against real
+  ADANIENT.NS data (`test_prime_trend_smoke.py`). Not yet ported to
+  TypeScript/`main`, not yet wired into any UI in the live app, and not
+  yet verified against any other scrip.
 - The "BAR ENTRY" side of the original cross-time-frame table (WTF
   BAR → DTF TZ BUY/TZ BUY ENTRY or BAR/BAR ENTRY, disambiguated by
   whether a BAR has ever formed for that lineage) has not been worked
