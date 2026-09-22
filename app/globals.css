@@ -289,15 +289,66 @@ th:first-child, td:first-child {
   font-weight: inherit;
 }
 
+.event-filter {
+  position: relative;
+}
+
 .event-th-filter {
-  padding: 0.15rem 0.3rem;
+  padding: 0.15rem 0.4rem;
   font-size: 0.78rem;
   font-weight: 400;
+  font-family: inherit;
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--fg);
   max-width: 9rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.event-filter-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  margin-top: 0.25rem;
+  min-width: 12rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 0.35rem;
+}
+
+.event-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  font-weight: 400;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.event-filter-item:hover {
+  background: var(--bg);
+}
+
+.event-filter-item input {
+  width: auto;
+  margin: 0;
+}
+
+.event-filter-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.3rem 0;
 }
 
 .table-wrap {

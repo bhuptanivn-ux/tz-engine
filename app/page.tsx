@@ -262,7 +262,14 @@ export default function Home() {
   const [reentryRule, setReentryRule] = useState<TzBuyReentryRule>("topref");
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [events, setEvents] = useState<Map<string, string>>(new Map());
-  const [eventFilter, setEventFilter] = useState(""); // "" = show all events
+  // Empty set = "All" (show every event); otherwise show rows matching
+  // ANY of the selected kinds. "All" and specific kinds are mutually
+  // exclusive -- picking "All" clears any specific selections, and
+  // picking a specific kind naturally drops "All" (it's just
+  // eventFilter.size === 0, not its own separate flag).
+  const [eventFilter, setEventFilter] = useState<Set<string>>(new Set());
+  const [eventFilterOpen, setEventFilterOpen] = useState(false);
+  const eventFilterRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -278,11 +285,31 @@ export default function Home() {
   }, [events]);
 
   const filteredRows = useMemo(() => {
-    if (!eventFilter) return rows;
+    if (eventFilter.size === 0) return rows;
     return rows.filter((r) =>
-      splitEventTokens(events.get(r.date) || "").some((tok) => eventKind(tok) === eventFilter)
+      splitEventTokens(events.get(r.date) || "").some((tok) => eventFilter.has(eventKind(tok)))
     );
   }, [rows, events, eventFilter]);
+
+  useEffect(() => {
+    if (!eventFilterOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (eventFilterRef.current && !eventFilterRef.current.contains(e.target as Node)) {
+        setEventFilterOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [eventFilterOpen]);
+
+  function toggleEventKind(kind: string) {
+    setEventFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      return next;
+    });
+  }
 
   // Per-token override color (date + exact token -> hex), computed over the
   // FULL chronological history (not filteredRows -- an event filter must
@@ -446,7 +473,7 @@ export default function Home() {
     setError("");
     setRows([]);
     setEvents(new Map());
-    setEventFilter("");
+    setEventFilter(new Set());
 
     if (!selected) {
       setError(
@@ -789,19 +816,40 @@ export default function Home() {
                     <div className="event-th">
                       <span>Event</span>
                       {allEventKinds.length > 0 && (
-                        <select
-                          className="event-th-filter"
-                          aria-label="Filter by event"
-                          value={eventFilter}
-                          onChange={(e) => setEventFilter(e.target.value)}
-                        >
-                          <option value="">All ▾</option>
-                          {allEventKinds.map((kind) => (
-                            <option key={kind} value={kind}>
-                              {kind}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="event-filter" ref={eventFilterRef}>
+                          <button
+                            type="button"
+                            className="event-th-filter"
+                            aria-haspopup="true"
+                            aria-expanded={eventFilterOpen}
+                            onClick={() => setEventFilterOpen((open) => !open)}
+                          >
+                            {eventFilter.size === 0 ? "All" : `${eventFilter.size} selected`} ▾
+                          </button>
+                          {eventFilterOpen && (
+                            <div className="event-filter-menu" role="menu">
+                              <label className="event-filter-item">
+                                <input
+                                  type="checkbox"
+                                  checked={eventFilter.size === 0}
+                                  onChange={() => setEventFilter(new Set())}
+                                />
+                                All
+                              </label>
+                              <div className="event-filter-divider" />
+                              {allEventKinds.map((kind) => (
+                                <label key={kind} className="event-filter-item">
+                                  <input
+                                    type="checkbox"
+                                    checked={eventFilter.has(kind)}
+                                    onChange={() => toggleEventKind(kind)}
+                                  />
+                                  {kind}
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   </th>
