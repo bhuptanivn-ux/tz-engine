@@ -1,0 +1,31 @@
+name: Verify Yahoo Coverage
+
+# Standalone, manual-only diagnostic: checks whether Yahoo Finance
+# actually has data for every ticker already uploaded to Blob storage,
+# across every segment (NSE, SME, Commodities, Crypto, Forex, Indexes,
+# International Indexes). Read-only -- doesn't touch Blob storage, Yahoo,
+# or anything else. Kept separate from any scheduled auto-refresh
+# workflow so it can be run and reviewed on its own first.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Check every uploaded ticker against Yahoo Finance
+        env:
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/verify-yahoo-coverage.mjs
+      - name: Upload full failure list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-coverage-failures
+          path: yahoo-coverage-failures.txt
+          if-no-files-found: ignore
