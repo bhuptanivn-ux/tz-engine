@@ -7,10 +7,16 @@ name: Verify Yahoo Coverage
 # or anything else. Kept separate from any scheduled auto-refresh
 # workflow so it can be run and reviewed on its own first.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      candidate_symbols:
+        description: "Optional: comma-separated Yahoo symbols to test instead of the full scan (e.g. for checking an alternate spelling of a ticker that failed)"
+        required: false
+        default: ""
 
 jobs:
   verify:
+    if: github.event.inputs.candidate_symbols == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,3 +35,18 @@ jobs:
           name: yahoo-coverage-failures
           path: yahoo-coverage-failures.txt
           if-no-files-found: ignore
+
+  check-candidates:
+    # Only runs when the "candidate_symbols" input is filled in -- lets a
+    # handful of alternate ticker spellings be tested directly (e.g.
+    # "BAJAJ-AUTO.NS") without waiting for or re-running the full scan.
+    if: github.event.inputs.candidate_symbols != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Check candidate symbols against Yahoo Finance
+        run: node scripts/check-symbols.mjs "${{ github.event.inputs.candidate_symbols }}"
