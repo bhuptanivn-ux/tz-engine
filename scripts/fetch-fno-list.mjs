@@ -172,8 +172,11 @@ async function main() {
   console.log(`${fnoNotInOurs.length} F&O symbols did NOT match (likely index futures like NIFTY/BANKNIFTY, or a naming mismatch) -- sample:`);
   console.log("  " + fnoNotInOurs.slice(0, 30).join(", "));
 
-  fs.writeFileSync("fno-matched-symbols.json", JSON.stringify(matched.sort(), null, 2));
+  const sortedMatched = matched.sort();
+  fs.writeFileSync("fno-matched-symbols.json", JSON.stringify(sortedMatched, null, 2));
   console.log(`\nWrote ${matched.length} matched symbols to fno-matched-symbols.json (uploaded as a workflow artifact).`);
+  console.log(`\n=== Full matched list (${sortedMatched.length}) ===`);
+  console.log(sortedMatched.join(","));
 }
 
 main().catch((err) => {
