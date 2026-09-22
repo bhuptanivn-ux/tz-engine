@@ -26,6 +26,30 @@ export interface PrimeTrendResult {
   highestHighDate: string | null;
 }
 
+/** A live/right-now snapshot of one currently-open WTF TZ BUY 2 instance's
+ * own Stage 1 / Stage 2 state -- for a screener asking "is this stock
+ * sitting in a PRIME TREND zone right now", as opposed to
+ * computePrimeTrend's own historical trade log (which only reports a
+ * CLOSED or still-open Stage 2 entry, per the Filter rule in
+ * PRIME_TREND_RULEBOOK.md -- a stock that's only reached Stage 1 never
+ * appears there at all). Both stage1* and stage2* fields are null when
+ * that stage isn't currently active; stage2Active implies stage1Active
+ * (Stage 2 cannot outlive Stage 1's own SL -- see
+ * PRIME_TREND_RULEBOOK.md's "Dependency on Stage 1"). */
+export interface PrimeTrendLiveStatus {
+  letter: string;
+  stage1Active: boolean;
+  stage1Since: string | null;
+  stage1ActivationPrice: number | null;
+  stage1HighestHigh: number | null;
+  stage1HighestHighDate: string | null;
+  stage2Active: boolean;
+  stage2Since: string | null;
+  stage2ActivationPrice: number | null;
+  stage2HighestHigh: number | null;
+  stage2HighestHighDate: string | null;
+}
+
 // --------------------------------------------------------------------
 // Stage 1 / Stage 2 state (mirrors Buy/Bar2's own ref_high/ref_low shape)
 // --------------------------------------------------------------------
@@ -213,7 +237,7 @@ function simulateDtf(
   wtfTrace: WtfTraceEntry[],
   wtfDates: string[],
   inst: WtfInstance
-): PrimeTrendResult | null {
+): [PrimeTrendResult | null, PrimeTrendLiveStatus | null] {
   const checkpoints = wtfCheckpoints(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
 
   let startIdx: number | null = null;
@@ -223,7 +247,7 @@ function simulateDtf(
       break;
     }
   }
-  if (startIdx === null) return null;
+  if (startIdx === null) return [null, null];
 
   let s1: Stage | null = null;
   let s2: Stage | null = null;
@@ -231,6 +255,15 @@ function simulateDtf(
   let hh = 0;
   let hhDate: string | null = null;
   let final: PrimeTrendResult | null = null;
+
+  // Stage 1's own "since it last (re)formed" tracking -- mirrors
+  // curEntry/hh/hhDate one tier up, purely for PrimeTrendLiveStatus
+  // (computePrimeTrend's own historical trade log has no use for this,
+  // per the Filter rule: a Stage-1-only window is never a reported trade).
+  let s1Since: string | null = null;
+  let s1ActivationPrice: number | null = null;
+  let hh1 = 0;
+  let hh1Date: string | null = null;
 
   const closePair = (exitType: string, exitDate: string, exitPrice: number) => {
     if (curEntry !== null) {
@@ -260,12 +293,20 @@ function simulateDtf(
       hh = cur.h;
       hhDate = cur.date;
     }
+    if (s1 !== null && s1.active && cur.h > hh1) {
+      hh1 = cur.h;
+      hh1Date = cur.date;
+    }
 
     // --- Stage 1: DTF TZ BUY ---
     if (s1 === null) {
       const live = liveRefAsof(checkpoints, wtfDates, cur.date);
       if (live !== null && breakoutShape(prev, cur, live)) {
         s1 = new Stage(cur.h, cur.l);
+        s1Since = cur.date;
+        s1ActivationPrice = cur.h;
+        hh1 = 0;
+        hh1Date = null;
       }
     } else if (s1.active) {
       if (slShape(cur, s1.refLow)) {
@@ -283,6 +324,10 @@ function simulateDtf(
       const frozenRef = s1.frozenRef as number;
       if (breakoutShape(prev, cur, frozenRef)) {
         s1 = new Stage(cur.h, cur.l);
+        s1Since = cur.date;
+        s1ActivationPrice = cur.h;
+        hh1 = 0;
+        hh1Date = null;
       } else if (cur.h > frozenRef) {
         s1.frozenRef = cur.h;
       }
@@ -344,7 +389,23 @@ function simulateDtf(
     };
   }
 
-  return final;
+  const stage1Active = s1 !== null && s1.active;
+  const stage2Active = s2 !== null && s2.active;
+  const live: PrimeTrendLiveStatus = {
+    letter: inst.letter,
+    stage1Active,
+    stage1Since: stage1Active ? s1Since : null,
+    stage1ActivationPrice: stage1Active ? s1ActivationPrice : null,
+    stage1HighestHigh: stage1Active ? (hh1Date ? hh1 : null) : null,
+    stage1HighestHighDate: stage1Active ? hh1Date : null,
+    stage2Active,
+    stage2Since: stage2Active && curEntry ? (curEntry as [string, number])[0] : null,
+    stage2ActivationPrice: stage2Active && curEntry ? (curEntry as [string, number])[1] : null,
+    stage2HighestHigh: stage2Active ? (hhDate ? hh : null) : null,
+    stage2HighestHighDate: stage2Active ? hhDate : null,
+  };
+
+  return [final, live];
 }
 
 // --------------------------------------------------------------------
@@ -359,22 +420,55 @@ export interface OhlcRow {
   c: number;
 }
 
+function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
+  const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
+  const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
+  const wtfDates = wtfDays.map((d) => d.date);
+  const wtfTrace = runWtfTrace(wtfDays);
+  const instances = wtfTzbuy2Instances(wtfTrace);
+  return { dtfDays, wtfTrace, wtfDates, instances };
+}
+
 /** Returns a list of PrimeTrendResult, one per WTF TZ BUY 2 instance that
  * produced a confirmed Stage 2 (DTF TZ BUY ENTRY) before its own failure.
  * Instances with no confirmed entry are silently excluded, per the PRIME
  * TREND filter rule (see PRIME_TREND_RULEBOOK.md). */
 export function computePrimeTrend(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): PrimeTrendResult[] {
-  const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
-  const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
-  const wtfDates = wtfDays.map((d) => d.date);
-
-  const wtfTrace = runWtfTrace(wtfDays);
-  const instances = wtfTzbuy2Instances(wtfTrace);
+  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
 
   const results: PrimeTrendResult[] = [];
   for (const inst of instances) {
-    const res = simulateDtf(dtfDays, wtfTrace, wtfDates, inst);
+    const [res] = simulateDtf(dtfDays, wtfTrace, wtfDates, inst);
     if (res !== null) results.push(res);
   }
   return results;
+}
+
+/** Same inputs as computePrimeTrend, but answers a different question:
+ * "is this stock sitting in a PRIME TREND zone RIGHT NOW" (for a live
+ * screener), not "what trades has it produced historically".
+ *
+ * Returns one PrimeTrendLiveStatus per WTF TZ BUY 2 instance that is
+ * STILL OPEN as of the last available WTF candle (i.e. hasn't failed at
+ * its own SL / BAR SL2 within the supplied data) -- there is normally at
+ * most one such instance for a given stock, but every currently-open one
+ * is returned rather than assuming exactly one. Unlike computePrimeTrend,
+ * a Stage-1-only window (never escalated to Stage 2) is NOT excluded here
+ * -- a live screener needs to show "this stock just cleared its WTF
+ * anchor" just as much as "this stock has a confirmed entry", since both
+ * are actionable right now. An instance with neither stage currently
+ * active (already failed on the DTF side but the WTF anchor itself
+ * hasn't failed yet) is omitted. */
+export function computePrimeTrendLive(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): PrimeTrendLiveStatus[] {
+  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
+
+  const liveStatuses: PrimeTrendLiveStatus[] = [];
+  for (const inst of instances) {
+    if (inst.endEvent !== null) continue; // this instance already failed on the WTF side -- not "right now"
+    const [, live] = simulateDtf(dtfDays, wtfTrace, wtfDates, inst);
+    if (live !== null && (live.stage1Active || live.stage2Active)) {
+      liveStatuses.push(live);
+    }
+  }
+  return liveStatuses;
 }
