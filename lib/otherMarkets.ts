@@ -74,8 +74,12 @@ export const OTHER_MARKETS: MarketSegment[] = [
     label: "Indian Indices",
     instruments: [
   { symbol: "BANKNIFTY.IDX", name: "Nifty Bank" },
+  { symbol: "FINNIFTY.IDX", name: "Nifty Financial Services (FINNIFTY)" },
   { symbol: "INDIAVIX.IDX", name: "India VIX" },
+  { symbol: "MIDCPNIFTY.IDX", name: "Nifty Midcap Select" },
   { symbol: "NIFTY.IDX", name: "Nifty 50" },
+  { symbol: "NIFTYFPI.IDX", name: "Nifty FPI" },
+  { symbol: "NIFTYNXT50.IDX", name: "Nifty Next 50" },
   { symbol: "NIFTY_100.IDX", name: "Nifty 100" },
   { symbol: "NIFTY_200.IDX", name: "Nifty 200" },
   { symbol: "NIFTY_500.IDX", name: "Nifty 500" },
