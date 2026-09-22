@@ -4,8 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import { GLOBAL_INDICES } from "@/lib/indices";
 import { OTHER_MARKETS } from "@/lib/otherMarkets";
 import { formatDDMMYYYY } from "@/lib/dateFormat";
-import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
-import { computeBar2VariantEvents, type TzBuyReentryRule } from "@/lib/tzEngineBar2Variant";
+import { computeWtfEvents } from "@/lib/tzEngineWtf";
 
 interface SymbolMatch {
   symbol: string;
@@ -30,7 +29,6 @@ type Mode = "stock" | "index" | "market";
 // options and can't be used as a Yahoo search hint.
 const FNO_FILTER_VALUE = "FNO";
 const FNO_SEGMENT = OTHER_MARKETS.find((s) => s.key === "fno") ?? null;
-type EngineChoice = "bar2" | "newtheory";
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -131,6 +129,15 @@ const EVENT_KIND_COLOR: Record<string, string> = {
   "INVALID BAR SL": LIGHT_GREEN,
   "BAR SL2": DARK_RED,
 
+  // Post-SL reactivation reference quietly ratcheting up without yet
+  // confirming a full recovery -- same "positive development" framing as
+  // INVALID BAR SL above, one tier up (TZ BUY's own SL) and via the REAR
+  // family's own SL (REAR's own SL -> REAR RE-ENTER, REAR RE-ENTER's own
+  // SL -> self-recovery).
+  "INVALID TZ BUY HH": LIGHT_GREEN,
+  "INVALID REAR SL HH": LIGHT_GREEN,
+  "INVALID REAR RE-ENTER SL HH": LIGHT_GREEN,
+
   "BAR 2": DARK_GREEN,
   "BAR 2 HH": DARK_GREEN,
   "BAR 2 LL": LIGHT_RED,
@@ -214,10 +221,8 @@ function plainEventBadgeStyle(rowCandle: CandleKind): { background: string; colo
 // risk of clipping the first week/month.
 const ENGINE_HISTORY_FLOOR = "1900-01-01";
 
-// A day's combined event string joins multiple events with " + " (bar2
-// engine) or ", " (New Theory engine). Neither individual event tag ever
-// contains a plus or comma itself, so splitting on either separator is safe
-// regardless of which engine produced the string.
+// A day's combined event string joins multiple events with ", ". No
+// individual event tag ever contains a comma itself, so this split is safe.
 function splitEventTokens(eventStr: string): string[] {
   return eventStr
     .split(/\s*\+\s*|,\s*/)
@@ -268,8 +273,6 @@ export default function Home() {
   const [minStartDate, setMinStartDate] = useState("");
   const [minStartLoading, setMinStartLoading] = useState(false);
 
-  const [engineChoice, setEngineChoice] = useState<EngineChoice>("bar2");
-  const [reentryRule, setReentryRule] = useState<TzBuyReentryRule>("topref");
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [events, setEvents] = useState<Map<string, string>>(new Map());
   // Empty set = "All" (show every event); otherwise show rows matching
@@ -546,11 +549,7 @@ export default function Home() {
         throw new Error(data.error || "Failed to fetch history");
       }
       const fetchedRows: HistoryRow[] = data.rows || [];
-      setEvents(
-        engineChoice === "bar2"
-          ? computeBar2VariantEvents(fetchedRows, reentryRule)
-          : computeNewTheoryEvents(fetchedRows)
-      );
+      setEvents(computeWtfEvents(fetchedRows));
       // When the start date is still the auto-populated default (the
       // symbol's own listing date), show everything Yahoo actually
       // returned rather than re-filtering by that exact date string —
@@ -791,36 +790,6 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="field">
-          <label htmlFor="engine-select">Signal engine (for the Event column)</label>
-          <select
-            id="engine-select"
-            value={engineChoice}
-            onChange={(e) => setEngineChoice(e.target.value as EngineChoice)}
-          >
-            <option value="bar2">BAR 2 / REAR 2 / REAR RE-ENTER 2 + TZ BUY 2 (validated against real 2020 data)</option>
-            <option value="newtheory">New Theory v3 (experimental, unverified)</option>
-          </select>
-        </div>
-
-        {engineChoice === "bar2" && (
-          <div className="field">
-            <label htmlFor="reentry-rule-select">TZ BUY reactivation rule (when its own SL fires)</label>
-            <select
-              id="reentry-rule-select"
-              value={reentryRule}
-              onChange={(e) => setReentryRule(e.target.value as TzBuyReentryRule)}
-            >
-              <option value="topref">
-                New: reactivate above the highest reference across every tier (TZ BUY 2, BAR, REAR...)
-              </option>
-              <option value="simple">
-                Old: reactivate above max(TZ BUY&apos;s own ref, TZ BUY 2&apos;s ref) only
-              </option>
-            </select>
-          </div>
-        )}
-
         <button onClick={handleFetch} disabled={loading}>
           {loading ? "Fetching…" : "Fetch data"}
         </button>
@@ -838,22 +807,11 @@ export default function Home() {
             </button>
           </div>
           <p className="muted event-disclaimer">
-            {engineChoice === "bar2" ? (
-              <>
-                The Event column runs the BAR 2 / REAR 2 / REAR RE-ENTER 2 engine, with TZ BUY 2 —
-                the BAR/REAR tiers were verified end-to-end against real 2020 OHLC data (see
-                TZ_ENGINE_RULEBOOK_REFERENCE.md); TZ BUY 2 is newer and less independently checked.
-                Still a technical-analysis heuristic, not investment advice.
-              </>
-            ) : (
-              <>
-                The Event column runs New Theory v3, a provisional, unverified trading-signal
-                theory (see NEW_THEORY_RULEBOOK.md) — treat it as a hypothesis, not a confirmed
-                signal.
-              </>
-            )}{" "}
-            The first row never shows an event: each day is only evaluated against the one
-            before it.
+            The Event column runs the TZ BUY engine (TZ GREEN → TZ BUY → TZ BUY 2 → BAR/BAR 2 →
+            REAR/REAR 2 → REAR RE-ENTER/REAR RE-ENTER 2), verified end-to-end against real OHLC
+            data across many scrips and repeatedly corrected against hand-traced real events (see
+            WTF_RULEBOOK.md). Still a technical-analysis heuristic, not investment advice. The
+            first row never shows an event: each day is only evaluated against the one before it.
           </p>
           <div className="table-wrap">
             <table className="ledger-table">
