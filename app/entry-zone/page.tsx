@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { ScreenerRow } from "@/lib/dtfWtfScreener";
 import { SCREENER_SEGMENTS } from "@/lib/screenerSegments";
+import { formatDDMMYYYY } from "@/lib/dateFormat";
 
 type ListChoice = "tzBuy" | "tzBuyEntry";
 
@@ -154,7 +155,7 @@ export default function EntryZone() {
                     <td>
                       {r.symbol} <span className="name">{r.name}</span>
                     </td>
-                    <td>{r.activeAsOn}</td>
+                    <td>{formatDDMMYYYY(r.activeAsOn)}</td>
                     <td>{fmt(r.activationPrice)}</td>
                     <td>{fmt(r.highestHigh)}</td>
                     <td className={r.percentReturn >= 0 ? "return-pos" : "return-neg"}>

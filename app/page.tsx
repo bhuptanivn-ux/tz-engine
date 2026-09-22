@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { GLOBAL_INDICES } from "@/lib/indices";
 import { OTHER_MARKETS } from "@/lib/otherMarkets";
+import { formatDDMMYYYY } from "@/lib/dateFormat";
 import { computeNewTheoryEvents } from "@/lib/tzEngineNewTheory";
 import { computeBar2VariantEvents, type TzBuyReentryRule } from "@/lib/tzEngineBar2Variant";
 
@@ -711,7 +712,7 @@ export default function Home() {
                 {minStartLoading
                   ? "Checking earliest available date…"
                   : minStartDate
-                  ? `Data available from ${minStartDate}`
+                  ? `Data available from ${formatDDMMYYYY(minStartDate)}`
                   : "Earliest available date unknown — no lower limit applied."}
               </div>
             )}
@@ -883,7 +884,7 @@ export default function Home() {
                   const stripeStyle = stripeHex ? { borderLeft: `4px solid ${stripeHex}` } : undefined;
                   return (
                     <tr key={r.date}>
-                      <td className={cellClass} style={stripeStyle}>{r.date}</td>
+                      <td className={cellClass} style={stripeStyle}>{formatDDMMYYYY(r.date)}</td>
                       <td className={cellClass}>{fmt(r.open)}</td>
                       <td className={cellClass}>{fmt(r.high)}</td>
                       <td className={cellClass}>{fmt(r.low)}</td>
