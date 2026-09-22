@@ -92,6 +92,16 @@ check(
 # instance's own end never looks past the point that SPECIFIC pid's own
 # tz_buy2 state disappears (wiped to None, or the whole branch dies),
 # regardless of whether an explicit SL-type event coincides with it.
+#
+# The 2014-05-05(D) instance below was recomputed after a separate,
+# deeper CORE ENGINE fix (see WTF_RULEBOOK.md, "the '1' tiers' own
+# post-SL reactivation reference must also keep climbing on intervening
+# highs"): branch E's own 2014-03-10 "TZ BUY" reactivation was itself a
+# bug (confirmed against a stale, frozen reference instead of the
+# properly-updated one), so the WTF TZ BUY 2 formation it used to feed
+# into this table (2014-03-24(E)) never should have existed in the first
+# place. With the engine fixed, that window's real cross-timeframe
+# instance is 2014-05-05(D) instead.
 # ---------------------------------------------------------------------------
 check(
     "ICICIBANK.NS",
@@ -101,7 +111,7 @@ check(
         ("C", "2003-08-18", "2003-10-03", 38.010000000000005, "BAR SL2(C.5)", "2008-06-02", 139.89, 264.64, "2008-01-14"),
         ("D", "2010-08-09", "2010-09-09", 190.95, "DTF TZ BUY ENTRY SL", "2011-01-10", 187.65, 232.55, "2010-11-05"),
         ("D", "2012-09-17", "2013-01-02", 211.45999999999998, "DTF TZ BUY ENTRY SL", "2013-02-06", 210.47, 224.0, "2013-01-31"),
-        ("E", "2014-03-24", "2014-05-12", 253.08999999999997, "DTF TZ BUY ENTRY SL", "2014-07-11", 247.3, 289.67, "2014-05-16"),
+        ("D", "2014-05-05", "2014-05-16", 259.84, "DTF TZ BUY ENTRY SL", "2014-06-20", 254.05, 274.85, "2014-06-09"),
         ("A", "2014-11-03", "2015-01-27", 341.56, "DTF TZ BUY ENTRY SL", "2015-01-30", 338.82, 357.64, "2015-01-28"),
         ("B", "2017-05-22", "2017-07-17", 299.7, "DTF TZ BUY ENTRY SL", "2017-07-28", 296.2, 314.45, "2017-07-27"),
         ("B", "2017-10-30", "2018-01-17", 340.95, "DTF TZ BUY ENTRY SL", "2018-02-05", 333.7, 365.7, "2018-01-29"),

@@ -205,6 +205,34 @@ ADANIENT.NS (unaffected by this bug — re-confirmed unchanged) and
 ICICIBANK.NS (10 confirmed instances, all now landing on sane, bounded
 entry/exit windows) exactly.
 
+## Downstream fix: a core TZ ENGINE bug changed one ICICIBANK.NS instance (2014 window)
+
+Separately from the letter-recycling bug above, a genuine bug was found
+and fixed in the underlying `tz_engine_wtf.py` engine itself — see
+`WTF_RULEBOOK.md`, "the '1' tiers' own post-SL reactivation reference
+must also keep climbing on intervening highs." TZ BUY's own (and REAR's
+own, and REAR RE-ENTER's own) post-SL reactivation reference was a
+one-time frozen snapshot instead of a live, quietly-climbing reference
+like every analogous case elsewhere in the file — found by the user
+hand-tracing ICICIBANK.NS branch E's real numbers (219.38 → 223.64 →
+225.73) against a `TZ BUY(E)` the engine wrongly confirmed on
+2014-03-10.
+
+Because PRIME TREND is built directly on top of the WTF TZ BUY 2 layer,
+fixing that engine bug changes the underlying WTF trace, which in turn
+changes which WTF TZ BUY 2 formation feeds PRIME TREND for that window.
+Before the fix, the table below listed a `2014-03-24(E)` WTF formation
+(itself downstream of the buggy `TZ BUY(E)`) entering DTF at
+2014-05-12 @ 253.09 and exiting `DTF TZ BUY ENTRY SL` on 2014-07-11 @
+247.30 (highest high 289.67, 2014-05-16). With the engine fixed, that
+spurious `2014-03-24(E)` formation no longer occurs; the real
+cross-timeframe instance for that window is `2014-05-05(D)`, entering
+DTF at 2014-05-16 @ 259.84 and exiting `DTF TZ BUY ENTRY SL` on
+2014-06-20 @ 254.05 (highest high 274.85, 2014-06-09). Every other
+ICICIBANK.NS instance, and all four ADANIENT.NS instances, are
+unaffected. `test_prime_trend_smoke.py` has been updated to lock in the
+corrected value.
+
 ## Open items
 
 - Implemented in Python (`prime_trend.py`) and verified against real

@@ -859,6 +859,98 @@ exceeds it, tripping the mute → TZ BUY 2's own SL wipes the BAR lineage
 HH(A)`) — confirmed to discriminate cleanly against the pre-fix code
 (silent at that last step).
 
+## Bug: the "1" tiers' own post-SL reactivation reference must also keep climbing on intervening highs (ICICIBANK.NS WTF)
+
+The quiet-climb fix documented above ("TZ BUY 2's own post-SL recovery bar
+must keep climbing on intervening highs") was applied to the three "2"
+tiers (TZ BUY 2, REAR 2, REAR RE-ENTER 2) and to two of the "deeper tier
+already failed" cases (`INVALID BAR SL HH`, `INVALID REAR SL HH` — see
+below). It was **not** applied to the three "1" tiers' own reactivation
+references: `buy.reentry_threshold` (TZ BUY's own SL → reactivation),
+`RearSL.entry_threshold` (REAR's own SL → REAR RE-ENTER), and
+`RearReenterSL.entry_threshold` (REAR RE-ENTER's own SL → self-recovery).
+All three were one-time frozen snapshots — taken via `self._current_top_ref
+(buy)` at the exact moment the respective SL fired — with no `elif`
+fallback for an intervening high that clears the snapshot without fully
+confirming reactivation. Exactly the same defect, one layer up.
+
+Found while checking a specific real event by hand (ICICIBANK.NS WTF,
+branch E): 2014-03-10 was flagged as `TZ BUY(E)`, which looked wrong on
+inspection. My first pass concluded (incorrectly) that the code was
+behaving as designed. The user's correction pinned down the actual rule
+precisely: "TZ BUY → TZ BUY 2 → TZ BUY 2 SL → TZ BUY SL. Whether TZ BUY SL
+occurs on the same day as TZ BUY 2 or following days, reference high will
+be the highest high after TZ BUY 2 and not TZ BUY... Highest high can be
+TZ BUY 2 high or if during later days there is a higher high then, that
+will be the new reference high for TZ BUY for reactivation." Traced by
+hand against the real numbers: TZ BUY REFERENCE HIGH IS 219.38
+(2013-12-09, TZ BUY 2's own peak at the moment TZ BUY's own SL fired),
+which later got revised to 223.64 (2014-03-03) and 225.73 (2014-03-10) —
+both genuine highs that cleared the *previous* bar but never closed back
+above it, so under the buggy code they were silently dropped instead of
+raising the bar, leaving the stale 219.38 as the reactivation level
+forever and letting the eventual `TZ BUY(E)` fire against a level price
+had already cleared and moved six-plus points past, months earlier.
+
+The user immediately flagged that the identical gap had to exist one
+level deeper too: "Same logic in the case of REAR AND REAR RE ENTER
+REACTIVATION in case of any SL of REAR & REAR RE ENTER after REAR 2 &
+REAR RE ENTER 2 respectively." Checked `_eval_rear_sl_progress` (REAR's
+own SL → REAR RE-ENTER) and `_eval_rear_reenter_sl_progress` (REAR
+RE-ENTER's own SL → self-recovery) directly — both had the exact same
+missing pattern as TZ BUY's own case.
+
+**Fix**: added the missing `elif` branch to all three reactivation paths,
+mirroring `INVALID TZ BUY 2 HH` exactly — any new high clearing the frozen
+threshold by `ANY` (0.01) without fully confirming reactivation (the
+standard shape: `L>=prevL`, `H-ref>=THRESH`, confirming `C>=ref`) now
+raises the threshold to that new high and emits an event:
+
+- TZ BUY's own SL → reactivation (`_eval_buy`): `INVALID TZ BUY HH(label)`
+- REAR's own SL → REAR RE-ENTER (`_eval_rear_sl_progress`):
+  `INVALID REAR SL HH(label)`
+- REAR RE-ENTER's own SL → self-recovery (`_eval_rear_reenter_sl_progress`):
+  `INVALID REAR RE-ENTER SL HH(label)`
+
+**Verification**:
+- Full `test_wtf_smoke.py` suite (25 tests at the time) still passed with
+  no regressions.
+- Re-ran the real ICICIBANK.NS WTF trace around 2014-01-20 to 2014-04-01:
+  now shows `INVALID TZ BUY HH(E)` on exactly 2014-03-03 and 2014-03-10,
+  matching the user's hand-traced sequence (219.38 → 223.64 → 225.73)
+  exactly; E correctly does NOT reactivate on 2014-03-10, and `TZ BUY(D)`
+  fires instead (an unrelated, already-correct sibling branch).
+- Full old-vs-new diff on ADANIENT.NS: 1 diff on WTF, 20 diffs on DTF, all
+  internally consistent with the fix (e.g. 2019-05-21 DTF: old code wrongly
+  shows `TZ BUY(B)`, new code correctly shows `INVALID TZ BUY HH(B)`).
+- Tests 26 (TZ BUY), 27 (REAR → REAR RE-ENTER), and 28 (REAR RE-ENTER's
+  own self-recovery) added to `test_wtf_smoke.py`, each built the same way
+  as Test 18: a quiet-climb candle that raises the bar without confirming,
+  a candle that would have wrongly confirmed under the old frozen
+  reference but must stay silent under the fix, and a final candle that
+  correctly confirms against the properly-raised reference. Test 27 and
+  28 chain directly off Test 7's multi-generation BAR-racing fixture,
+  since REAR RE-ENTER can only be reached via REAR's own SL recovery in
+  the first place — so Test 28 also re-confirms Test 27's fix holds up as
+  the foundation for a further reactivation cycle stacked on top of it.
+
+Root cause, for the record: this is the same gap documented above for the
+"2" tiers (PAYTM.NS), just missed one layer up. When this quiet-climb
+principle was first identified and fixed, it was applied to the "2" tiers
+and to the two "deeper tier already failed" cases that already existed
+(`INVALID BAR SL HH`, `INVALID REAR SL HH` as they applied to a BAR/REAR
+lineage that's already dead), but the parallel case for the "1" tiers'
+own SL — TZ BUY's own top-level SL, REAR's own SL, REAR RE-ENTER's own
+SL — was never audited for the same gap, since real data hadn't yet
+produced a multi-week gap between one of THOSE specific SLs and its
+eventual genuine reactivation. ICICIBANK.NS's branch E did.
+
+**Impact on PRIME TREND**: since the underlying `tz_engine_wtf.py` trace
+changes with this fix (confirmed diffs above), `prime_trend.py`'s own
+downstream worked tables (in `PRIME_TREND_RULEBOOK.md` and locked into
+`test_prime_trend_smoke.py`) were recomputed against the fixed engine —
+see `PRIME_TREND_RULEBOOK.md` for the updated results.
+
 ## PRIME TREND is now its own theory — see `PRIME_TREND_RULEBOOK.md`
 
 The DTF-with-respect-to-WTF cross-timeframe follow-up layer (WTF TZ BUY
@@ -876,6 +968,10 @@ but is tracked independently going forward.
   `main`/TypeScript — no longer pending.
 - The TZ BUY 2 HH-mute fix (above) has **not yet** been re-verified
   against those other real datasets, nor ported to `main`/TypeScript.
+- The "1" tiers' own reactivation quiet-climb fix (above -- TZ BUY's own
+  SL, REAR's own SL, REAR RE-ENTER's own SL) has **not yet** been
+  re-verified against the other real datasets beyond ADANIENT.NS and
+  ICICIBANK.NS, nor ported to `main`/TypeScript.
 - The `extra_reentry_floor` cross-theory hook (deferred to
   DTF-with-respect-to-TZ-BUY work) — now documented as its own separate
   theory in `PRIME_TREND_RULEBOOK.md` (the TZ BUY 2 → TZ BUY → TZ BUY

@@ -859,6 +859,19 @@ class TZEngine:
                 buy.reentry_threshold = None
                 ev.append(f"{label}({branch_label(pc.id)})")
                 reactivated_today = True
+            elif not self._milestone_blocked(pc) and cur.h > ref and (cur.h - ref) >= ANY:
+                # Real-data bug (ICICIBANK.NS): every other frozen SL
+                # reference in this file quietly keeps climbing on any new
+                # high while dormant/SL'd (INVALID BAR SL HH, INVALID TZ
+                # BUY 2 HH) -- this one didn't. A high that clears the
+                # frozen reentry_threshold but doesn't fully confirm
+                # reactivation (fails l>=prev.l or the confirming close)
+                # was simply dropped, leaving the STALE pre-SL reference as
+                # the reactivation bar forever. That let a LATER, lower
+                # high wrongly confirm "reactivated" against a level price
+                # had already cleared and moved past weeks earlier.
+                buy.reentry_threshold = cur.h
+                ev.append(f"INVALID TZ BUY HH({branch_label(pc.id)})")
 
         # TZ BUY 2 variant: forms off TZ BUY's own reference, tracks/
         # recovers independently for as long as buy.active stays True,
@@ -1860,6 +1873,14 @@ class TZEngine:
             ev.append(f"REAR RE-ENTER({label_id})")
             rear.dormant = True  # this REAR is now permanently retired for this lineage
             return ev
+        if not self._milestone_blocked(pc) and cur.h > ref and (cur.h - ref) >= ANY:
+            # Same bug class as TZ BUY's own SL-recovery (see there): this
+            # frozen reference must keep climbing quietly on any new high
+            # that clears it but doesn't fully confirm REAR RE-ENTER, or a
+            # later, lower high wrongly confirms against a level price
+            # already cleared and moved past weeks earlier.
+            sl.entry_threshold = cur.h
+            ev.append(f"INVALID REAR SL HH({label_id})")
         return ev
 
     # =================== REAR RE-ENTER family ===================
@@ -1930,6 +1951,13 @@ class TZEngine:
             # = None) the moment this SL fired -- a fresh REAR RE-ENTER 2
             # has to form from scratch before RED1/RED2 can attach again.
             return ev
+        if not self._milestone_blocked(pc) and cur.h > ref and (cur.h - ref) >= ANY:
+            # Same bug class as TZ BUY's own SL-recovery / REAR's own SL
+            # (see there): this frozen reference must keep climbing
+            # quietly on any new high that clears it but doesn't fully
+            # confirm self-recovery.
+            sl.entry_threshold = cur.h
+            ev.append(f"INVALID REAR RE-ENTER SL HH({label_id})")
         return ev
 
 

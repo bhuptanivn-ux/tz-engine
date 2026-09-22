@@ -1008,5 +1008,119 @@ assert "TZ BUY 2 HH(A)" in p10_events, \
     f"Test 25 FAILED: TZ BUY 2's own HH must show after its own fresh SL recovery, got {p10_events}"
 print("Test 25: TZ BUY 2's own HH-mute correctly resets on its own SL recovery, instead of carrying over from a prior incarnation.\n")
 
+# ---------------------------------------------------------------------------
+# Test 26: real bug found against real data (ICICIBANK.NS WTF) -- TZ BUY's
+# own post-SL reactivation reference (buy.reentry_threshold) was a ONE-TIME
+# frozen snapshot taken the instant TZ BUY's own SL fired, with no "quiet
+# climb" update afterward -- unlike every other analogous frozen SL
+# reference in this file (INVALID BAR SL HH, INVALID TZ BUY 2 HH), which
+# keep climbing on any new high (ANY=0.01) while dormant, without yet
+# confirming full reactivation (THRESH=0.20 breakout shape). That let a
+# LATER, LOWER high wrongly confirm "TZ BUY" reactivation against a level
+# price had already cleared and moved past weeks earlier. Real trace:
+# ICICIBANK.NS branch E's reactivation reference was 219.38 (2013-12-09,
+# TZ BUY 2's own peak at the moment TZ BUY's own SL fired), which price
+# then cleared without confirming on 2014-03-03 (high 223.64) and again on
+# 2014-03-10 (high 225.73) -- both of which the buggy code silently
+# ignored, leaving 219.38 as the reactivation bar forever and wrongly
+# firing "TZ BUY(E)" on 2014-03-10 against a reference price had already
+# moved 6+ points past. Fixed by adding the same "INVALID TZ BUY HH" quiet-
+# climb elif used elsewhere in the file.
+# ---------------------------------------------------------------------------
+rows26 = rows3_base + [
+    ("g6", 100, 104, 99.5, 100),       # INVALID TZ BUY HH(A) -- ref 103 -> 104
+    # (clears old 103 by 1.0 >= ANY, but l=99.5 < prev.l=99.2? no, 99.5>=99.2
+    # is fine -- what actually blocks full reactivation here is c=100 < 104)
+    ("g7", 99.8, 103.5, 99.5, 103.2),  # would WRONGLY reactivate under the old,
+    # frozen-at-103 code (h-103=0.5>=0.20, c=103.2>=103) -- must stay SILENT
+    # under the fix, since the live reference has already moved to 104
+    ("g8", 100, 105, 99.6, 104.5),     # TZ BUY(A) reactivates correctly against
+    # the properly-updated reference (104)
+]
+seen26 = run(rows26, "Test 26: TZ BUY's own post-SL reactivation reference must quietly keep climbing, not stay frozen")
+expected26 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "TZ BUY SL(A)",
+              "INVALID TZ BUY HH(A)"]
+missing26 = [e for e in expected26 if e not in seen26]
+assert not missing26, f"Test 26 MISSING: {missing26}"
+g7_events = next(evs for date, evs in run.last_trace if date == "g7")
+assert g7_events == [], \
+    f"Test 26 FAILED: a high that only clears the STALE frozen reference must not reactivate TZ BUY, got {g7_events}"
+g8_events = next(evs for date, evs in run.last_trace if date == "g8")
+assert "TZ BUY(A)" in g8_events, \
+    f"Test 26 FAILED: TZ BUY should reactivate once the properly-updated reference is cleared, got {g8_events}"
+print("Test 26: TZ BUY's own post-SL reactivation reference correctly ratchets up instead of staying frozen at the SL-time snapshot.\n")
+
+# ---------------------------------------------------------------------------
+# Test 27: same bug class as Test 26, one tier deeper -- REAR's own post-SL
+# reactivation reference (sl.entry_threshold, feeding REAR RE-ENTER) was
+# ALSO a one-time frozen snapshot with no quiet-climb update. Explicitly
+# flagged by the user as the same defect affecting REAR's own SL recovery
+# and REAR RE-ENTER's own SL recovery (Test 28), immediately after the
+# TZ BUY case (Test 26) was found and corrected. Built on top of Test 7's
+# multi-generation BAR-racing fixture, which already reaches REAR(A) with
+# TZ BUY 2's own peak (104) sitting higher than REAR's own ref (98) -- the
+# same "whichever tier is numerically highest, not structurally deepest"
+# rule from Test 8 applies to the reactivation snapshot here too.
+# ---------------------------------------------------------------------------
+rows27 = rows7 + [
+    ("j16", 93, 93, 92, 92.5),          # REAR SL(A) -- entry_threshold snapshots
+    # at 104 (TZ BUY 2's own peak, higher than REAR's own 98)
+    ("j17", 92.4, 92.5, 92.3, 92.4),    # quiet day, buffers prev.l away from 92
+    ("j18", 92.4, 104.5, 92.3, 92.5),   # INVALID REAR SL HH(A) -- ref 104 -> 104.5
+    # (clears old 104 by 0.5 >= ANY, but c=92.5 blocks full confirmation)
+    ("j19", 92.5, 104.25, 92.35, 104.05), # would WRONGLY confirm REAR RE-ENTER(A)
+    # under the old, frozen-at-104 code (h-104=0.25>=0.20, c=104.05>=104) --
+    # must stay SILENT under the fix, since the live reference is now 104.5
+    ("j20", 92.6, 104.75, 92.4, 104.6), # REAR RE-ENTER(A) confirms correctly
+    # against the properly-updated reference (104.5)
+]
+seen27 = run(rows27, "Test 27: REAR's own post-SL reactivation reference (-> REAR RE-ENTER) must quietly keep climbing")
+expected27 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "RED1(A)", "RED2(A)",
+              "BAR(A.1)", "BAR 2(A.1)", "BAR SL(A.1)", "BAR(A.2)", "BAR SL2(A.1)", "REAR(A)",
+              "REAR SL(A)", "INVALID REAR SL HH(A)"]
+missing27 = [e for e in expected27 if e not in seen27]
+assert not missing27, f"Test 27 MISSING: {missing27}"
+j19_events = next(evs for date, evs in run.last_trace if date == "j19")
+assert "REAR RE-ENTER(A)" not in j19_events, \
+    f"Test 27 FAILED: a high that only clears the STALE frozen reference must not confirm REAR RE-ENTER, got {j19_events}"
+j20_events = next(evs for date, evs in run.last_trace if date == "j20")
+assert "REAR RE-ENTER(A)" in j20_events, \
+    f"Test 27 FAILED: REAR RE-ENTER should confirm once the properly-updated reference is cleared, got {j20_events}"
+print("Test 27: REAR's own post-SL reactivation reference correctly ratchets up instead of staying frozen at the SL-time snapshot.\n")
+
+# ---------------------------------------------------------------------------
+# Test 28: same bug class one tier deeper still -- REAR RE-ENTER's own
+# post-SL self-recovery reference (sl.entry_threshold on RearReenterSL) was
+# ALSO a one-time frozen snapshot with no quiet-climb update. Chains
+# directly off Test 27's fixture (REAR RE-ENTER's own SL can only be
+# reached after REAR's own SL has already recovered into it), so this also
+# incidentally re-confirms Test 27's fix holds up as the foundation for a
+# further reactivation cycle on top of it.
+# ---------------------------------------------------------------------------
+rows28 = rows27 + [
+    ("j21", 92.5, 92.6, 92.1, 92.0),     # REAR RE-ENTER SL(A) -- entry_threshold
+    # snapshots at 104.75 (REAR RE-ENTER's own peak)
+    ("j22", 92.1, 105.0, 92.15, 100.0),  # INVALID REAR RE-ENTER SL HH(A) -- ref
+    # 104.75 -> 105.0 (clears old 104.75 by 0.25 >= ANY, but c=100.0 blocks
+    # full confirmation)
+    ("j23", 92.2, 104.95, 92.2, 104.85), # would WRONGLY confirm REAR RE-ENTER(A)
+    # under the old, frozen-at-104.75 code (h-104.75=0.20>=0.20, c=104.85>=
+    # 104.75) -- must stay SILENT under the fix, since the live reference is
+    # now 105.0
+    ("j24", 92.3, 105.3, 92.25, 105.1),  # REAR RE-ENTER(A) self-recovers correctly
+    # against the properly-updated reference (105.0)
+]
+seen28 = run(rows28, "Test 28: REAR RE-ENTER's own post-SL self-recovery reference must quietly keep climbing")
+expected28 = ["REAR RE-ENTER(A)", "REAR RE-ENTER SL(A)", "INVALID REAR RE-ENTER SL HH(A)"]
+missing28 = [e for e in expected28 if e not in seen28]
+assert not missing28, f"Test 28 MISSING: {missing28}"
+j23_events = next(evs for date, evs in run.last_trace if date == "j23")
+assert "REAR RE-ENTER(A)" not in j23_events, \
+    f"Test 28 FAILED: a high that only clears the STALE frozen reference must not confirm REAR RE-ENTER's own self-recovery, got {j23_events}"
+j24_events = next(evs for date, evs in run.last_trace if date == "j24")
+assert "REAR RE-ENTER(A)" in j24_events, \
+    f"Test 28 FAILED: REAR RE-ENTER should self-recover once the properly-updated reference is cleared, got {j24_events}"
+print("Test 28: REAR RE-ENTER's own post-SL self-recovery reference correctly ratchets up instead of staying frozen at the SL-time snapshot.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")
