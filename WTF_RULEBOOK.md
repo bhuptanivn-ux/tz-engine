@@ -797,12 +797,68 @@ instruction, this fix has **not yet been re-verified against the other
 real datasets** (KALYANKJIL.NS, PAYTM.NS, MAXESTATES.NS, the three
 BBOX.NS variants, NSEI, EICHERMOT.NS) — that check is still pending.
 
+## Bug: TZ BUY 2's own HH-mute must not survive its own SL recovery (ADANIENT.NS DTF)
+
+Found while doing the first real DTF/WTF cross-timeframe entry/exit
+analysis (branch A, ADANIENT.NS daily data): TZ BUY 2 recovered from its
+own SL on 2007-06-26 and climbed from 11.93 to 16.20 over the following
+six weeks, yet **not one `TZ BUY 2 HH(A)` event showed** despite the
+internal reference genuinely climbing every single step (confirmed by
+direct inspection of `buy.tz_buy2.ref_high`, which tracked `cur.h`
+exactly, day after day, while the corresponding event string never
+reached the output).
+
+Root cause: `tz_buy2_hh_muted` lives on `buy`, not on the `Bar2` object
+itself. It gets permanently tripped once some deeper tier (a BAR
+lineage, in this case) reaches or exceeds TZ BUY 2's own reference —
+which is exactly what happened back in February 2007, when `BAR
+2(A.1)`'s own reference climbed past the *original* TZ BUY 2(A)'s
+reference. That original TZ BUY 2(A) then hit its own SL
+(2007-03-06), which correctly wipes the whole BAR family (Family 1,
+decisive) — but TZ BUY 2 itself is *never a dead end* (also Family 1)
+and recovered fresh in place on 2007-06-26, a brand-new climbing life
+with nothing deeper below it any more. The stale `tz_buy2_hh_muted`
+flag, however, was never reset by this in-place recovery (unlike TZ
+BUY's own top-level SL/reactivation, which wipes `tz_buy2` to `None`
+and already resets the flag at that point) — so the fresh recovery
+inherited a mute earned by a structurally unrelated, already-wiped
+prior incarnation, silently hiding its own HH progress indefinitely.
+
+**Fix** (`_eval_tzbuy2`, the SL-recovery branch): reset
+`buy.tz_buy2_hh_muted = False` the moment TZ BUY 2's own SL recovery
+confirms —
+
+```python
+b2.sl_active = False
+b2.reentry_threshold = None
+buy.tz_buy2_hh_muted = False
+ev.append(f"TZ BUY 2({branch_label(pc.id)})")
+```
+
+Same principle already established for BAR 2 not persisting through
+BAR's own reactivation ("every fresh BAR generation needs its own new
+BAR 2 from scratch") — a fresh TZ BUY 2 climbing life earns its own
+fresh, unmuted HH display, since whatever deeper tier justified the old
+mute was wiped along with everything else when this same SL fired.
+
+**Verification**: re-ran the full ADANIENT.NS WTF (1044 rows) and DTF
+(4940 rows) datasets end to end — no crash, no regression (509 and 2404
+event-days respectively). Test 25 reproduces the exact real-data shape
+synthetically end to end (TZ BUY 2 forms → a BAR lineage's own reference
+exceeds it, tripping the mute → TZ BUY 2's own SL wipes the BAR lineage
+→ TZ BUY 2 recovers fresh → a further tiny rally must show `TZ BUY 2
+HH(A)`) — confirmed to discriminate cleanly against the pre-fix code
+(silent at that last step).
+
 ## Open items
 
-- Re-verify the RED1/RED2-without-BAR-2 rule reversal above against the
-  other real datasets already used this session (KALYANKJIL.NS,
-  PAYTM.NS, MAXESTATES.NS, BBOX.NS ×3, NSEI, EICHERMOT.NS) once
-  instructed to do so.
+- The RED1/RED2-without-BAR-2 rule reversal (above) has since been
+  re-verified byte-for-byte against all real datasets used this session
+  (KALYANKJIL.NS, PAYTM.NS, MAXESTATES.NS, BBOX.NS ×3, NSEI,
+  EICHERMOT.NS, both ADANIENT.NS files) as part of porting it to
+  `main`/TypeScript — no longer pending.
+- The TZ BUY 2 HH-mute fix (above) has **not yet** been re-verified
+  against those other real datasets, nor ported to `main`/TypeScript.
 - The `extra_reentry_floor` cross-theory hook (deferred to
   DTF-with-respect-to-TZ-BUY work, not started) — see "Cross-time-frame
   follow-up actions" near the top of this file for the mapping given so

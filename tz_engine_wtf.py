@@ -1337,6 +1337,21 @@ class TZEngine:
                 b2.ref_low = cur.l
                 b2.sl_active = False
                 b2.reentry_threshold = None
+                # Real-data bug (ADANIENT DTF): tz_buy2_hh_muted lives on
+                # buy, not on this Bar2 object, so an in-place SL recovery
+                # (unlike TZ BUY's own reactivation, which wipes tz_buy2
+                # entirely and already resets this) was silently carrying
+                # over a mute tripped by a PRIOR incarnation's own deeper
+                # tier (BAR/BAR 2/REAR), even though that whole deeper tier
+                # was wiped the moment this SL fired. That permanently hid
+                # every "TZ BUY 2 HH(" for the fresh recovery, even while
+                # it climbed hugely with nothing deeper to justify muting
+                # it. This recovery is a fresh restart of TZ BUY 2's own
+                # climbing life, same principle as BAR 2 not persisting
+                # through BAR reactivation -- it earns its own fresh,
+                # unmuted HH display until something deeper than IT
+                # actually forms again.
+                buy.tz_buy2_hh_muted = False
                 ev.append(f"TZ BUY 2({branch_label(pc.id)})")
             elif cur.h > ref and (cur.h - ref) >= ANY:
                 # Real-data bug (PAYTM.NS): a new high that doesn't (yet)

@@ -956,5 +956,57 @@ assert "BAR(A.1)" in k4_events, \
     f"Test 24 FAILED: a fresh BAR must reform reusing the freed label 'A.1' after RED2 terminated the old one, got {k4_events}"
 print("Test 24: RED1/RED2 on a BAR lineage attaches without needing BAR 2 first, and completing it frees the label for reuse.\n")
 
+# ---------------------------------------------------------------------------
+# Test 25: real bug found against real data (ADANIENT.NS DTF) -- TZ BUY 2's
+# own HH-mute flag (tz_buy2_hh_muted) lives on buy, not on the Bar2 object
+# itself, so it was surviving TZ BUY 2's own in-place SL recovery. A deeper
+# tier (a BAR lineage) that had once reached or exceeded a PRIOR incarnation
+# of TZ BUY 2's own reference permanently tripped the mute; when that whole
+# deeper tier was later wiped by TZ BUY 2's own decisive SL and TZ BUY 2
+# recovered fresh (a brand-new climbing life, per Family 1's "own SL is
+# never a dead end"), the stale mute carried over and silently hid every
+# "TZ BUY 2 HH(" the fresh recovery earned, even with nothing deeper left
+# to justify it. Real trace: ADANIENT.NS branch A's TZ BUY 2 recovered
+# 2007-06-26 and climbed from 11.93 to 16.20 over the following six weeks
+# with NOT ONE "TZ BUY 2 HH(A)" shown, despite the reference genuinely
+# climbing every step (confirmed via direct internal-state inspection).
+# Fixed by resetting tz_buy2_hh_muted = False at the moment TZ BUY 2's own
+# SL recovery confirms -- same principle as BAR 2 not persisting through
+# BAR's own reactivation: a fresh climbing life earns its own fresh,
+# unmuted HH display.
+# ---------------------------------------------------------------------------
+rows25 = [
+    ("p0", 100, 100, 99.0, 99.5),
+    ("p1", 100, 101, 99.2, 101),       # TZ GREEN(A)
+    ("p1b", 100.5, 100.5, 99.5, 100),  # consolidation
+    ("p2", 99.4, 100, 99.3, 99.4),     # RED(A)
+    ("p3", 99.5, 102, 99.4, 102),      # TZ BUY(A) ref_high=102 ref_low=99.4
+    ("p3b", 99, 99.5, 40.0, 99.5),     # deep dip+reclaim -- buy.ref_low -> 40,
+    # a big buffer kept clear of everything below so it never collides with
+    # TZ BUY 2's own SL further down
+    ("p4", 95, 105, 94.5, 105),        # TZ BUY 2(A) ref_high=105 ref_low=94.5
+    ("p4b", 96, 108, 96, 107),         # TZ BUY 2 HH(A) -> 108, local low raised to 96
+    ("p5", 95.5, 96, 95.0, 95.3),      # RED1(A) -- l=95.0 stays above TZ BUY 2's
+    # own ref_low (94.5), so no TZ BUY 2 SL collision
+    ("p6", 94.8, 94.8, 94.6, 94.7),    # RED2(A) -- bar_pending=True
+    ("p7", 95, 110, 95, 110),          # BAR(A.1) ref_high=110 -- exceeds TZ BUY 2's
+    # own ref_high (108) -- trips tz_buy2_hh_muted
+    ("p8", 94, 94, 90, 91),            # TZ BUY 2 SL(A) -- l=90 < ref_low(94.5) by
+    # 4.5 >= 0.20, c=91 <= 94.5 -- decisive, wipes BAR(A.1) along with it
+    ("p9", 94.5, 111, 94.5, 111),      # TZ BUY 2(A) recovers above the reactivation
+    # threshold (110, "whichever is higher" snapshotted at the SL)
+    ("p10", 111, 111.5, 111, 111.5),   # a further tiny (ANY=0.01) rally -- must
+    # show TZ BUY 2 HH(A) now that the recovery is a fresh climbing life
+]
+seen25 = run(rows25, "Test 25: TZ BUY 2's own HH-mute must not survive its own SL recovery")
+expected25 = ["TZ GREEN(A)", "RED(A)", "TZ BUY(A)", "TZ BUY 2(A)", "RED1(A)", "RED2(A)",
+              "BAR(A.1)", "TZ BUY 2 SL(A)"]
+missing25 = [e for e in expected25 if e not in seen25]
+assert not missing25, f"Test 25 MISSING: {missing25}"
+p10_events = next(evs for date, evs in run.last_trace if date == "p10")
+assert "TZ BUY 2 HH(A)" in p10_events, \
+    f"Test 25 FAILED: TZ BUY 2's own HH must show after its own fresh SL recovery, got {p10_events}"
+print("Test 25: TZ BUY 2's own HH-mute correctly resets on its own SL recovery, instead of carrying over from a prior incarnation.\n")
+
 print("All expected events fired. Smoke test passed.")
 print("Reminder: synthetic data only -- TZ BUY 2 has NOT been verified against real OHLC.")
