@@ -131,19 +131,23 @@ async function main() {
   console.log("\nFirst 5 lines (to sanity-check the format):");
   for (const line of csvText.split("\n").slice(0, 5)) console.log(`  ${line}`);
 
-  // Parse: first column of each data row is the underlying symbol.
-  // fo_mktlots.csv has historically included both equity underlyings and
-  // index futures (NIFTY, BANKNIFTY, etc.) in the same column -- we
-  // don't try to distinguish them here; that happens naturally in step 2
-  // by only keeping symbols that also exist in our own NSE stock list.
+  // Parse: column 1 (0-indexed) is the actual ticker ("SYMBOL", e.g.
+  // "BANKNIFTY"); column 0 ("UNDERLYING") is just the full display name
+  // (e.g. "NIFTY BANK") and isn't a usable ticker. Confirmed from a real
+  // fetch's header row: "UNDERLYING ,SYMBOL ,SEP-26 ,...". Includes both
+  // equity underlyings and index futures (NIFTY, BANKNIFTY, etc.) in the
+  // same column -- we don't try to distinguish them here; that happens
+  // naturally in step 2 by only keeping symbols that also exist in our
+  // own NSE stock list.
   const lines = csvText.split("\n").map((l) => l.trim()).filter(Boolean);
   const symbols = new Set();
   for (const line of lines) {
-    const firstCol = line.split(",")[0]?.replace(/"/g, "").trim().toUpperCase();
-    if (!firstCol) continue;
-    if (["SYMBOL", "UNDERLYING"].includes(firstCol)) continue; // header row
-    if (!/^[A-Z0-9&-]+$/.test(firstCol)) continue; // skip stray/garbage rows
-    symbols.add(firstCol);
+    const cols = line.split(",");
+    const symbolCol = cols[1]?.replace(/"/g, "").trim().toUpperCase();
+    if (!symbolCol) continue;
+    if (["SYMBOL", "UNDERLYING"].includes(symbolCol)) continue; // header row
+    if (!/^[A-Z0-9&-]+$/.test(symbolCol)) continue; // skip stray/garbage rows
+    symbols.add(symbolCol);
   }
   console.log(`\nParsed ${symbols.size} unique symbol(s) from the F&O list.`);
   console.log("Sample:", Array.from(symbols).slice(0, 20).join(", "));
