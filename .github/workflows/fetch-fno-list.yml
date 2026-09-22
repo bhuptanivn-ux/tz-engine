@@ -1,0 +1,31 @@
+name: Fetch FNO List (diagnostic)
+
+# One-off, manual-only: fetches NSE's own official F&O underlying list
+# live and cross-references it against our uploaded NSE tickers. Doesn't
+# touch Blob storage or change the app -- a diagnostic step before
+# building the actual "F&O Stocks" segment. NSE's site has bot
+# protection, so this may need a few iterations to get past it; check the
+# job log for exactly what NSE returned if it fails.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Fetch and parse NSE's F&O list, cross-reference against our data
+        env:
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/fetch-fno-list.mjs
+      - name: Upload matched symbol list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fno-matched-symbols
+          path: fno-matched-symbols.json
+          if-no-files-found: ignore
