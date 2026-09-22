@@ -44,6 +44,31 @@ class PrimeTrendResult:
     highest_high_date: Optional[str]
 
 
+@dataclass
+class PrimeTrendLiveStatus:
+    """A live/right-now snapshot of one currently-open WTF TZ BUY 2
+    instance's own Stage 1 / Stage 2 state -- for a screener asking "is
+    this stock sitting in a PRIME TREND zone right now", as opposed to
+    compute_prime_trend's own historical trade log (which only reports a
+    CLOSED or still-open Stage 2 entry, per the Filter rule in
+    PRIME_TREND_RULEBOOK.md -- a stock that's only reached Stage 1 never
+    appears there at all). Both stage1_* and stage2_* fields are None
+    when that stage isn't currently active; stage2_active implies
+    stage1_active (Stage 2 cannot outlive Stage 1's own SL -- see
+    PRIME_TREND_RULEBOOK.md's "Dependency on Stage 1")."""
+    letter: str
+    stage1_active: bool
+    stage1_since: Optional[str]
+    stage1_activation_price: Optional[float]
+    stage1_highest_high: Optional[float]
+    stage1_highest_high_date: Optional[str]
+    stage2_active: bool
+    stage2_since: Optional[str]
+    stage2_activation_price: Optional[float]
+    stage2_highest_high: Optional[float]
+    stage2_highest_high_date: Optional[str]
+
+
 # --------------------------------------------------------------------------
 # Stage 1 / Stage 2 state (mirrors Buy/Bar2's own ref_high/ref_low shape)
 # --------------------------------------------------------------------------
@@ -217,7 +242,9 @@ def _live_ref_asof(checkpoints, wtf_dates: list[str], d: str) -> Optional[float]
 # Step 4: the Stage 1 / Stage 2 DTF simulation within one WTF instance's window
 # --------------------------------------------------------------------------
 
-def _simulate_dtf(dtf_days: list[Day], wtf_trace, wtf_dates: list[str], inst: _WtfInstance) -> Optional[PrimeTrendResult]:
+def _simulate_dtf(
+    dtf_days: list[Day], wtf_trace, wtf_dates: list[str], inst: _WtfInstance
+) -> tuple[Optional[PrimeTrendResult], Optional[PrimeTrendLiveStatus]]:
     checkpoints = _wtf_checkpoints(wtf_trace, inst.letter, inst.formation_date, inst.end_date)
 
     start_idx = None
@@ -226,13 +253,21 @@ def _simulate_dtf(dtf_days: list[Day], wtf_trace, wtf_dates: list[str], inst: _W
             start_idx = i
             break
     if start_idx is None:
-        return None
+        return None, None
 
     s1: Optional[_Stage] = None
     s2: Optional[_Stage] = None
     cur_entry = None       # (date, price) of the currently-open Stage 2
     hh, hh_date = 0.0, None
     final: Optional[PrimeTrendResult] = None
+
+    # Stage 1's own "since it last (re)formed" tracking -- mirrors
+    # cur_entry/hh/hh_date one tier up, purely for PrimeTrendLiveStatus
+    # (compute_prime_trend's own historical trade log has no use for this,
+    # per the Filter rule: a Stage-1-only window is never a reported trade).
+    s1_since = None
+    s1_activation_price = None
+    hh1, hh1_date = 0.0, None
 
     def close_pair(exit_type: str, exit_date: str, exit_price: float):
         nonlocal final, cur_entry, hh, hh_date
@@ -249,12 +284,16 @@ def _simulate_dtf(dtf_days: list[Day], wtf_trace, wtf_dates: list[str], inst: _W
 
         if cur_entry is not None and cur.h > hh:
             hh, hh_date = cur.h, cur.date
+        if s1 is not None and s1.active and cur.h > hh1:
+            hh1, hh1_date = cur.h, cur.date
 
         # --- Stage 1: DTF TZ BUY ---
         if s1 is None:
             live = _live_ref_asof(checkpoints, wtf_dates, cur.date)
             if live is not None and _breakout_shape(prev, cur, live):
                 s1 = _Stage(cur.h, cur.l)
+                s1_since, s1_activation_price = cur.date, cur.h
+                hh1, hh1_date = 0.0, None
         else:
             if s1.active:
                 if _sl_shape(cur, s1.ref_low):
@@ -271,6 +310,8 @@ def _simulate_dtf(dtf_days: list[Day], wtf_trace, wtf_dates: list[str], inst: _W
             else:
                 if _breakout_shape(prev, cur, s1.frozen_ref):
                     s1 = _Stage(cur.h, cur.l)
+                    s1_since, s1_activation_price = cur.date, cur.h
+                    hh1, hh1_date = 0.0, None
                 elif cur.h > s1.frozen_ref:
                     s1.frozen_ref = cur.h
 
@@ -315,12 +356,46 @@ def _simulate_dtf(dtf_days: list[Day], wtf_trace, wtf_dates: list[str], inst: _W
             exit_type, inst.end_date, inst.end_price, hh if hh_date else None, hh_date,
         )
 
-    return final
+    stage1_active = s1 is not None and s1.active
+    stage2_active = s2 is not None and s2.active
+    live = PrimeTrendLiveStatus(
+        letter=inst.letter,
+        stage1_active=stage1_active,
+        stage1_since=s1_since if stage1_active else None,
+        stage1_activation_price=s1_activation_price if stage1_active else None,
+        stage1_highest_high=(hh1 if hh1_date else None) if stage1_active else None,
+        stage1_highest_high_date=hh1_date if stage1_active else None,
+        stage2_active=stage2_active,
+        stage2_since=cur_entry[0] if stage2_active and cur_entry else None,
+        stage2_activation_price=cur_entry[1] if stage2_active and cur_entry else None,
+        stage2_highest_high=(hh if hh_date else None) if stage2_active else None,
+        stage2_highest_high_date=hh_date if stage2_active else None,
+    )
+
+    return final, live
 
 
 # --------------------------------------------------------------------------
 # Public entry point
 # --------------------------------------------------------------------------
+
+def _to_day(r):
+    if isinstance(r, Day):
+        return r
+    if isinstance(r, dict):
+        return Day(r["date"], float(r["o"]), float(r["h"]), float(r["l"]), float(r["c"]))
+    d, o, h, l, c = r
+    return Day(d, float(o), float(h), float(l), float(c))
+
+
+def _prepare(wtf_rows, dtf_rows):
+    wtf_days = [_to_day(r) for r in wtf_rows]
+    dtf_days = [_to_day(r) for r in dtf_rows]
+    wtf_dates = [d.date for d in wtf_days]
+    wtf_trace = _run_wtf_trace(wtf_days)
+    instances = _wtf_tzbuy2_instances(wtf_trace)
+    return dtf_days, wtf_trace, wtf_dates, instances
+
 
 def compute_prime_trend(wtf_rows, dtf_rows) -> list[PrimeTrendResult]:
     """wtf_rows / dtf_rows: lists of (date, o, h, l, c) tuples, dicts with
@@ -330,24 +405,39 @@ def compute_prime_trend(wtf_rows, dtf_rows) -> list[PrimeTrendResult]:
     produced a confirmed Stage 2 (DTF TZ BUY ENTRY) before its own
     failure. Instances with no confirmed entry are silently excluded, per
     the PRIME TREND filter rule (see PRIME_TREND_RULEBOOK.md)."""
-    def to_day(r):
-        if isinstance(r, Day):
-            return r
-        if isinstance(r, dict):
-            return Day(r["date"], float(r["o"]), float(r["h"]), float(r["l"]), float(r["c"]))
-        d, o, h, l, c = r
-        return Day(d, float(o), float(h), float(l), float(c))
-
-    wtf_days = [to_day(r) for r in wtf_rows]
-    dtf_days = [to_day(r) for r in dtf_rows]
-    wtf_dates = [d.date for d in wtf_days]
-
-    wtf_trace = _run_wtf_trace(wtf_days)
-    instances = _wtf_tzbuy2_instances(wtf_trace)
+    dtf_days, wtf_trace, wtf_dates, instances = _prepare(wtf_rows, dtf_rows)
 
     results = []
     for inst in instances:
-        res = _simulate_dtf(dtf_days, wtf_trace, wtf_dates, inst)
+        res, _live = _simulate_dtf(dtf_days, wtf_trace, wtf_dates, inst)
         if res is not None:
             results.append(res)
     return results
+
+
+def compute_prime_trend_live(wtf_rows, dtf_rows) -> list[PrimeTrendLiveStatus]:
+    """Same inputs as compute_prime_trend, but answers a different
+    question: "is this stock sitting in a PRIME TREND zone RIGHT NOW" (for
+    a live screener), not "what trades has it produced historically".
+
+    Returns one PrimeTrendLiveStatus per WTF TZ BUY 2 instance that is
+    STILL OPEN as of the last available WTF candle (i.e. hasn't failed at
+    its own SL / BAR SL2 within the supplied data) -- there is normally at
+    most one such instance for a given stock, but every currently-open one
+    is returned rather than assuming exactly one. Unlike
+    compute_prime_trend, a Stage-1-only window (never escalated to Stage
+    2) is NOT excluded here -- a live screener needs to show "this stock
+    just cleared its WTF anchor" just as much as "this stock has a
+    confirmed entry", since both are actionable right now. An instance
+    with neither stage currently active (already failed on the DTF side
+    but the WTF anchor itself hasn't failed yet) is omitted."""
+    dtf_days, wtf_trace, wtf_dates, instances = _prepare(wtf_rows, dtf_rows)
+
+    live_statuses = []
+    for inst in instances:
+        if inst.end_event is not None:
+            continue  # this instance already failed on the WTF side -- not "right now"
+        _res, live = _simulate_dtf(dtf_days, wtf_trace, wtf_dates, inst)
+        if live is not None and (live.stage1_active or live.stage2_active):
+            live_statuses.append(live)
+    return live_statuses

@@ -15,7 +15,7 @@ blocks the rest of the suite.
 import csv
 import os
 
-from prime_trend import compute_prime_trend
+from prime_trend import compute_prime_trend, compute_prime_trend_live
 
 
 def load(path):
@@ -118,5 +118,64 @@ check(
         ("C", "2018-11-12", "2021-10-25", 766.0500000000001, "DTF TZ BUY ENTRY SL", "2021-11-11", 773.1, 849.0, "2021-10-27"),
         ("D", "2022-07-25", "2024-03-01", 1070.2, "BAR SL2(D.6)", "2025-01-06", 1249.85, 1362.35, "2024-09-20"),
         ("E", "2025-04-15", "2025-07-22", 1471.8, "DTF TZ BUY ENTRY SL", "2025-08-04", 1464.0, 1500.0, "2025-07-25"),
+    ],
+)
+
+
+# ---------------------------------------------------------------------------
+# compute_prime_trend_live -- answers "is this stock in a PRIME TREND zone
+# RIGHT NOW" (for the Entry Zone screener), not "what trades has it
+# produced historically" (compute_prime_trend, above). Verified by
+# truncating ICICIBANK.NS's own real WTF+DTF history to 2024-12-01 -- a
+# date strictly before the already-verified 2022-07-25(D) instance's own
+# WTF-side failure (BAR SL2(D.6), 2025-01-06) but strictly after its own
+# DTF TZ BUY ENTRY (2024-03-01 @ 1070.20, from the confirmed table above)
+# -- so as of that cutoff, instance D is still genuinely open on both the
+# WTF side and the DTF side. The expected highest_high (1362.35 on
+# 2024-09-20) is independently cross-checked directly against the raw DTF
+# CSV (max daily High strictly after 2024-03-01, up to the cutoff) rather
+# than merely re-deriving it from the module under test.
+# ---------------------------------------------------------------------------
+def check_live(name, wtf_path, dtf_path, cutoff, expected):
+    if not (os.path.exists(wtf_path) and os.path.exists(dtf_path)):
+        print(f"test_prime_trend_smoke [{name} live]: source CSVs not present -- skipping.")
+        return
+    wtf = [r for r in load(wtf_path) if r[0] <= cutoff]
+    dtf = [r for r in load(dtf_path) if r[0] <= cutoff]
+    results = compute_prime_trend_live(wtf, dtf)
+
+    assert len(results) == len(expected), (
+        f"[{name} live] Expected {len(expected)} currently-open instances, got {len(results)}: {results}"
+    )
+    for got, exp in zip(results, expected):
+        (letter, s1_active, s1_since, s1_price, s1_hh, s1_hh_date,
+         s2_active, s2_since, s2_price, s2_hh, s2_hh_date) = exp
+        assert got.letter == letter, f"[{name} live] letter mismatch: {got}"
+        assert got.stage1_active == s1_active, f"[{name} live] stage1_active mismatch: {got}"
+        assert got.stage1_since == s1_since, f"[{name} live] stage1_since mismatch: {got}"
+        assert got.stage1_activation_price == s1_price or (
+            got.stage1_activation_price is not None and abs(got.stage1_activation_price - s1_price) < 1e-6
+        ), f"[{name} live] stage1_activation_price mismatch: {got}"
+        assert got.stage1_highest_high is not None and abs(got.stage1_highest_high - s1_hh) < 1e-6, \
+            f"[{name} live] stage1_highest_high mismatch: {got}"
+        assert got.stage1_highest_high_date == s1_hh_date, f"[{name} live] stage1_highest_high_date mismatch: {got}"
+        assert got.stage2_active == s2_active, f"[{name} live] stage2_active mismatch: {got}"
+        assert got.stage2_since == s2_since, f"[{name} live] stage2_since mismatch: {got}"
+        assert got.stage2_activation_price is not None and abs(got.stage2_activation_price - s2_price) < 1e-6, \
+            f"[{name} live] stage2_activation_price mismatch: {got}"
+        assert got.stage2_highest_high is not None and abs(got.stage2_highest_high - s2_hh) < 1e-6, \
+            f"[{name} live] stage2_highest_high mismatch: {got}"
+        assert got.stage2_highest_high_date == s2_hh_date, f"[{name} live] stage2_highest_high_date mismatch: {got}"
+    print(f"test_prime_trend_smoke [{name} live]: all {len(expected)} currently-open instances match exactly.")
+
+
+check_live(
+    "ICICIBANK.NS",
+    "/root/.claude/uploads/e41d7962-79bc-58e6-bfba-c16a750f637f/b3698f39-ICICIBANK.NS_2001-12-31_2026-09-22.csv",
+    "/root/.claude/uploads/e41d7962-79bc-58e6-bfba-c16a750f637f/5349ea4c-ICICIBANK.NS_2001-12-31_2026-09-22_DTF.csv",
+    "2024-12-01",
+    [
+        # letter, s1_active, s1_since, s1_price, s1_hh, s1_hh_date, s2_active, s2_since, s2_price, s2_hh, s2_hh_date
+        ("D", True, "2022-08-01", 825.0, 1362.35, "2024-09-20", True, "2024-03-01", 1070.2, 1362.35, "2024-09-20"),
     ],
 )
