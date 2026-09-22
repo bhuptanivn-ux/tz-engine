@@ -1,4 +1,4 @@
-// DTF/WTF "Entry Zone" screener -- Option A only (WTF governed by its own
+// DTF/WTF "Prime Trend" screener -- Option A only (WTF governed by its own
 // TZ BUY 2). Option B (WTF at plain BAR level) is explicitly deferred.
 //
 // SIMPLIFIED FIRST VERSION: this does NOT port the full WTFStateMachine

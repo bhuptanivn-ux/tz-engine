@@ -49,7 +49,7 @@ export default function EntryZone() {
 
   return (
     <main className="container">
-      <h1>Entry Zone</h1>
+      <h1>Prime Trend</h1>
       <p className="subtitle">
         DTF/WTF dual-timeframe screener — Part A: stocks whose weekly timeframe (WTF) is
         currently active with TZ BUY 2, and whose daily timeframe (DTF) has broken out above it.

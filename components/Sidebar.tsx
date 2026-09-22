@@ -22,7 +22,7 @@ export default function Sidebar() {
           href="/entry-zone"
           className={pathname === "/entry-zone" ? "sidebar-link active" : "sidebar-link"}
         >
-          Entry Zone
+          Prime Trend
         </Link>
       </nav>
     </div>

@@ -1,4 +1,4 @@
-// Ticker universe for the Entry Zone (DTF/WTF) screener.
+// Ticker universe for the Prime Trend (DTF/WTF) screener.
 //
 // The full NSE equity list (2,578 symbols as of the EQUITY_L.csv snapshot
 // bulk-uploaded to Blob storage alongside this branch's changes) -- this
