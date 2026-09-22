@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ScreenerRow } from "@/lib/dtfWtfScreener";
+import { SCREENER_SEGMENTS } from "@/lib/screenerSegments";
 
 type ListChoice = "tzBuy" | "tzBuyEntry";
 
@@ -15,6 +16,7 @@ function fmtPercent(n: number): string {
 
 export default function EntryZone() {
   const [choice, setChoice] = useState<ListChoice>("tzBuyEntry");
+  const [segment, setSegment] = useState("");
   const [tzBuy, setTzBuy] = useState<ScreenerRow[]>([]);
   const [tzBuyEntry, setTzBuyEntry] = useState<ScreenerRow[]>([]);
   const [scanned, setScanned] = useState(0);
@@ -23,11 +25,29 @@ export default function EntryZone() {
   const [error, setError] = useState("");
   const [lastScanned, setLastScanned] = useState("");
 
+  function onChoiceChange(next: ListChoice) {
+    setChoice(next);
+    setSegment("");
+    setTzBuy([]);
+    setTzBuyEntry([]);
+    setLastScanned("");
+    setError("");
+  }
+
+  function onSegmentChange(next: string) {
+    setSegment(next);
+    setTzBuy([]);
+    setTzBuyEntry([]);
+    setLastScanned("");
+    setError("");
+  }
+
   async function runScan() {
+    if (!segment) return;
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/screener");
+      const res = await fetch(`/api/screener?segment=${encodeURIComponent(segment)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Scan failed");
       setTzBuy(data.tzBuy || []);
@@ -60,13 +80,13 @@ export default function EntryZone() {
         <div className="tabs">
           <button
             className={choice === "tzBuy" ? "tab active" : "tab"}
-            onClick={() => setChoice("tzBuy")}
+            onClick={() => onChoiceChange("tzBuy")}
           >
             DTF trading with TZ BUY
           </button>
           <button
             className={choice === "tzBuyEntry" ? "tab active" : "tab"}
-            onClick={() => setChoice("tzBuyEntry")}
+            onClick={() => onChoiceChange("tzBuyEntry")}
           >
             DTF TZ BUY ENTRY
           </button>
@@ -76,14 +96,32 @@ export default function EntryZone() {
             ? "Above WTF TZ BUY 2 reference high"
             : "DTF's own TZ BUY 2, above DTF TZ BUY"}
         </p>
-        <button onClick={runScan} disabled={loading}>
+        <label className="muted" htmlFor="segment-select" style={{ display: "block", marginBottom: "0.35rem" }}>
+          Segment
+        </label>
+        <select
+          id="segment-select"
+          value={segment}
+          onChange={(e) => onSegmentChange(e.target.value)}
+          style={{ marginBottom: "1rem" }}
+        >
+          <option value="">Select a segment…</option>
+          {SCREENER_SEGMENTS.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <br />
+        <button onClick={runScan} disabled={loading || !segment}>
           {loading ? "Scanning…" : "Scan universe"}
         </button>
         {error && <div className="error">{error}</div>}
         {lastScanned && (
           <p className="muted event-disclaimer">
-            Scanned {scanned} stocks (Nifty 50 placeholder universe — swap in the real NSE 200
-            list once it&apos;s supplied) at {lastScanned}. Simplified first version: DTF is
+            Scanned {scanned} instrument(s) in{" "}
+            {SCREENER_SEGMENTS.find((s) => s.key === segment)?.label || segment} at {lastScanned}.
+            Simplified first version: DTF is
             anchored off WTF&apos;s current TZ BUY 2 reference and then runs independently — the
             full pause/dormant/race WTF state machine isn&apos;t ported yet. Activation price is a
             one-time snapshot of DTF&apos;s own TZ BUY reference, taken when this list&apos;s

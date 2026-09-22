@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { fetchHistory } from "@/lib/marketData";
 import { scanStock, ScreenerRow } from "@/lib/dtfWtfScreener";
 import { SCREENER_UNIVERSE } from "@/lib/screenerUniverse";
+import { OTHER_MARKETS } from "@/lib/otherMarkets";
 
 // Scanning the whole universe means one full-history fetch per stock, run
 // through two engine passes each -- give it real headroom rather than the
@@ -40,13 +41,35 @@ async function mapWithConcurrency<T>(
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
-export async function GET() {
+// Resolves a segment key (from the client-safe lib/screenerSegments.ts
+// list) to its actual instrument list. "nse-equity" is the only segment
+// not covered by OTHER_MARKETS -- its full ~2,600-entry list lives in
+// lib/screenerUniverse.ts and is intentionally never imported by any
+// client component, only here.
+function resolveSegmentInstruments(
+  segment: string
+): { symbol: string; name: string }[] | null {
+  if (segment === "nse-equity") return SCREENER_UNIVERSE;
+  const market = OTHER_MARKETS.find((m) => m.key === segment);
+  return market ? market.instruments : null;
+}
+
+export async function GET(req: NextRequest) {
+  const segment = req.nextUrl.searchParams.get("segment") || "";
+  const instruments = resolveSegmentInstruments(segment);
+  if (!instruments) {
+    return NextResponse.json(
+      { error: "Missing or unrecognized segment" },
+      { status: 400 }
+    );
+  }
+
   const end = todayISO();
   const tzBuy: ScreenerRow[] = [];
   const tzBuyEntry: ScreenerRow[] = [];
   const errors: string[] = [];
 
-  await mapWithConcurrency(SCREENER_UNIVERSE, 24, async (entry) => {
+  await mapWithConcurrency(instruments, 24, async (entry) => {
     try {
       const rows = await fetchHistory(entry.symbol, ENGINE_HISTORY_FLOOR, end, "1d");
       const result = scanStock(entry.symbol, entry.name, rows);
@@ -61,7 +84,7 @@ export async function GET() {
   tzBuyEntry.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
   return NextResponse.json({
-    scanned: SCREENER_UNIVERSE.length,
+    scanned: instruments.length,
     tzBuy,
     tzBuyEntry,
     errors,
