@@ -395,6 +395,20 @@ class TZEngine:
             for lin in buy.bar_lineages
         )
 
+    def _bar_lineages_permanent_dead_end(self, buy: Buy) -> bool:
+        """True only when EVERY current lineage is a genuine permanent dead
+        end (its own SL fired with no BAR 2 ever having formed) -- as
+        opposed to having reached BAR SL2 (deep failure, REAR pending
+        confirmation), which is a deliberately DIFFERENT "not currently
+        live" signal (see _buy_currently_live) used to open sibling spawn
+        eligibility (tip_deep_failure) the instant SL2 fires, before REAR
+        itself has necessarily confirmed. Conflating the two let a buy
+        whose own BAR family had reached genuine deep failure (SL2) wrongly
+        report itself as "still live" by checking straight through to its
+        own TZ BUY 2/REAR 2/REAR RE-ENTER 2 state -- exactly the signal
+        that mechanism exists to produce."""
+        return all(lin.sl is not None and lin.bar2 is None for lin in buy.bar_lineages)
+
     def _buy_currently_live(self, buy: Buy) -> bool:
         if not buy.active:
             return False
@@ -403,40 +417,68 @@ class TZEngine:
                 return False
             if not buy.rear_reenter.dormant:
                 if buy.bar_lineages:
-                    return self._bar_lineages_racing(buy)
-                # Real-data bug (MAXESTATES.NS): once REAR RE-ENTER 2's own
-                # SL fires with no fresh BAR cascade racing beneath it,
-                # NOTHING in this buy is actually live any more -- but this
-                # branch was unconditionally returning True just because
-                # REAR RE-ENTER itself hadn't failed, permanently blocking
-                # every sibling's own first TZ BUY from ever forming.
-                # REAR RE-ENTER 2's own SL already opens spawn eligibility
-                # (tip_rre2_sl) -- it must release this gate too.
+                    if self._bar_lineages_racing(buy):
+                        return True
+                    if not self._bar_lineages_permanent_dead_end(buy):
+                        return False
+                # Real-data bug (MAXESTATES.NS, ICICIBANK.NS): once REAR
+                # RE-ENTER 2's own SL fires with no fresh BAR cascade
+                # racing beneath it -- and no BAR lineage of its own ever
+                # reached genuine deep failure (BAR SL2) either -- NOTHING
+                # in this buy is actually live any more, but this branch
+                # was unconditionally returning True just because REAR
+                # RE-ENTER itself hadn't failed, permanently blocking every
+                # sibling's own first TZ BUY from ever forming. Symmetric
+                # real-data bug (ICICIBANK.NS): a lineage that's SL'd with
+                # NO BAR 2 ever formed -- a genuine permanent dead end, not
+                # deep failure -- must NOT mask REAR RE-ENTER 2's own live
+                # state either; a buy sitting on nothing but dead-end
+                # lineages, with its own "2" tier genuinely still alive,
+                # was wrongly reporting itself as fully collapsed, letting
+                # an unrelated sibling's milestone terminate it outright
+                # instead of exempting it. REAR RE-ENTER 2's own SL already
+                # opens spawn eligibility (tip_rre2_sl) -- it must release
+                # this gate too.
                 return not (buy.rear_reenter.rre2 is not None and buy.rear_reenter.rre2.sl_active)
         elif buy.rear is not None:
             if buy.rear.sl is not None:
                 return False
             if not buy.rear.dormant:
                 if buy.bar_lineages:
-                    return self._bar_lineages_racing(buy)
+                    if self._bar_lineages_racing(buy):
+                        return True
+                    if not self._bar_lineages_permanent_dead_end(buy):
+                        return False
                 # Same fix, one tier up: REAR 2's own SL (tip_rear2_sl)
                 # must also release this gate once nothing is racing
-                # beneath it.
+                # beneath it and no lineage reached genuine deep failure.
                 return not (buy.rear.rear2 is not None and buy.rear.rear2.sl_active)
         if buy.bar_lineages:
-            return self._bar_lineages_racing(buy)
-        # Real-data bug (MAXESTATES.NS): a plain buy whose own TZ BUY 2 has
-        # SL'd, with no BAR family or REAR ever having formed, was falling
-        # through to an unconditional True -- this buy has fully collapsed
-        # (TZ BUY 2's own SL already opens spawn eligibility, tip_tzbuy2_sl,
-        # exactly like TZ BUY's own SL) but kept reporting itself as
-        # "currently live" forever, permanently blocking every OTHER
-        # branch's own red_ever from ever escalating into its first TZ BUY
-        # -- confirmed real trace: branch B's RED(B) fired cleanly but
-        # TZ BUY(B) never got a chance to form for months, because a
-        # long-dead branch A's own TZ BUY 2 SL (with nothing else ever
-        # having formed for it) was silently holding this gate shut the
-        # entire time.
+            if self._bar_lineages_racing(buy):
+                return True
+            if not self._bar_lineages_permanent_dead_end(buy):
+                return False
+        # Real-data bug (MAXESTATES.NS, ICICIBANK.NS): a plain buy whose own
+        # TZ BUY 2 has SL'd, with no BAR family or REAR ever having formed
+        # (or only a genuine no-BAR-2 dead end), was falling through to an
+        # unconditional True -- this buy has fully collapsed (TZ BUY 2's
+        # own SL already opens spawn eligibility, tip_tzbuy2_sl, exactly
+        # like TZ BUY's own SL) but kept reporting itself as "currently
+        # live" forever, permanently blocking every OTHER branch's own
+        # red_ever from ever escalating into its first TZ BUY -- confirmed
+        # real trace: branch B's RED(B) fired cleanly but TZ BUY(B) never
+        # got a chance to form for months, because a long-dead branch A's
+        # own TZ BUY 2 SL (with nothing else ever having formed for it) was
+        # silently holding this gate shut the entire time. Symmetric real-
+        # data bug (ICICIBANK.NS): a buy whose own TZ BUY 2 is STILL alive
+        # (never SL'd) but whose only BAR lineage is a genuine no-BAR-2
+        # dead end was wrongly reporting itself as NOT live purely because
+        # nothing in bar_lineages was racing, letting an unrelated older
+        # sibling's own milestone terminate it outright while TZ BUY 2
+        # itself was still climbing -- confirmed real trace (ICICIBANK.NS
+        # branch D, 2014): TZ BUY 2(D) sat un-SL'd at 289.67 while D's one
+        # BAR lineage (a no-BAR-2 dead end) masked that fact, letting
+        # REAR RE-ENTER(C) wrongly terminate D outright.
         return not (buy.tz_buy2 is not None and buy.tz_buy2.sl_active)
 
     def _milestone_blocked(self, pc: ParentCycle) -> bool:
@@ -1873,12 +1915,21 @@ class TZEngine:
             ev.append(f"REAR RE-ENTER({label_id})")
             rear.dormant = True  # this REAR is now permanently retired for this lineage
             return ev
-        if not self._milestone_blocked(pc) and cur.h > ref and (cur.h - ref) >= ANY:
-            # Same bug class as TZ BUY's own SL-recovery (see there): this
-            # frozen reference must keep climbing quietly on any new high
-            # that clears it but doesn't fully confirm REAR RE-ENTER, or a
-            # later, lower high wrongly confirms against a level price
-            # already cleared and moved past weeks earlier.
+        if cur.h > ref and (cur.h - ref) >= ANY:
+            # Real-data bug (ICICIBANK.NS): this ratchet used to be gated
+            # behind `not self._milestone_blocked(pc)` too -- but unlike the
+            # REENTER-CONFIRMATION check above (which correctly stays
+            # blocked, per the "hidden until newer fails" rule), the quiet
+            # reference-tracking itself must NEVER stall just because a
+            # newer sibling currently leads, exactly like every analogous
+            # recovery elsewhere (TZ BUY's own SL-recovery, TZ BUY 2/REAR 2/
+            # REAR RE-ENTER 2's own SL-recoveries -- none of which gate
+            # their own ratchet on _milestone_blocked). Confirmed real
+            # trace (ICICIBANK.NS branch C): this reference sat frozen near
+            # its 2010 REAR SL level for over 5 years while a newer sibling
+            # (D) climbed as high as 357.64, then confirmed REAR RE-ENTER
+            # cheaply against that stale ~271 level the moment D finally
+            # failed -- instead of needing to clear D's true peak first.
             sl.entry_threshold = cur.h
             ev.append(f"INVALID REAR SL HH({label_id})")
         return ev
@@ -1951,11 +2002,11 @@ class TZEngine:
             # = None) the moment this SL fired -- a fresh REAR RE-ENTER 2
             # has to form from scratch before RED1/RED2 can attach again.
             return ev
-        if not self._milestone_blocked(pc) and cur.h > ref and (cur.h - ref) >= ANY:
-            # Same bug class as TZ BUY's own SL-recovery / REAR's own SL
-            # (see there): this frozen reference must keep climbing
-            # quietly on any new high that clears it but doesn't fully
-            # confirm self-recovery.
+        if cur.h > ref and (cur.h - ref) >= ANY:
+            # Real-data bug (ICICIBANK.NS): same fix as REAR's own SL
+            # ratchet (see there) -- the quiet reference-tracking must never
+            # stall behind _milestone_blocked, only the confirmation check
+            # above stays gated.
             sl.entry_threshold = cur.h
             ev.append(f"INVALID REAR RE-ENTER SL HH({label_id})")
         return ev
