@@ -340,13 +340,13 @@ export default function Home() {
         const kind = eventKind(tok);
         const branch = tokenBranch(tok);
         const direct = EVENT_COLOR_OVERRIDE[kind];
-        if (direct) map.set(`${r.date} ${tok}`, direct);
+        if (direct) map.set(`${r.date} ${tok}`, direct);
         if (kind === "REAR 2" || kind === "REAR RE-ENTER 2") {
           seenTwo.add(`${kind}::${branch}`);
         }
         const requiredTwo = CONDITIONAL_RED_AFTER[kind];
         if (requiredTwo && seenTwo.has(`${requiredTwo}::${branch}`)) {
-          map.set(`${r.date} ${tok}`, "#b91c1c");
+          map.set(`${r.date} ${tok}`, "#b91c1c");
         }
       }
     }
@@ -878,7 +878,7 @@ export default function Home() {
                   // otherwise show.
                   let rowOverrideColor: string | null = null;
                   for (const tok of tokens) {
-                    const c = tokenOverride.get(`${r.date} ${tok}`);
+                    const c = tokenOverride.get(`${r.date} ${tok}`);
                     if (c) {
                       rowOverrideColor = c;
                       break;
@@ -900,7 +900,7 @@ export default function Home() {
                       <td className={cellClass}>{fmt(r.close)}</td>
                       <td className="event-col">
                         {tokens.map((tok, i) => {
-                          const override = tokenOverride.get(`${r.date} ${tok}`);
+                          const override = tokenOverride.get(`${r.date} ${tok}`);
                           const kindColor = EVENT_KIND_COLOR[eventKind(tok)];
                           const color = override ?? kindColor;
                           const style = color

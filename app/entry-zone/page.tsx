@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ScreenerRow } from "@/lib/dtfWtfScreener";
 import { SCREENER_SEGMENTS } from "@/lib/screenerSegments";
-import { formatDDMMYYYY } from "@/lib/dateFormat";
+import { formatDDMMYYYY, formatTimestampDDMMYYYY } from "@/lib/dateFormat";
 
 type ListChoice = "tzBuy" | "tzBuyEntry";
 
@@ -71,7 +71,7 @@ export default function EntryZone() {
       setTzBuyEntry(data.tzBuyEntry || []);
       setScanned(data.scanned || 0);
       setErrors(data.errors || []);
-      setLastScanned(new Date().toLocaleString());
+      setLastScanned(formatTimestampDDMMYYYY(new Date()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
     } finally {
