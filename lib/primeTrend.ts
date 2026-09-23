@@ -3,18 +3,27 @@
 // PRIME_TREND_RULEBOOK.md for the full specification. This module does
 // NOT modify or extend TZEngine -- it's a separate, dependent consumer: it
 // runs TZEngine once over the WTF series to get the WTF event trace
-// (alongside a snapshot of each branch's own TZ BUY 2 reference low before
+// (alongside a snapshot of each branch's own "2"-tier reference low before
 // every candle -- needed to resolve the exact WTF-side exit price), then
 // walks the DTF series on its own using that trace as an anchor.
+//
+// Anchors off THREE WTF-side tiers, not just TZ BUY 2: TZ BUY 2, REAR 2,
+// and REAR RE-ENTER 2 all get the identical treatment, since the engine
+// itself treats REAR 2 and REAR RE-ENTER 2 as "TZ BUY 2 variant"s
+// throughout (same decisive own-SL, same "whichever is higher" self-
+// recovery, same BAR-family attachment).
 //
 // Direct, faithful port of prime_trend.py (Python dev branch
 // claude/epic-darwin-pxs5s3), verified against real ADANIENT.NS and
 // ICICIBANK.NS WTF+DTF data (see test_prime_trend_smoke.py in the Python
 // source tree).
 
-import { ANY, branchLabel, Day, EPS, THRESH, TZEngine } from "./tzEngineWtf";
+import { ANY, branchLabel, Day, EPS, THRESH, TZEngine, ParentCycle } from "./tzEngineWtf";
+
+export type PrimeTrendFamily = "TZ BUY 2" | "REAR 2" | "REAR RE-ENTER 2";
 
 export interface PrimeTrendResult {
+  family: PrimeTrendFamily;
   letter: string;
   wtfFormationDate: string;
   entryDate: string;
@@ -26,7 +35,7 @@ export interface PrimeTrendResult {
   highestHighDate: string | null;
 }
 
-/** A live/right-now snapshot of one currently-open WTF TZ BUY 2 instance's
+/** A live/right-now snapshot of one currently-open WTF anchor instance's
  * own Stage 1 / Stage 2 state -- for a screener asking "is this stock
  * sitting in a PRIME TREND zone right now", as opposed to
  * computePrimeTrend's own historical trade log (which only reports a
@@ -37,6 +46,7 @@ export interface PrimeTrendResult {
  * (Stage 2 cannot outlive Stage 1's own SL -- see
  * PRIME_TREND_RULEBOOK.md's "Dependency on Stage 1"). */
 export interface PrimeTrendLiveStatus {
+  family: PrimeTrendFamily;
   letter: string;
   stage1Active: boolean;
   stage1Since: string | null;
@@ -72,16 +82,49 @@ function slShape(cur: Day, refLow: number): boolean {
 }
 
 // --------------------------------------------------------------------
-// Step 1: run TZEngine once over the WTF series, snapshotting every
-// branch's own TZ BUY 2 ref_low BEFORE each candle is processed.
+// Step 1: run TZEngine once over the WTF series. Alongside the ordinary
+// event trace, snapshot every branch's own "2"-tier ref_low BEFORE each
+// candle is processed, for EACH of the three anchor families, plus which
+// pid currently holds that tier -- used both to resolve a formation event
+// to its pid and to detect when an instance's own tier has vanished with
+// no explicit exit event (collateral termination).
 // --------------------------------------------------------------------
+
+interface FamilySpec {
+  form: string;
+  hh: string;
+  exits: string[];
+  barPrefix: string;
+}
+
+const FAMILIES: Record<PrimeTrendFamily, FamilySpec> = {
+  "TZ BUY 2": { form: "TZ BUY 2(", hh: "TZ BUY 2 HH(", exits: ["TZ BUY 2 SL(", "TZ BUY SL("], barPrefix: "BAR SL2(" },
+  "REAR 2": { form: "REAR 2(", hh: "REAR 2 HH(", exits: ["REAR 2 SL(", "REAR SL("], barPrefix: "BAR SL2(" },
+  "REAR RE-ENTER 2": {
+    form: "REAR RE-ENTER 2(",
+    hh: "REAR RE-ENTER 2 HH(",
+    exits: ["REAR RE-ENTER 2 SL(", "REAR RE-ENTER SL("],
+    barPrefix: "BAR SL2(",
+  },
+};
+
+const FAMILY_NAMES: PrimeTrendFamily[] = ["TZ BUY 2", "REAR 2", "REAR RE-ENTER 2"];
+
+/** The live Bar2-shaped object for this family on this branch's buy right
+ * now, or null if that tier doesn't currently exist for it. */
+function tierObject(pc: ParentCycle, family: PrimeTrendFamily): { refLow: number } | null {
+  if (pc.buy === null) return null;
+  if (family === "TZ BUY 2") return pc.buy.tzBuy2;
+  if (family === "REAR 2") return pc.buy.rear !== null ? pc.buy.rear.rear2 : null;
+  return pc.buy.rearReenter !== null ? pc.buy.rearReenter.rre2 : null;
+}
 
 interface WtfTraceEntry {
   day: Day;
   events: string[];
-  preRefLow: Map<number, number>;
+  preRefLow: Record<PrimeTrendFamily, Map<number, number>>;
   aliveAfter: Map<number, string>;
-  hasTzBuy2After: Set<number>;
+  hasTierAfter: Record<PrimeTrendFamily, Set<number>>;
 }
 
 /** Branch LETTERS get recycled -- once a branch dies (whether via an
@@ -97,46 +140,59 @@ function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
   for (let i = 1; i < wtfDays.length; i++) {
     const prev = wtfDays[i - 1];
     const cur = wtfDays[i];
-    const preRefLow = new Map<number, number>();
+    const preRefLow: Record<PrimeTrendFamily, Map<number, number>> = {
+      "TZ BUY 2": new Map(),
+      "REAR 2": new Map(),
+      "REAR RE-ENTER 2": new Map(),
+    };
     for (const [pid, pc] of engine.branches) {
-      if (pc.buy !== null && pc.buy.tzBuy2 !== null) {
-        preRefLow.set(pid, pc.buy.tzBuy2.refLow);
+      for (const family of FAMILY_NAMES) {
+        const tier = tierObject(pc, family);
+        if (tier !== null) preRefLow[family].set(pid, tier.refLow);
       }
     }
     const events = engine.process(prev, cur);
     const aliveAfter = new Map<number, string>();
-    const hasTzBuy2After = new Set<number>();
+    const hasTierAfter: Record<PrimeTrendFamily, Set<number>> = {
+      "TZ BUY 2": new Set(),
+      "REAR 2": new Set(),
+      "REAR RE-ENTER 2": new Set(),
+    };
     for (const [pid, pc] of engine.branches) {
       aliveAfter.set(pid, branchLabel(pid));
-      if (pc.buy !== null && pc.buy.tzBuy2 !== null) hasTzBuy2After.add(pid);
+      for (const family of FAMILY_NAMES) {
+        if (tierObject(pc, family) !== null) hasTierAfter[family].add(pid);
+      }
     }
-    trace.push({ day: cur, events, preRefLow, aliveAfter, hasTzBuy2After });
+    trace.push({ day: cur, events, preRefLow, aliveAfter, hasTierAfter });
   }
   return trace;
 }
 
 // --------------------------------------------------------------------
-// Step 2: every WTF TZ BUY 2 instance and its own window (formation ->
-// that instance's own failure), with the exact WTF-side exit price
-// resolved. Tracked by pid, not by letter.
+// Step 2: every anchor instance and its own window (formation -> that
+// instance's own failure), with the exact WTF-side exit price resolved.
+// Tracked by pid, not by letter.
 // --------------------------------------------------------------------
 
 interface WtfInstance {
+  family: PrimeTrendFamily;
   letter: string;
   formationDate: string;
   endDate: string; // this instance's own failure date, or the last WTF date if it never fails
   endEvent: string | null; // null if it never fails (or fails with no explicit SL-type event) within the data
-  endPrice: number | null; // BAR SL2 -> that week's close; TZ BUY 2 SL / TZ BUY SL -> TZ BUY 2's own ref_low
+  endPrice: number | null; // BAR SL2 -> that week's close; own "2" SL / parent-tier SL -> this tier's own ref_low
 }
 
-function wtfTzbuy2Instances(wtfTrace: WtfTraceEntry[]): WtfInstance[] {
+function wtfInstancesForFamily(wtfTrace: WtfTraceEntry[], family: PrimeTrendFamily): WtfInstance[] {
+  const spec = FAMILIES[family];
   const instances: WtfInstance[] = [];
   const lastDate = wtfTrace.length > 0 ? wtfTrace[wtfTrace.length - 1].day.date : null;
   for (let i = 0; i < wtfTrace.length; i++) {
     const { day, events, aliveAfter } = wtfTrace[i];
     for (const e of events) {
-      if (!e.startsWith("TZ BUY 2(")) continue;
-      const letter = e.slice("TZ BUY 2(".length, -1);
+      if (!e.startsWith(spec.form)) continue;
+      const letter = e.slice(spec.form.length, -1);
       // Which pid does this formation belong to? Whichever pid holds this
       // exact letter right after this candle -- unambiguous.
       let pid: number | null = null;
@@ -153,15 +209,18 @@ function wtfTzbuy2Instances(wtfTrace: WtfTraceEntry[]): WtfInstance[] {
       let endPrice: number | null = null;
 
       for (let j = i + 1; j < wtfTrace.length; j++) {
-        const { day: day2, events: evs2, preRefLow: pre2, aliveAfter: alive2, hasTzBuy2After: has2 } = wtfTrace[j];
+        const { day: day2, events: evs2, preRefLow: pre2, aliveAfter: alive2, hasTierAfter: has2 } = wtfTrace[j];
         let hit: string | null = null;
         for (const e2 of evs2) {
-          if (e2 === `TZ BUY 2 SL(${letter})` || e2 === `TZ BUY SL(${letter})`) {
-            hit = e2;
-            endPrice = pre2.get(pid) ?? null;
-            break;
+          for (const exitPrefix of spec.exits) {
+            if (e2 === `${exitPrefix}${letter})`) {
+              hit = e2;
+              endPrice = pre2[family].get(pid) ?? null;
+              break;
+            }
           }
-          if (e2.startsWith(`BAR SL2(${letter}.`)) {
+          if (hit !== null) break;
+          if (e2.startsWith(`${spec.barPrefix}${letter}.`)) {
             hit = e2;
             endPrice = day2.c;
             break;
@@ -172,31 +231,47 @@ function wtfTzbuy2Instances(wtfTrace: WtfTraceEntry[]): WtfInstance[] {
           endEvent = hit;
           break;
         }
-        // Ceiling: this specific pid's own tz_buy2 has genuinely ended
-        // (wiped to None, or the whole branch died) with no explicit
-        // SL-type event ever firing -- never search past this.
-        if (!alive2.has(pid) || !has2.has(pid)) {
+        // Ceiling: this specific pid's own tier has genuinely ended (wiped
+        // to None, or the whole branch died) with no explicit SL-type
+        // event ever firing -- never search past this.
+        if (!alive2.has(pid) || !has2[family].has(pid)) {
           endDate = day2.date;
           endEvent = "collaterally terminated (no explicit SL event)";
           break;
         }
       }
-      instances.push({ letter, formationDate: day.date, endDate, endEvent, endPrice });
+      instances.push({ family, letter, formationDate: day.date, endDate, endEvent, endPrice });
     }
   }
   return instances;
 }
 
+function allInstances(wtfTrace: WtfTraceEntry[]): WtfInstance[] {
+  const instances: WtfInstance[] = [];
+  for (const family of FAMILY_NAMES) {
+    instances.push(...wtfInstancesForFamily(wtfTrace, family));
+  }
+  instances.sort((a, b) => (a.formationDate < b.formationDate ? -1 : a.formationDate > b.formationDate ? 1 : 0));
+  return instances;
+}
+
 // --------------------------------------------------------------------
-// Step 3: live (week-lagged) WTF reference lookup for a given letter/window
+// Step 3: live (week-lagged) WTF reference lookup for a given instance
 // --------------------------------------------------------------------
 
-function wtfCheckpoints(wtfTrace: WtfTraceEntry[], letter: string, startDate: string, endDate: string): [string, number][] {
+function wtfCheckpoints(
+  wtfTrace: WtfTraceEntry[],
+  family: PrimeTrendFamily,
+  letter: string,
+  startDate: string,
+  endDate: string
+): [string, number][] {
+  const spec = FAMILIES[family];
   const checkpoints: [string, number][] = [];
   for (const { day, events } of wtfTrace) {
     if (day.date < startDate || day.date > endDate) continue;
     for (const e of events) {
-      if (e === `TZ BUY 2(${letter})` || e === `TZ BUY 2 HH(${letter})`) {
+      if (e === `${spec.form}${letter})` || e === `${spec.hh}${letter})`) {
         checkpoints.push([day.date, day.h]);
       }
     }
@@ -229,16 +304,41 @@ function liveRefAsof(checkpoints: [string, number][], wtfDates: string[], d: str
 }
 
 // --------------------------------------------------------------------
-// Step 4: the Stage 1 / Stage 2 DTF simulation within one WTF instance's window
+// Step 4: the Stage 1 / Stage 2 DTF simulation within one WTF instance's
+// window. Returns EVERY closed entry/exit cycle as its own row -- not
+// just the last one -- plus a still-open final entry (if any) as one
+// more row.
 // --------------------------------------------------------------------
 
-function simulateDtf(
+const DTF_SL_EXIT_TYPES = new Set(["DTF TZ BUY ENTRY SL", "DTF TZ BUY SL (wipes ENTRY)"]);
+
+/** Short label for an instance's own terminal WTF-side event, for the
+ * merged "DTF SL - <WTF SL>" exit-type annotation -- null if the instance
+ * never explicitly fails (still open, or collaterally terminated with no
+ * event) within the data. */
+function wtfSlLabel(endEvent: string | null): string | null {
+  if (endEvent === null) return null;
+  if (
+    endEvent.startsWith("TZ BUY 2 SL(") ||
+    endEvent.startsWith("REAR 2 SL(") ||
+    endEvent.startsWith("REAR RE-ENTER 2 SL(") ||
+    endEvent.startsWith("TZ BUY SL(") ||
+    endEvent.startsWith("REAR SL(") ||
+    endEvent.startsWith("REAR RE-ENTER SL(")
+  ) {
+    return endEvent.split("(")[0];
+  }
+  if (endEvent.startsWith("BAR SL2(")) return "BAR SL 2";
+  return null;
+}
+
+function simulateDtfAll(
   dtfDays: Day[],
   wtfTrace: WtfTraceEntry[],
   wtfDates: string[],
   inst: WtfInstance
-): [PrimeTrendResult | null, PrimeTrendLiveStatus | null] {
-  const checkpoints = wtfCheckpoints(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
+): [PrimeTrendResult[], PrimeTrendLiveStatus | null] {
+  const checkpoints = wtfCheckpoints(wtfTrace, inst.family, inst.letter, inst.formationDate, inst.endDate);
 
   let startIdx: number | null = null;
   for (let i = 0; i < dtfDays.length; i++) {
@@ -247,14 +347,14 @@ function simulateDtf(
       break;
     }
   }
-  if (startIdx === null) return [null, null];
+  if (startIdx === null) return [[], null];
 
   let s1: Stage | null = null;
   let s2: Stage | null = null;
   let curEntry: [string, number] | null = null;
   let hh = 0;
   let hhDate: string | null = null;
-  let final: PrimeTrendResult | null = null;
+  const rows: PrimeTrendResult[] = [];
 
   // Stage 1's own "since it last (re)formed" tracking -- mirrors
   // curEntry/hh/hhDate one tier up, purely for PrimeTrendLiveStatus
@@ -267,7 +367,8 @@ function simulateDtf(
 
   const closePair = (exitType: string, exitDate: string, exitPrice: number) => {
     if (curEntry !== null) {
-      final = {
+      rows.push({
+        family: inst.family,
         letter: inst.letter,
         wtfFormationDate: inst.formationDate,
         entryDate: curEntry[0],
@@ -277,7 +378,7 @@ function simulateDtf(
         exitPrice,
         highestHigh: hhDate ? hh : null,
         highestHighDate: hhDate,
-      };
+      });
     }
     curEntry = null;
     hh = 0;
@@ -376,7 +477,8 @@ function simulateDtf(
     // whatever ended this WTF instance (already resolved on inst).
     const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
     const entry = curEntry as [string, number];
-    final = {
+    rows.push({
+      family: inst.family,
       letter: inst.letter,
       wtfFormationDate: inst.formationDate,
       entryDate: entry[0],
@@ -386,12 +488,27 @@ function simulateDtf(
       exitPrice: inst.endPrice,
       highestHigh: hhDate ? hh : null,
       highestHighDate: hhDate,
-    };
+    });
+  }
+
+  // Merge the FINAL row's exit type with the instance's own later WTF-side
+  // failure, when the final cycle closed on a DTF-side SL and the WTF
+  // anchor itself independently failed afterward with no further DTF
+  // reactivation in between. Earlier rows are never touched -- each is
+  // already followed by a captured reactivation, so the WTF side hadn't
+  // actually failed yet at that point.
+  if (rows.length > 0 && DTF_SL_EXIT_TYPES.has(rows[rows.length - 1].exitType)) {
+    const label = wtfSlLabel(inst.endEvent);
+    if (label !== null) {
+      const last = rows[rows.length - 1];
+      rows[rows.length - 1] = { ...last, exitType: `DTF SL - ${label}` };
+    }
   }
 
   const stage1Active = s1 !== null && s1.active;
   const stage2Active = s2 !== null && s2.active;
   const live: PrimeTrendLiveStatus = {
+    family: inst.family,
     letter: inst.letter,
     stage1Active,
     stage1Since: stage1Active ? s1Since : null,
@@ -405,7 +522,7 @@ function simulateDtf(
     stage2HighestHighDate: stage2Active ? hhDate : null,
   };
 
-  return [final, live];
+  return [rows, live];
 }
 
 // --------------------------------------------------------------------
@@ -425,21 +542,24 @@ function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const wtfDates = wtfDays.map((d) => d.date);
   const wtfTrace = runWtfTrace(wtfDays);
-  const instances = wtfTzbuy2Instances(wtfTrace);
+  const instances = allInstances(wtfTrace);
   return { dtfDays, wtfTrace, wtfDates, instances };
 }
 
-/** Returns a list of PrimeTrendResult, one per WTF TZ BUY 2 instance that
- * produced a confirmed Stage 2 (DTF TZ BUY ENTRY) before its own failure.
- * Instances with no confirmed entry are silently excluded, per the PRIME
- * TREND filter rule (see PRIME_TREND_RULEBOOK.md). */
+/** Returns a list of PrimeTrendResult, one per closed (or still-open)
+ * entry/exit cycle across every WTF TZ BUY 2 / REAR 2 / REAR RE-ENTER 2
+ * instance that produced at least one confirmed Stage 2 (DTF TZ BUY
+ * ENTRY) before its own failure -- every closed cycle within a window is
+ * its own permanent row, not just the last one. Instances with no
+ * confirmed entry at all are silently excluded, per the PRIME TREND
+ * filter rule (see PRIME_TREND_RULEBOOK.md). */
 export function computePrimeTrend(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): PrimeTrendResult[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
 
   const results: PrimeTrendResult[] = [];
   for (const inst of instances) {
-    const [res] = simulateDtf(dtfDays, wtfTrace, wtfDates, inst);
-    if (res !== null) results.push(res);
+    const [rows] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
+    results.push(...rows);
   }
   return results;
 }
@@ -448,24 +568,24 @@ export function computePrimeTrend(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): Prime
  * "is this stock sitting in a PRIME TREND zone RIGHT NOW" (for a live
  * screener), not "what trades has it produced historically".
  *
- * Returns one PrimeTrendLiveStatus per WTF TZ BUY 2 instance that is
- * STILL OPEN as of the last available WTF candle (i.e. hasn't failed at
- * its own SL / BAR SL2 within the supplied data) -- there is normally at
- * most one such instance for a given stock, but every currently-open one
- * is returned rather than assuming exactly one. Unlike computePrimeTrend,
- * a Stage-1-only window (never escalated to Stage 2) is NOT excluded here
- * -- a live screener needs to show "this stock just cleared its WTF
- * anchor" just as much as "this stock has a confirmed entry", since both
- * are actionable right now. An instance with neither stage currently
- * active (already failed on the DTF side but the WTF anchor itself
- * hasn't failed yet) is omitted. */
+ * Returns one PrimeTrendLiveStatus per anchor instance (across all three
+ * families) that is STILL OPEN as of the last available WTF candle (i.e.
+ * hasn't failed at its own SL / BAR SL2 within the supplied data) --
+ * there is normally at most one such instance per family for a given
+ * stock, but every currently-open one is returned rather than assuming
+ * exactly one. Unlike computePrimeTrend, a Stage-1-only window (never
+ * escalated to Stage 2) is NOT excluded here -- a live screener needs to
+ * show "this stock just cleared its WTF anchor" just as much as "this
+ * stock has a confirmed entry", since both are actionable right now. An
+ * instance with neither stage currently active (already failed on the
+ * DTF side but the WTF anchor itself hasn't failed yet) is omitted. */
 export function computePrimeTrendLive(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): PrimeTrendLiveStatus[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
 
   const liveStatuses: PrimeTrendLiveStatus[] = [];
   for (const inst of instances) {
     if (inst.endEvent !== null) continue; // this instance already failed on the WTF side -- not "right now"
-    const [, live] = simulateDtf(dtfDays, wtfTrace, wtfDates, inst);
+    const [, live] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
     if (live !== null && (live.stage1Active || live.stage2Active)) {
       liveStatuses.push(live);
     }
