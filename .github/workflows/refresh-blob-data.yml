@@ -1,0 +1,128 @@
+name: Refresh Blob Data
+
+# Keeps the bulk-uploaded price data current automatically, on a schedule
+# -- no manual re-upload needed going forward. Two kinds of jobs:
+#
+#   1. Daily refresh: fetches each instrument's latest daily bar(s) from
+#      Yahoo Finance and appends only new rows (never touches existing
+#      history) -- runs every day, after all relevant markets have
+#      closed for the day.
+#   2. Period roll-ups: derive one new weekly/monthly/yearly bar from the
+#      (already refreshed) daily data, once that period has actually
+#      closed -- Saturday for the week, the 1st for the month, Jan 1st
+#      for the year. Each roll-up job runs after that day's daily
+#      refresh, so the last trading day it needs is already there.
+#
+# All times below are UTC (cron doesn't understand IST). 23:30 UTC =
+# 05:00 IST the next day -- well after NSE's 3:30pm IST close and US
+# markets' overnight close.
+#
+# Can also be run manually any time from the Actions tab (each job
+# independently) to catch up or verify -- see "Run workflow" with a
+# chosen job below.
+on:
+  schedule:
+    - cron: "30 23 * * *" # daily, 05:00 IST
+    - cron: "0 1 * * 6" # Saturday, 06:30 IST -- weekly roll-up
+    - cron: "30 1 1 * *" # 1st of month, 07:00 IST -- monthly roll-up
+    - cron: "0 2 1 1 *" # Jan 1st, 07:30 IST -- yearly roll-up
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: true
+        default: daily
+        type: choice
+        options:
+          - daily
+          - weekly
+          - monthly
+          - yearly
+          - verify
+
+jobs:
+  refresh-daily:
+    if: (github.event_name == 'workflow_dispatch' && inputs.job == 'daily') || github.event.schedule == '30 23 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Fetch fresh daily bars from Yahoo Finance and update Blob storage
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/refresh-daily.mjs
+
+  rollup-weekly:
+    if: (github.event_name == 'workflow_dispatch' && inputs.job == 'weekly') || github.event.schedule == '0 1 * * 6'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Roll up this week's daily bars into one weekly bar
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/rollup-period.mjs --period weekly
+
+  rollup-monthly:
+    if: (github.event_name == 'workflow_dispatch' && inputs.job == 'monthly') || github.event.schedule == '30 1 1 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Roll up last month's daily bars into one monthly bar
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/rollup-period.mjs --period monthly
+
+  rollup-yearly:
+    if: (github.event_name == 'workflow_dispatch' && inputs.job == 'yearly') || github.event.schedule == '0 2 1 1 *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Roll up last year's daily bars into one yearly bar
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/rollup-period.mjs --period yearly
+
+  verify-yahoo-coverage:
+    # Manual-only diagnostic: checks whether Yahoo Finance actually has
+    # data for every uploaded ticker across every segment. Read-only --
+    # doesn't touch Blob storage or change anything. Run this any time to
+    # answer "are we missing anything?" directly, instead of guessing from
+    # ticker-mapping confidence notes.
+    if: github.event_name == 'workflow_dispatch' && inputs.job == 'verify'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Check every uploaded ticker against Yahoo Finance
+        env:
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/verify-yahoo-coverage.mjs
+      - name: Upload full failure list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-coverage-failures
+          path: yahoo-coverage-failures.txt
+          if-no-files-found: ignore
