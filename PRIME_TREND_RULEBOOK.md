@@ -40,16 +40,28 @@ mirroring how every other tier pair in TZ BUY works (TZ BUY → TZ BUY 2,
 BAR → BAR 2, etc.) — PRIME TREND simply continues that same
 escalating-gate pattern down onto the lower timeframe.
 
-## Anchor: WTF TZ BUY 2's own *live* reference high
+## Anchors: three WTF-side tiers, not just TZ BUY 2
 
-The starting anchor for a given WTF TZ BUY 2 instance is that tier's own
-reference high — but it is **not frozen at formation**. WTF TZ BUY 2
-keeps climbing via its own ordinary `TZ BUY 2 HH(` tracking for as long
-as it stays alive, and PRIME TREND must anchor against whatever that
-reference currently stands at, not its value on the day WTF TZ BUY 2
-first formed (confirmed bug, ADANIENT.NS branch C: using the frozen
-formation value of 54.50 wrongly let a DTF candle "clear" an anchor that
-had already climbed to 56.23 by the time that candle occurred).
+PRIME TREND anchors off **any of three** WTF-side tiers, each treated
+identically: **WTF TZ BUY 2**, **WTF REAR 2**, and **WTF REAR RE-ENTER 2**.
+`tz_engine_wtf.py` itself calls REAR 2 and REAR RE-ENTER 2 "TZ BUY 2
+variant"s throughout — each has its own decisive SL, its own "whichever
+is higher" self-recovery, and its own BAR-family attachment, exactly
+mirroring TZ BUY 2's mechanics one and two tiers down the REAR family. So
+each gets its own independent set of PRIME TREND instances, with the
+identical DTF Stage 1/Stage 2 machinery below applied unchanged — the
+DTF-side code never even knows which of the three tiers fed it; the only
+thing that differs per family is which tier's own live reference high is
+the anchor.
+
+The starting anchor for a given instance is that tier's own reference
+high — but it is **not frozen at formation**. It keeps climbing via its
+own ordinary `<tier> HH(` tracking for as long as it stays alive, and
+PRIME TREND must anchor against whatever that reference currently stands
+at, not its value on the day it first formed (confirmed bug, ADANIENT.NS
+branch C: using the frozen formation value of 54.50 wrongly let a DTF
+candle "clear" an anchor that had already climbed to 56.23 by the time
+that candle occurred).
 
 **Look-ahead bias guard**: WTF is a *weekly* series, so its own reference
 high for "this week" is only known once that week has fully closed — a
@@ -125,11 +137,29 @@ pre-freeze levels.
 
 ## Filter
 
-A WTF TZ BUY 2 instance only produces a usable PRIME TREND trade if
-Stage 2 (DTF TZ BUY ENTRY) actually confirms before that WTF TZ BUY 2
-itself fails. If Stage 1 never forms, or forms but never escalates to
+An instance only produces a usable PRIME TREND trade if Stage 2 (DTF TZ
+BUY ENTRY) actually confirms at least once before that instance's own WTF
+anchor fails. If Stage 1 never forms, or forms but never escalates to
 Stage 2, before the WTF-side failure, there is no trade for that
 instance — it is excluded, not reported with a placeholder price.
+
+## Every closed entry/exit cycle is its own row (not just the last one)
+
+**Correction** (confirmed bug in the original implementation): a single
+WTF anchor window can produce *multiple* DTF entry/exit cycles — Stage 2
+can close and reactivate any number of times while the WTF anchor itself
+stays alive (e.g. `DTF TZ BUY ENTRY SL`, then a fresh Stage 1/Stage 2
+cycle forms and closes again later, all still inside the same WTF window).
+The original implementation only ever kept the *last* such cycle,
+silently overwriting every earlier CLOSED cycle. Every CLOSED cycle is a
+real, permanent trade and must get its own row; only the mechanism for
+"still open when the WTF window itself ends" behaves as the single latest
+entry, per the Exit section below. User's exact correction, worked
+example (ICICIBANK.NS, WTF TZ BUY 2 formed 2014-05-05): "This should
+appear as it is. Once TZ BUY ENTRY OCCURS ITS ENTRY SHOULD REFLECT... D
+2014-05-05 (WILL REMAIN SAME) ONLY DTF DETAILS WILL CHANGE" — i.e. the
+window's *formation* date/letter is shared across every row it produces;
+only entry/exit/HH differ row to row.
 
 ## Exit
 
@@ -138,9 +168,12 @@ entry, forgetting any earlier entry/exit pair the moment something
 reactivates before it would have counted as final:
 
 - **WTF-side**: `BAR SL2` (exit price = that WTF week's own Close), or
-  `TZ BUY 2 SL` / `TZ BUY SL` (exit price = WTF TZ BUY 2's own reference
-  low — `TZ BUY SL` counts as a valid exit type here too, since it wipes
-  TZ BUY 2 exactly the same way TZ BUY 2's own SL does).
+  the tier's own "2" SL / its parent tier's SL (exit price = that tier's
+  own reference low) — e.g. for a TZ BUY 2 anchor, `TZ BUY 2 SL` or
+  `TZ BUY SL`; for a REAR 2 anchor, `REAR 2 SL` or `REAR SL`; for a REAR
+  RE-ENTER 2 anchor, `REAR RE-ENTER 2 SL` or `REAR RE-ENTER SL`. The
+  parent-tier SL counts as a valid exit type here too, since it wipes the
+  "2" tier exactly the same way that tier's own SL does.
 - **DTF-side**: Stage 1's own `TZ BUY SL` or Stage 2's own `TZ BUY ENTRY
   SL`, with no reactivation before the WTF-side event above fires (exit
   price = that stage's own reference low at the moment of SL).
@@ -148,7 +181,28 @@ reactivates before it would have counted as final:
 If a DTF-side SL reactivates before the window closes (whether via Stage
 1 or Stage 2 recovering), the entry/exit pair it would have closed is
 discarded entirely and superseded by whatever the newest live entry
-turns out to be.
+turns out to be — this is exactly the mechanism that produces a new row
+per the section above, rather than overwriting.
+
+### Combined DTF/WTF exit label
+
+**Addition**: when a window's *final* DTF cycle closes on a DTF-side SL
+(`DTF TZ BUY ENTRY SL` or the Stage-1 wipe, `DTF TZ BUY SL (wipes
+ENTRY)`), and the WTF anchor itself *later* independently confirms its
+own terminal failure (its own "2" SL, its parent tier's SL, or `BAR SL2`)
+before any further DTF reactivation ever occurs, the Exit Type is
+reported as **`DTF SL - <WTF SL type>`** (e.g. `DTF SL - BAR SL 2`, `DTF
+SL - TZ BUY 2 SL`) — signaling that the DTF side failed first, and the
+WTF anchor confirmed its own failure afterward, with nothing in between.
+This only ever applies to the *last* row of a window: an earlier row is
+already followed by a captured reactivation (the section above), which
+means the WTF side hadn't actually failed at that point — only the
+final, unreactivated cycle can be retroactively confirmed this way. The
+exit date/price stay exactly as the DTF-side event recorded them (that's
+what practically closed the position); only the label changes, to record
+that the WTF side later confirmed the same outcome. User's framing: "then
+mention the same as DTF SL - TZ BUY 2 SL (or DTF SL - BAR SL 2)... I will
+understand that 1st sl Triggered in DTF followed by wtf."
 
 ## Highest High
 
@@ -156,6 +210,15 @@ Maximum daily High strictly *after* the (final) entry date, up to and
 including the exit date — never the entry candle's own High.
 
 ## Worked results, ADANIENT.NS (all 6 WTF TZ BUY 2 dates checked)
+
+**Stale pending re-verification**: the table below was computed under the
+pre-correction implementation (last-cycle-only, TZ BUY 2 anchor only, no
+combined DTF/WTF exit label). It has not yet been recomputed against
+ADANIENT.NS under the corrected implementation (multi-cycle rows, all
+three anchor families, combined exit labels) — held pending, since
+ADANIENT.NS testing is under a standing restriction this session. Do not
+treat the table below as current until it's re-verified and this note is
+removed.
 
 | WTF TZ BUY 2 | PRIME TREND Entry | Exit | Exit Price | Highest High |
 |---|---|---|---|---|
@@ -235,9 +298,17 @@ corrected value.
 
 ## Open items
 
-- Implemented in Python (`prime_trend.py`) and verified against real
-  ADANIENT.NS and ICICIBANK.NS data (`test_prime_trend_smoke.py`, 14
-  confirmed instances total across both). Not yet ported to
+- Implemented in Python (`prime_trend.py`). The multi-cycle-row fix, the
+  combined DTF/WTF exit label, and the REAR 2 / REAR RE-ENTER 2 anchor
+  extension (all above) are applied and verified against real
+  ICICIBANK.NS WTF+DTF data (22 rows across 11 TZ BUY 2 instances; no
+  REAR 2 / REAR RE-ENTER 2 instances occur in that stock's real history
+  once the underlying engine fixes are applied — the extension's wiring
+  was separately confirmed against the proven synthetic REAR 2 fixture in
+  `test_wtf_smoke.py`, Test 13). **`test_prime_trend_smoke.py`'s expected
+  values are now stale** (written for the pre-correction shape) and need
+  regenerating against both ADANIENT.NS (blocked by this session's
+  standing restriction) and ICICIBANK.NS. Not yet ported to
   TypeScript/`main`, not yet wired into any UI in the live app.
 - The "BAR ENTRY" side of the original cross-time-frame table (WTF
   BAR → DTF TZ BUY/TZ BUY ENTRY or BAR/BAR ENTRY, disambiguated by

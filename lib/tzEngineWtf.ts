@@ -187,22 +187,63 @@ export class TZEngine {
     return buy.barLineages.some((lin) => lin.sl === null || (lin.bar2 !== null && !lin.sl.sl2));
   }
 
+  /** True only when EVERY current lineage is a genuine permanent dead end
+   * (its own SL fired with no BAR 2 ever having formed) -- as opposed to
+   * having reached BAR SL2 (deep failure, REAR pending confirmation),
+   * which is a deliberately DIFFERENT "not currently live" signal (see
+   * buyCurrentlyLive) used to open sibling spawn eligibility the instant
+   * SL2 fires, before REAR itself has necessarily confirmed. Conflating
+   * the two let a buy whose own BAR family had reached genuine deep
+   * failure (SL2) wrongly report itself as "still live" by checking
+   * straight through to its own TZ BUY 2/REAR 2/REAR RE-ENTER 2 state --
+   * exactly the signal that mechanism exists to produce. */
+  private barLineagesPermanentDeadEnd(buy: Buy): boolean {
+    return buy.barLineages.every((lin) => lin.sl !== null && lin.bar2 === null);
+  }
+
   private buyCurrentlyLive(buy: Buy): boolean {
     if (!buy.active) return false;
     if (buy.rearReenter !== null) {
       if (buy.rearReenter.sl !== null) return false;
       if (!buy.rearReenter.dormant) {
-        if (buy.barLineages.length > 0) return this.barLineagesRacing(buy);
+        if (buy.barLineages.length > 0) {
+          if (this.barLineagesRacing(buy)) return true;
+          if (!this.barLineagesPermanentDeadEnd(buy)) return false;
+        }
+        // Real-data bug (MAXESTATES.NS, ICICIBANK.NS): once REAR RE-ENTER
+        // 2's own SL fires with no fresh BAR cascade racing beneath it --
+        // and no BAR lineage of its own ever reached genuine deep failure
+        // (BAR SL2) either -- NOTHING in this buy is actually live any
+        // more, but this branch was unconditionally returning true just
+        // because REAR RE-ENTER itself hadn't failed, permanently
+        // blocking every sibling's own first TZ BUY from ever forming.
+        // Symmetric real-data bug (ICICIBANK.NS): a lineage that's SL'd
+        // with NO BAR 2 ever formed -- a genuine permanent dead end, not
+        // deep failure -- must NOT mask REAR RE-ENTER 2's own live state
+        // either.
         return !(buy.rearReenter.rre2 !== null && buy.rearReenter.rre2.slActive);
       }
     } else if (buy.rear !== null) {
       if (buy.rear.sl !== null) return false;
       if (!buy.rear.dormant) {
-        if (buy.barLineages.length > 0) return this.barLineagesRacing(buy);
+        if (buy.barLineages.length > 0) {
+          if (this.barLineagesRacing(buy)) return true;
+          if (!this.barLineagesPermanentDeadEnd(buy)) return false;
+        }
+        // Same fix, one tier up: REAR 2's own SL must also release this
+        // gate once nothing is racing beneath it and no lineage reached
+        // genuine deep failure.
         return !(buy.rear.rear2 !== null && buy.rear.rear2.slActive);
       }
     }
-    if (buy.barLineages.length > 0) return this.barLineagesRacing(buy);
+    if (buy.barLineages.length > 0) {
+      if (this.barLineagesRacing(buy)) return true;
+      if (!this.barLineagesPermanentDeadEnd(buy)) return false;
+    }
+    // Real-data bug (ICICIBANK.NS branch D, 2014): TZ BUY 2(D) sat
+    // un-SL'd at 289.67 while D's one BAR lineage (a no-BAR-2 dead end)
+    // masked that fact, letting REAR RE-ENTER(C) wrongly terminate D
+    // outright.
     return !(buy.tzBuy2 !== null && buy.tzBuy2.slActive);
   }
 
@@ -1363,7 +1404,12 @@ export class TZEngine {
       rear.dormant = true;
       return ev;
     }
-    if (!this.milestoneBlocked(pc) && cur.h > ref && cur.h - ref >= ANY) {
+    // Real-data bug (ICICIBANK.NS): this ratchet used to be gated behind
+    // !milestoneBlocked(pc) too -- but unlike the reenter-CONFIRMATION
+    // check above (which correctly stays blocked), the quiet reference-
+    // tracking itself must NEVER stall just because a newer sibling
+    // currently leads, exactly like every analogous recovery elsewhere.
+    if (cur.h > ref && cur.h - ref >= ANY) {
       sl.entryThreshold = cur.h;
       ev.push(`INVALID REAR SL HH(${labelId})`);
     }
@@ -1443,7 +1489,10 @@ export class TZEngine {
       rre.red2Ever = false;
       return ev;
     }
-    if (!this.milestoneBlocked(pc) && cur.h > ref && cur.h - ref >= ANY) {
+    // Real-data bug (ICICIBANK.NS): same fix as REAR's own SL ratchet --
+    // the quiet reference-tracking must never stall behind
+    // milestoneBlocked, only the confirmation check above stays gated.
+    if (cur.h > ref && cur.h - ref >= ANY) {
       sl.entryThreshold = cur.h;
       ev.push(`INVALID REAR RE-ENTER SL HH(${labelId})`);
     }
