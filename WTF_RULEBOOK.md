@@ -310,6 +310,49 @@ sibling branches reaching a milestone (e.g. both TZ BUY 2) on the exact
 same day is resolved by the existing seq-ordering / collateral-termination
 rules -- no special-casing needed for TZ BUY 2 specifically.
 
+### Confirmed correct (not a bug): a `buy=None` branch gets no special exemption from collateral termination
+
+Investigated at length against real ICICIBANK.NS data (2010-04-05:
+branches D, seq=13, and E, seq=16, both sitting at `buy=None`, vanish the
+instant `REAR(C)` fires, with no explicit event) -- initially suspected as
+a gap, since a branch that hasn't failed on its own terms still gets
+killed outright. Instrumenting the raw per-branch events *before*
+collateral-termination filtering showed exactly what each branch was
+doing that candle:
+
+```
+C (seq=6,  achiever):  ['INVALID BAR HH(C.5)', 'REAR(C)']
+D (seq=13, buy=None):  ['TZ BUY(D)']        -- a genuine, same-candle fresh formation
+E (seq=16, buy=None):  ['TZ GREEN HH(E)']   -- not a milestone at all
+```
+
+D's termination turned out to already be explained by an existing,
+separate, deliberate rule: `is_fresh_buy` -- a brand-new, same-candle TZ
+BUY formation is terminated **unconditionally** when an older achiever's
+milestone fires the same candle, no exemption check even applies. E's
+termination follows the identical principle one level further: E carried
+no competing milestone of its own that day either -- it is simply a later
+branch with nothing to show for itself at that date, so the earlier
+achiever gets preference and the later one is terminated. Both cases are
+the same rule: **whichever branch has actually earned a milestone as of
+that date wins; a later branch that hasn't earned anything yet (whether
+`buy=None` or a same-candle fresh formation with nothing before it) does
+not get to survive alongside it.** Explicit user confirmation, generalized
+worked example: "REAR A and TZ BUY B/REAR B occurring on the same day,
+then REAR A will get active and TZ BUY B will be terminated... to keep
+the later titles available, technically and logically D/E termination was
+correct... later new Lineage D got active as well after REAR SL B and got
+TZ BUY 2 D before REAR RE ENTER B. This way higher milestone got the
+preference though it was later one... It is same as D [for E]. Since it
+is a later branch with no higher milestone at that given date. Earlier
+will get the preference and later one's terminated."
+
+No fix needed -- `_pre_today_live_buy` correctly requires `pc.buy is not
+None` for exemption; a `buy=None` branch is not meant to be exempted, and
+this is not connected to `_milestone_blocked`'s separate role (blocking a
+dormant branch's own future escalation while a newer sibling leads,
+covered above) at all.
+
 ## Testing
 
 `test_wtf_smoke.py` -- 19 synthetic scenarios (`python3 test_wtf_smoke.py`):
@@ -1076,16 +1119,11 @@ but is tracked independently going forward.
   confirmed-correct diffs on ICICIBANK.NS) but **not yet** checked against
   ADANIENT.NS (standing restriction this session), nor ported to
   `main`/TypeScript.
-- **Still open, not yet fixed**: a branch whose `buy` is entirely `None`
-  (never escalated past TZ GREEN/RED) is never exempted from an unrelated
-  sibling's milestone-driven collateral termination -- `_pre_today_live_buy`
-  requires `pc.buy is not None`. Confirmed real trace (ICICIBANK.NS,
-  2010-04-05): branches D and E, both `buy=None`, vanish the instant
-  `REAR(C)` fires, with zero explicit event. Fixing it also changes
-  `_milestone_blocked`'s behavior (same underlying dict) -- a bare
-  `TZ GREEN(n+1)` with nothing yet decided would then also block older
-  dormant branches' own reactivation, a separate, not-yet-traced
-  consequence pending a real worked example before deciding scope.
+- A `buy=None` branch's lack of exemption from collateral termination
+  (ICICIBANK.NS, 2010-04-05, branches D/E) was investigated at length and
+  **confirmed to be correct, existing behavior, not a bug** -- see
+  "Confirmed correct (not a bug)" under "Multi-branch / spawn eligibility
+  / leadership" above. No fix needed.
 - The `extra_reentry_floor` cross-theory hook (deferred to
   DTF-with-respect-to-TZ-BUY work) — now documented as its own separate
   theory in `PRIME_TREND_RULEBOOK.md` (the TZ BUY 2 → TZ BUY → TZ BUY
