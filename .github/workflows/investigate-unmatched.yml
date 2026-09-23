@@ -1,0 +1,30 @@
+name: Investigate Unmatched Tickers
+
+# Manual-only diagnostic: for the ~276 NSE/SME tickers not found on Yahoo
+# Finance under their plain ".NS" form, figures out why -- a fixable
+# naming mismatch (hyphen vs underscore), a still-active NSE listing
+# Yahoo just doesn't cover, or a ticker no longer on NSE's live list at
+# all. Read-only -- doesn't touch Blob storage or the app.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Investigate why each unmatched ticker fails on Yahoo
+        env:
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/investigate-unmatched.mjs
+      - name: Upload investigation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unmatched-investigation
+          path: unmatched-investigation.json
+          if-no-files-found: ignore
