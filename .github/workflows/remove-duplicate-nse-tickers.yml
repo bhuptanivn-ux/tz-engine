@@ -1,0 +1,25 @@
+name: Remove Duplicate NSE Tickers
+
+# Manual-only, one-time cleanup: removes the 7 confirmed stray duplicate
+# NSE tickers (underscore-named, e.g. "BAJAJ_AUTO") from Blob storage --
+# each has a correctly-named hyphenated twin already present and working
+# (e.g. "BAJAJ-AUTO"). See scripts/remove-duplicate-nse-tickers.mjs for
+# the full explanation and the safety check it runs before deleting
+# anything.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Remove confirmed duplicate NSE tickers from Blob storage
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          BLOB_STORE_ID: ${{ secrets.BLOB_STORE_ID }}
+        run: node scripts/remove-duplicate-nse-tickers.mjs
