@@ -347,6 +347,11 @@ preference though it was later one... It is same as D [for E]. Since it
 is a later branch with no higher milestone at that given date. Earlier
 will get the preference and later one's terminated."
 
+**Independently corroborated**: the live Trading Zone website's own
+historical display for ICICIBANK.NS shows neither `TZ BUY(D)` nor
+anything for E on 2010-04-05 -- matching this conclusion exactly, without
+having seen the engine's internal reasoning.
+
 No fix needed -- `_pre_today_live_buy` correctly requires `pc.buy is not
 None` for exemption; a `buy=None` branch is not meant to be exempted, and
 this is not connected to `_milestone_blocked`'s separate role (blocking a
@@ -734,6 +739,12 @@ the whole spurious `TZ GREEN(D)` → `TZ BUY(A)`/`TZ BUY 2(A)` chain never
 occurs -- those same real highs (296.95, 307.59) instead become D's own
 `BAR 2 HH(D.1)` reference-high updates, silently extending its already-
 running climb.
+
+**Independently corroborated**: the live Trading Zone website's own
+historical display for ICICIBANK.NS shows `TZ BUY 2(D)` on 2014-05-05,
+matching the corrected engine -- not the buggy pre-fix trace, where D's
+TZ BUY 2 would have been silently hijacked and hidden by an incorrect
+`REAR RE-ENTER(C)`.
 
 ## A BAR lineage's own RED1/RED2 progress must not freeze once REAR exists above it
 
