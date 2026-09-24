@@ -3,6 +3,7 @@ import { fetchHistory } from "@/lib/marketData";
 import { scanStock, ScreenerRow } from "@/lib/dtfWtfScreener";
 import { SCREENER_UNIVERSE } from "@/lib/screenerUniverse";
 import { OTHER_MARKETS } from "@/lib/otherMarkets";
+import { readScreenerCache, writeScreenerCache } from "@/lib/screenerCache";
 
 // Scanning the whole universe means one full-history fetch per stock, run
 // through two engine passes each -- give it real headroom rather than the
@@ -65,6 +66,16 @@ export async function GET(req: NextRequest) {
   }
 
   const end = todayISO();
+
+  // The underlying Blob data for this segment only changes once a day
+  // (the scheduled refresh) -- so once someone has scanned it today,
+  // everyone else gets that same result back instantly instead of paying
+  // for a full re-scan.
+  const cached = await readScreenerCache(segment, end);
+  if (cached) {
+    return NextResponse.json({ ...cached, cached: true });
+  }
+
   const tzBuy: ScreenerRow[] = [];
   const tzBuyEntry: ScreenerRow[] = [];
   const errors: string[] = [];
@@ -83,10 +94,14 @@ export async function GET(req: NextRequest) {
   tzBuy.sort((a, b) => a.symbol.localeCompare(b.symbol));
   tzBuyEntry.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
-  return NextResponse.json({
+  const payload = {
     scanned: instruments.length,
     tzBuy,
     tzBuyEntry,
     errors,
-  });
+    cachedAt: new Date().toISOString(),
+  };
+  await writeScreenerCache(segment, end, payload);
+
+  return NextResponse.json({ ...payload, cached: false });
 }

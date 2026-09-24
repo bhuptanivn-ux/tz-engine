@@ -200,6 +200,35 @@ th:first-child, td:first-child {
   text-align: left;
 }
 
+/* Prime Trend's % Return column header -- a tri-state sort toggle (off ->
+   descending -> ascending -> off) styled to sit inline with the header
+   text, rather than looking like an ordinary button. */
+.sort-toggle {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2em;
+}
+
+.sort-arrow {
+  font-size: 0.7em;
+  opacity: 0.35;
+}
+
+.sort-arrow.active {
+  opacity: 1;
+  color: var(--accent);
+}
+
 .event-col {
   text-align: left;
 }

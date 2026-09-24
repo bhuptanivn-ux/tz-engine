@@ -6,6 +6,7 @@ import { SCREENER_SEGMENTS } from "@/lib/screenerSegments";
 import { formatDDMMYYYY, formatTimestampDDMMYYYY } from "@/lib/dateFormat";
 
 type ListChoice = "tzBuy" | "tzBuyEntry";
+type ReturnSort = "desc" | "asc" | null;
 
 interface ScripMatch {
   symbol: string;
@@ -32,6 +33,7 @@ export default function EntryZone() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [lastScanned, setLastScanned] = useState("");
+  const [cachedResult, setCachedResult] = useState(false);
 
   const [scripQuery, setScripQuery] = useState("");
   const [scripSuggestions, setScripSuggestions] = useState<ScripMatch[]>([]);
@@ -41,6 +43,7 @@ export default function EntryZone() {
   const scripDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [yearFilter, setYearFilter] = useState("");
+  const [returnSort, setReturnSort] = useState<ReturnSort>(null);
 
   function onChoiceChange(next: ListChoice) {
     setChoice(next);
@@ -51,6 +54,7 @@ export default function EntryZone() {
     setError("");
     clearScripSearch();
     setYearFilter("");
+    setReturnSort(null);
   }
 
   function onSegmentChange(next: string) {
@@ -61,20 +65,28 @@ export default function EntryZone() {
     setError("");
     clearScripSearch();
     setYearFilter("");
+    setReturnSort(null);
   }
 
   // Clicking the "Prime Trend" nav link while already on this page doesn't
   // trigger a Next.js navigation (same route), so Sidebar dispatches this
-  // event instead -- reset the Search/Year filters and fall back to the
-  // main, unfiltered list.
+  // event instead -- reset the Search/Year/% Return filters and fall back
+  // to the main, unfiltered list.
   useEffect(() => {
     function resetFilters() {
       clearScripSearch();
       setYearFilter("");
+      setReturnSort(null);
     }
     window.addEventListener("prime-trend-filters-reset", resetFilters);
     return () => window.removeEventListener("prime-trend-filters-reset", resetFilters);
   }, []);
+
+  // Cycles % Return sort: off (Active as on, newest first) -> descending ->
+  // ascending -> back to off.
+  function cycleReturnSort() {
+    setReturnSort((prev) => (prev === null ? "desc" : prev === "desc" ? "asc" : null));
+  }
 
   async function runScan() {
     if (!segment) return;
@@ -88,6 +100,7 @@ export default function EntryZone() {
       setTzBuyEntry(data.tzBuyEntry || []);
       setScanned(data.scanned || 0);
       setErrors(data.errors || []);
+      setCachedResult(!!data.cached);
       setLastScanned(formatTimestampDDMMYYYY(new Date()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
@@ -160,10 +173,14 @@ export default function EntryZone() {
     (a, b) => b.localeCompare(a)
   );
 
-  // Newest activation first -- oldest at the bottom. A searched scrip
-  // narrows the table to just that one scrip: its own row if it's
-  // currently active for this tab, or an "NA" placeholder row (name only)
-  // if it isn't -- the Year filter is ignored while a scrip is selected.
+  // Default order is newest activation first. A searched scrip narrows the
+  // table to just that one scrip: its own row if it's currently active for
+  // this tab, or an "NA" placeholder row (name only) if it isn't -- the
+  // Year filter and % Return sort are both ignored while a scrip is
+  // selected. Otherwise, the Year filter narrows the list, and % Return
+  // sort (toggled via the two arrows in that column header) overrides the
+  // default Active-as-on ordering while it's set to descending/ascending;
+  // cycling it back to "off" returns to Active-as-on, newest first.
   const rows = selectedScrip
     ? (() => {
         const match = activeList.find((r) => r.symbol === selectedScrip.symbol);
@@ -182,7 +199,13 @@ export default function EntryZone() {
       })()
     : [...activeList]
         .filter((r) => !yearFilter || r.activeAsOn.slice(0, 4) === yearFilter)
-        .sort((a, b) => b.activeAsOn.localeCompare(a.activeAsOn));
+        .sort((a, b) =>
+          returnSort
+            ? returnSort === "desc"
+              ? b.percentReturn - a.percentReturn
+              : a.percentReturn - b.percentReturn
+            : b.activeAsOn.localeCompare(a.activeAsOn)
+        );
 
   return (
     <main className="container">
@@ -236,8 +259,14 @@ export default function EntryZone() {
         {error && <div className="error">{error}</div>}
         {lastScanned && (
           <p className="muted event-disclaimer">
-            Scanned {scanned} instrument(s) in{" "}
-            {SCREENER_SEGMENTS.find((s) => s.key === segment)?.label || segment} at {lastScanned}.
+            {cachedResult ? "Loaded instantly from today's cached scan" : "Freshly scanned"}
+            {" "}
+            ({scanned} instrument(s) in{" "}
+            {SCREENER_SEGMENTS.find((s) => s.key === segment)?.label || segment}) at {lastScanned}
+            {cachedResult
+              ? ". This segment won't need re-scanning again today -- the underlying data only refreshes once daily."
+              : ". Cached now, so the next scan of this segment today will load instantly."}
+            {" "}
             Simplified first version: DTF is
             anchored off WTF&apos;s current TZ BUY 2 reference and then runs independently — the
             full pause/dormant/race WTF state machine isn&apos;t ported yet. Activation price is a
@@ -334,7 +363,20 @@ export default function EntryZone() {
                   <th>Active as on</th>
                   <th>{choice === "tzBuy" ? "TZ BUY entry above" : "Activation price"}</th>
                   <th>Highest high</th>
-                  <th>% Return</th>
+                  <th>
+                    <button
+                      type="button"
+                      className="sort-toggle"
+                      onClick={cycleReturnSort}
+                      aria-label={`Sort by % Return (currently ${
+                        returnSort === "desc" ? "descending" : returnSort === "asc" ? "ascending" : "off"
+                      })`}
+                    >
+                      % Return
+                      <span className={returnSort === "desc" ? "sort-arrow active" : "sort-arrow"}>▼</span>
+                      <span className={returnSort === "asc" ? "sort-arrow active" : "sort-arrow"}>▲</span>
+                    </button>
+                  </th>
                   <th>Current close</th>
                 </tr>
               </thead>
