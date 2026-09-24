@@ -29,22 +29,15 @@
 // stage's own (re)formation -- see PRIME_TREND_RULEBOOK.md's "Highest
 // High" section -- NOT the old screener's WTF-weekly-High tracking.
 //
-// Stop Loss Price is that stage's own LIVE SL level (Stage.refLow in
-// lib/primeTrend.ts) -- NOT a one-time snapshot like Activation Price. It
-// ratchets down whenever a new, lower daily Low forms while the stage is
-// still active, exactly the way the underlying engine's own SL shape
-// check already works (see slShape() in lib/primeTrend.ts) -- this column
-// just exposes that same live value rather than computing anything new.
-//
-// Lowest Low Post Entry is a separate, narrower stat: the lowest daily Low
-// made STRICTLY AFTER the stage's own entry day and STRICTLY BEFORE today
-// (both endpoints excluded) -- i.e. it deliberately leaves out the entry
-// day's own low (already baked into Stop Loss Price's starting value) and
-// today's own low (still live/incomplete). If the stage only entered
-// yesterday or today, that window is empty and this is NA (NaN) until at
-// least one full day has closed after entry.
-//
 // % Return = (Highest High - Activation Price) / Activation Price * 100.
+//
+// DIAGNOSTIC NOTE: Stop Loss Price / Lowest Low Post Entry columns (and
+// their stage1StopLoss/stage2StopLoss fields on PrimeTrendLiveStatus in
+// lib/primeTrend.ts) were pulled out here temporarily to test whether they
+// were responsible for NSE Equity's full-universe scan consistently dying
+// on its last batch. If a scan completes cleanly without them, that
+// confirms it and they get reinstated with a fix; if it still fails
+// identically, the cause is elsewhere and these come back as they were.
 
 import { computePrimeTrendLive, type OhlcRow } from "./primeTrend";
 import type { Day, HistoryRowLike } from "./tzEngineWtf";
@@ -55,33 +48,9 @@ export interface ScreenerRow {
   name: string;
   activeAsOn: string;
   activationPrice: number;
-  stopLoss: number;
-  lowestLowPostEntry: number; // NaN = not enough days elapsed since entry yet (NA)
   highestHigh: number;
   percentReturn: number;
   currentClose: number;
-}
-
-/**
- * The lowest daily Low strictly after `entryDate` and strictly before the
- * most recent (last) day in `days` -- both endpoints excluded. Returns
- * `null` if `entryDate` isn't found or that window is empty (entry was
- * yesterday or today, so no full day has closed in between yet).
- */
-function lowestLowPostEntry(days: Day[], entryDate: string | null): number | null {
-  if (entryDate === null) return null;
-  const entryIdx = days.findIndex((d) => d.date === entryDate);
-  if (entryIdx === -1) return null;
-
-  const start = entryIdx + 1;
-  const end = days.length - 2; // inclusive; excludes the last (current) day
-  if (start > end) return null;
-
-  let min = days[start].l;
-  for (let i = start + 1; i <= end; i++) {
-    if (days[i].l < min) min = days[i].l;
-  }
-  return min;
 }
 
 function toDays(rows: HistoryRowLike[]): Day[] {
@@ -171,8 +140,6 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
         name,
         activeAsOn: live.stage1Since,
         activationPrice: live.stage1ActivationPrice,
-        stopLoss: live.stage1StopLoss ?? NaN,
-        lowestLowPostEntry: lowestLowPostEntry(days, live.stage1Since) ?? NaN,
         highestHigh,
         percentReturn: ((highestHigh - live.stage1ActivationPrice) / live.stage1ActivationPrice) * 100,
         currentClose,
@@ -185,8 +152,6 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
         name,
         activeAsOn: live.stage2Since,
         activationPrice: live.stage2ActivationPrice,
-        stopLoss: live.stage2StopLoss ?? NaN,
-        lowestLowPostEntry: lowestLowPostEntry(days, live.stage2Since) ?? NaN,
         highestHigh,
         percentReturn: ((highestHigh - live.stage2ActivationPrice) / live.stage2ActivationPrice) * 100,
         currentClose,

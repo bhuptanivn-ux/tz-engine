@@ -291,8 +291,6 @@ export default function EntryZone() {
             name: selectedScrip.name,
             activeAsOn: NA,
             activationPrice: NaN,
-            stopLoss: NaN,
-            lowestLowPostEntry: NaN,
             highestHigh: NaN,
             percentReturn: NaN,
             currentClose: NaN,
@@ -373,11 +371,7 @@ export default function EntryZone() {
             anchored off WTF&apos;s current TZ BUY 2 reference and then runs independently — the
             full pause/dormant/race WTF state machine isn&apos;t ported yet. Activation price is a
             one-time snapshot of DTF&apos;s own TZ BUY reference, taken when this list&apos;s
-            milestone formed (can differ between the two lists). Stop loss price is that
-            milestone&apos;s own live SL level — it ratchets down to a new reference low as one
-            forms, unlike Activation price&apos;s one-time snapshot. Lowest low post entry is the
-            lowest daily low made strictly after the entry day and strictly before today; it
-            shows NA until at least one full day has closed since entry. Highest high is
+            milestone formed (can differ between the two lists). Highest high is
             WTF&apos;s own weekly high, live — but freezes the moment WTF hits RED2 or BAR SL2,
             resuming only once price trades back above that frozen level. % Return is the change
             from Activation price to Highest high.
@@ -488,12 +482,6 @@ export default function EntryZone() {
                   <th className="col-left">Co. Name</th>
                   <th>Active as on</th>
                   <th>{choice === "tzBuy" ? "TZ BUY entry above" : "Activation price"}</th>
-                  {choice === "tzBuyEntry" && (
-                    <>
-                      <th>Stop loss price</th>
-                      <th>Lowest low post entry</th>
-                    </>
-                  )}
                   <th>Highest high</th>
                   <th>
                     <button
@@ -519,12 +507,6 @@ export default function EntryZone() {
                     <td className="col-left">{r.name}</td>
                     <td>{r.activeAsOn === NA ? NA : formatDDMMYYYY(r.activeAsOn)}</td>
                     <td>{fmt(r.activationPrice)}</td>
-                    {choice === "tzBuyEntry" && (
-                      <>
-                        <td>{fmt(r.stopLoss)}</td>
-                        <td>{fmt(r.lowestLowPostEntry)}</td>
-                      </>
-                    )}
                     <td>{fmt(r.highestHigh)}</td>
                     <td
                       className={
