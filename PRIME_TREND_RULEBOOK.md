@@ -296,6 +296,75 @@ ICICIBANK.NS instance, and all four ADANIENT.NS instances, are
 unaffected. `test_prime_trend_smoke.py` has been updated to lock in the
 corrected value.
 
+## Bug fix: a still-open instance's DTF simulation window was truncated to the current week's own label, not today (INDORAMA.NS, ACMESOLAR.NS)
+
+Found live in production, 2026-09-24, from two independent bug reports:
+ACMESOLAR.NS showing Highest High exactly equal to Activation Price despite
+a clearly higher Current Close, and INDORAMA.NS showing in the "TZ BUY
+ENTRY" (Stage 2) live list with the same Highest-High-stuck-at-Activation
+symptom, plus a general "no stocks shown in PRIME TREND for the last 2
+days" report.
+
+Root cause: a still-open (never-failed) WTF anchor instance's own
+`end_date` / `endDate` fell back to the WTF trace's own last entry's date
+whenever no explicit SL/BAR-SL2 exit was ever found for it. The WTF trace
+has exactly one row per calendar week, labeled by that week's FIRST
+trading day (see the `resample_weekly`/`resampleWeekly` week-labeling fix
+above). So once 2+ trading days have elapsed in the current, still-forming
+week, that label is EARLIER than today — and the DTF simulation
+(`_simulate_dtf_all`/`simulateDtfAll`) is hard-bounded by
+`dtf_days[i].date <= inst.end_date`, so it silently stopped processing
+every later real trading day for any currently-open instance.
+
+Two independent, compounding consequences, both reproduced end-to-end
+against real INDORAMA.NS WTF+DTF data:
+
+- **Highest High freezes.** `hh`/`hh1` only start accumulating from the day
+  *after* a stage (re)forms (the formation candle itself resets `hh` to 0
+  after already having skipped this candle's own high). If the simulation
+  window ends right at (or before) the day after formation, `hh`/`hh1`
+  never get a single data point, so the live status reports `null`, which
+  the screener then displays as `Activation Price` (the documented
+  fallback in `lib/dtfWtfScreener.ts`) — exactly the observed "Highest
+  High == Activation Price, but Current Close is clearly higher" symptom.
+  Reproduced: INDORAMA.NS Stage 1 (formed 2026-09-18) and Stage 2 (formed
+  2026-09-21) both under-reported Highest High as 109.26 / the activation
+  price respectively, when the real max across the available DTF data
+  (through 2026-09-23) was 112.30 (2026-09-22) — one day the truncated
+  window never reached.
+- **Later-in-week formations/SLs are invisible.** Since the simulation
+  loop for a currently-open instance never advances past the current
+  week's first trading day, ANY Stage 1/Stage 2 formation or SL that would
+  only trigger on day 2-5 of that week is never evaluated at all — this is
+  the mechanism behind "no stocks shown in PRIME TREND for the last 2
+  days": those two days are structurally unreachable for every currently-
+  open instance across the whole scanned universe, not just one stock.
+
+Fix: thread the actual last DTF trading day through
+`_all_instances`/`allInstances` → `_wtf_instances_for_family`/
+`wtfInstancesForFamily`, and use it (not the WTF trace's own last date) as
+the `end_date`/`endDate` fallback for a still-open instance. A genuinely
+closed instance's `end_date` (resolved from an explicit WTF-side event) is
+untouched.
+
+Confirmed no regression: ICICIBANK.NS's historical `compute_prime_trend`
+output is unchanged (still 22 rows across 11 TZ BUY 2 instances, same exit
+types/prices/highest-highs) — the fix only widens the window for instances
+still open as of the most recent data, which closed-instance history never
+touches.
+
+INDORAMA.NS's own Stage 2 (TZ BUY ENTRY) formation on 2026-09-21 was
+separately confirmed to genuinely satisfy the coded breakout condition
+(High 109.26 vs. the required 93.69, Close 106.55 well above the 93.49
+reference) — a decisive, non-borderline break, not a misfire of the
+breakout rule itself. Its presence in the live list is correct; only its
+Highest High figure (and the general late-week blind spot) was the bug.
+
+Applied to `prime_trend.py` and `lib/primeTrend.ts` (both engines share the
+identical defect, introduced as an unintended side effect of the earlier
+week-labeling fix — see above). Not yet re-verified against ADANIENT.NS
+(blocked by this session's standing restriction).
+
 ## Open items
 
 - Implemented in Python (`prime_trend.py`). The multi-cycle-row fix, the
