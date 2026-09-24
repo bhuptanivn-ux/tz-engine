@@ -109,10 +109,23 @@ function toDays(rows: HistoryRowLike[]): Day[] {
     }));
 }
 
-// Mon-Sun weeks, matching the Python resample_weekly convention: Open =
-// week's first trading day's open, High = week's max, Low = week's min,
-// Close = week's last trading day's close, labeled with the week's LAST
-// trading day's date (not the Monday).
+// Mon-Sun weeks: Open = week's first trading day's open, High = week's
+// max, Low = week's min, Close = week's last trading day's close, labeled
+// with the week's FIRST trading day's date.
+//
+// Bug fix (real-data, CORDSCABLE.NS): this used to label each week with
+// its own LAST trading day's date instead. That's incompatible with how
+// primeTrend.ts's containingWeekStart/liveRefAsof identify "the WTF week
+// containing DTF day d" -- they look for the largest WTF date <= d, which
+// only works if a week's label is <= every day inside it (i.e. its FIRST
+// trading day). With last-day labeling, any day before that week's own
+// label (Monday through Thursday of a still-unfinished week) wrongly fell
+// back to the PREVIOUS week's label, making PRIME TREND's own live anchor
+// a full extra week more stale than intended for 4 of every 5 trading
+// days. Confirmed real trace: this fabricated a phantom DTF TZ BUY ENTRY
+// activation (22/09/2026 @ 381.60) that doesn't exist under the correct,
+// Monday-labeled WTF series (where Stage 2 never activates at all for
+// that window).
 function mondayOf(dateStr: string): string {
   const d = new Date(`${dateStr}T00:00:00Z`);
   const dow = d.getUTCDay(); // 0 = Sunday .. 6 = Saturday
@@ -134,7 +147,7 @@ export function resampleWeekly(days: Day[]): Day[] {
     .map((key) => {
       const group = weeks.get(key) as Day[];
       return {
-        date: group[group.length - 1].date,
+        date: group[0].date,
         o: group[0].o,
         h: Math.max(...group.map((g) => g.h)),
         l: Math.min(...group.map((g) => g.l)),
