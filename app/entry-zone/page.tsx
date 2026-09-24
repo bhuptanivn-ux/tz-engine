@@ -23,8 +23,18 @@ const NA = "NA";
 // under any reasonable timeout; a segment smaller than BATCH_SIZE (every
 // segment except NSE Equity) still completes in a single batch, so this
 // applies uniformly regardless of which segment is selected.
-const BATCH_SIZE = 150;
-const BATCH_CONCURRENCY = 3;
+//
+// Kept small and lightly parallel (rather than fewer/bigger batches) on
+// purpose: a batch that includes one unusually slow symbol (a live
+// Yahoo-fallback fetch, or a stock with an unusually long/eventful
+// history for the WTF/DTF engine to trace) only drags down that one
+// small batch, not a large chunk of the whole scan -- and a per-fetch
+// timeout + retry below means one bad batch can't hang the page
+// indefinitely either.
+const BATCH_SIZE = 75;
+const BATCH_CONCURRENCY = 2;
+const BATCH_TIMEOUT_MS = 45_000;
+const BATCH_MAX_ATTEMPTS = 2;
 
 interface ScreenerBatchResponse {
   total?: number;
@@ -111,12 +121,29 @@ export default function EntryZone() {
   }
 
   async function fetchScanBatch(offset: number, limit: number): Promise<ScreenerBatchResponse> {
-    const res = await fetch(
-      `/api/screener?segment=${encodeURIComponent(segment)}&offset=${offset}&limit=${limit}`
-    );
-    const data: ScreenerBatchResponse = await res.json();
-    if (!res.ok) throw new Error(data.error || "Scan failed");
-    return data;
+    let lastErr: unknown = null;
+    for (let attempt = 1; attempt <= BATCH_MAX_ATTEMPTS; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), BATCH_TIMEOUT_MS);
+      try {
+        const res = await fetch(
+          `/api/screener?segment=${encodeURIComponent(segment)}&offset=${offset}&limit=${limit}`,
+          { signal: controller.signal }
+        );
+        const data: ScreenerBatchResponse = await res.json();
+        if (!res.ok) throw new Error(data.error || "Scan failed");
+        return data;
+      } catch (err) {
+        lastErr = err;
+        const isAbort = err instanceof DOMException && err.name === "AbortError";
+        lastErr = isAbort
+          ? new Error(`Timed out scanning instruments ${offset + 1}-${offset + limit}`)
+          : err;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error("Scan failed");
   }
 
   async function runScan() {
