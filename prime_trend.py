@@ -295,22 +295,6 @@ def _containing_week_start(wtf_dates: list[str], d: str) -> Optional[str]:
     return start
 
 
-def _live_ref_asof(checkpoints, wtf_dates: list[str], d: str) -> Optional[float]:
-    """The WTF reference high as it stood at the end of the most recently
-    FULLY COMPLETED WTF week strictly before the week containing `d` --
-    never the current, still-forming week's own value (look-ahead guard)."""
-    week_start = _containing_week_start(wtf_dates, d)
-    if week_start is None:
-        return None
-    ref = None
-    for cdate, cref in checkpoints:
-        if cdate < week_start:
-            ref = cref
-        else:
-            break
-    return ref
-
-
 # --------------------------------------------------------------------------
 # Step 4: the Stage 1 / Stage 2 DTF simulation within one WTF instance's
 # window. Returns EVERY closed entry/exit cycle as its own row -- not just
@@ -365,6 +349,21 @@ def _simulate_dtf_all(
     s1_activation_price = None
     hh1, hh1_date = 0.0, None
 
+    # The anchor Stage 1 breaks out against, BEFORE Stage 1 first forms.
+    # Seeded from the WTF instance's own formation-week High (checkpoints[0]
+    # is always that formation event), then climbs quietly on any later DAY's
+    # own High once the formation week is over -- it does NOT wait for a
+    # whole further WTF week to close first. WTF is only a derived resample
+    # of these same daily bars, so a week's cumulative high is real,
+    # already-known information the moment the day that set it has closed,
+    # not a look-ahead risk to any later day in that same still-forming
+    # week. (Confirmed live, INDORAMA.NS 2026-09-24: 15/09 printed a High of
+    # 96.50 with a weak Close, quietly raising the anchor from 90.00 that
+    # same week -- the old week-boundary-only lookup kept using the stale
+    # 90.00 through 18/09, wrongly confirming Stage 1 there instead of the
+    # genuine breakout on 21/09.)
+    pre_s1_ref = checkpoints[0][1] if checkpoints else None
+
     def close_pair(exit_type: str, exit_date: str, exit_price: float):
         nonlocal cur_entry, hh, hh_date
         if cur_entry is not None:
@@ -385,11 +384,13 @@ def _simulate_dtf_all(
 
         # --- Stage 1: DTF TZ BUY ---
         if s1 is None:
-            live = _live_ref_asof(checkpoints, wtf_dates, cur.date)
-            if live is not None and _breakout_shape(prev, cur, live):
-                s1 = _Stage(cur.h, cur.l)
-                s1_since, s1_activation_price = cur.date, cur.h
-                hh1, hh1_date = 0.0, None
+            if pre_s1_ref is not None and _containing_week_start(wtf_dates, cur.date) != inst.formation_date:
+                if _breakout_shape(prev, cur, pre_s1_ref):
+                    s1 = _Stage(cur.h, cur.l)
+                    s1_since, s1_activation_price = cur.date, cur.h
+                    hh1, hh1_date = 0.0, None
+                elif cur.h > pre_s1_ref and (cur.h - pre_s1_ref) >= ANY:
+                    pre_s1_ref = cur.h
         else:
             if s1.active:
                 if _sl_shape(cur, s1.ref_low):
