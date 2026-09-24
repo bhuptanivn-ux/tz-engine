@@ -51,11 +51,18 @@ export interface PrimeTrendLiveStatus {
   stage1Active: boolean;
   stage1Since: string | null;
   stage1ActivationPrice: number | null;
+  // The stage's own live SL level -- i.e. Stage.refLow while active. Not a
+  // fixed value: it ratchets down to a new, lower reference low as the
+  // stage progresses (see the `if (cur.l < s1.refLow) s1.refLow = cur.l`
+  // step below), so this is always "the SL price as of right now", not a
+  // one-time snapshot the way stage1ActivationPrice is.
+  stage1StopLoss: number | null;
   stage1HighestHigh: number | null;
   stage1HighestHighDate: string | null;
   stage2Active: boolean;
   stage2Since: string | null;
   stage2ActivationPrice: number | null;
+  stage2StopLoss: number | null;
   stage2HighestHigh: number | null;
   stage2HighestHighDate: string | null;
 }
@@ -513,11 +520,13 @@ function simulateDtfAll(
     stage1Active,
     stage1Since: stage1Active ? s1Since : null,
     stage1ActivationPrice: stage1Active ? s1ActivationPrice : null,
+    stage1StopLoss: stage1Active && s1 ? s1.refLow : null,
     stage1HighestHigh: stage1Active ? (hh1Date ? hh1 : null) : null,
     stage1HighestHighDate: stage1Active ? hh1Date : null,
     stage2Active,
     stage2Since: stage2Active && curEntry ? (curEntry as [string, number])[0] : null,
     stage2ActivationPrice: stage2Active && curEntry ? (curEntry as [string, number])[1] : null,
+    stage2StopLoss: stage2Active && s2 ? s2.refLow : null,
     stage2HighestHigh: stage2Active ? (hhDate ? hh : null) : null,
     stage2HighestHighDate: stage2Active ? hhDate : null,
   };

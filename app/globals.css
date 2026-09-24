@@ -200,6 +200,13 @@ th:first-child, td:first-child {
   text-align: left;
 }
 
+/* Prime Trend's Symbol/Co. Name columns -- both need left-alignment, not
+   just the first one (the default th:first-child rule above only covers
+   the actual first column). */
+.col-left {
+  text-align: left;
+}
+
 /* Prime Trend's % Return column header -- a tri-state sort toggle (off ->
    descending -> ascending -> off) styled to sit inline with the header
    text, rather than looking like an ordinary button. */
