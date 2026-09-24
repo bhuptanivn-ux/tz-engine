@@ -40,8 +40,21 @@ function blobUrlFor(pathname: string): string {
   return `https://${hostPrefix}.public.blob.vercel-storage.com/${pathname}`;
 }
 
+// Bump this whenever scanStock/computePrimeTrendLive's own computation
+// changes in a way that would change a previously-cached result -- it's
+// baked into the cache path, so a version bump makes every prior day's
+// cache entries permanently unreachable (never read, never overwritten)
+// instead of silently continuing to serve output computed under the old,
+// now-incorrect logic for the rest of that calendar day. Concrete case
+// this guards against: the resampleWeekly week-labeling fix (see its own
+// comment) changed scanStock's actual output for many stocks; without a
+// version bump, any segment already scanned (and cached) earlier the same
+// day the fix deployed would have kept serving the pre-fix result to
+// every subsequent visitor until midnight UTC.
+const CACHE_VERSION = "v2";
+
 function cachePathFor(segment: string, dateISO: string, batchKey: string): string {
-  return `screener-cache/${segment}/${dateISO}/${batchKey}.json`;
+  return `screener-cache/${CACHE_VERSION}/${segment}/${dateISO}/${batchKey}.json`;
 }
 
 export async function readScreenerCache(
