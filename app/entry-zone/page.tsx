@@ -40,6 +40,8 @@ export default function EntryZone() {
   const [selectedScrip, setSelectedScrip] = useState<ScripMatch | null>(null);
   const scripDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [yearFilter, setYearFilter] = useState("");
+
   function onChoiceChange(next: ListChoice) {
     setChoice(next);
     setSegment("");
@@ -48,6 +50,7 @@ export default function EntryZone() {
     setLastScanned("");
     setError("");
     clearScripSearch();
+    setYearFilter("");
   }
 
   function onSegmentChange(next: string) {
@@ -57,7 +60,21 @@ export default function EntryZone() {
     setLastScanned("");
     setError("");
     clearScripSearch();
+    setYearFilter("");
   }
+
+  // Clicking the "Prime Trend" nav link while already on this page doesn't
+  // trigger a Next.js navigation (same route), so Sidebar dispatches this
+  // event instead -- reset the Search/Year filters and fall back to the
+  // main, unfiltered list.
+  useEffect(() => {
+    function resetFilters() {
+      clearScripSearch();
+      setYearFilter("");
+    }
+    window.addEventListener("prime-trend-filters-reset", resetFilters);
+    return () => window.removeEventListener("prime-trend-filters-reset", resetFilters);
+  }, []);
 
   async function runScan() {
     if (!segment) return;
@@ -137,10 +154,16 @@ export default function EntryZone() {
 
   const activeList = choice === "tzBuy" ? tzBuy : tzBuyEntry;
 
+  // Years present in the current tab's active list, latest first, for the
+  // Year filter dropdown.
+  const availableYears = Array.from(new Set(activeList.map((r) => r.activeAsOn.slice(0, 4)))).sort(
+    (a, b) => b.localeCompare(a)
+  );
+
   // Newest activation first -- oldest at the bottom. A searched scrip
   // narrows the table to just that one scrip: its own row if it's
   // currently active for this tab, or an "NA" placeholder row (name only)
-  // if it isn't.
+  // if it isn't -- the Year filter is ignored while a scrip is selected.
   const rows = selectedScrip
     ? (() => {
         const match = activeList.find((r) => r.symbol === selectedScrip.symbol);
@@ -157,7 +180,9 @@ export default function EntryZone() {
           },
         ];
       })()
-    : [...activeList].sort((a, b) => b.activeAsOn.localeCompare(a.activeAsOn));
+    : [...activeList]
+        .filter((r) => !yearFilter || r.activeAsOn.slice(0, 4) === yearFilter)
+        .sort((a, b) => b.activeAsOn.localeCompare(a.activeAsOn));
 
   return (
     <main className="container">
@@ -228,54 +253,73 @@ export default function EntryZone() {
 
       {lastScanned && (
         <div className="card">
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label htmlFor="scrip-search">Search scrip (NSE)</label>
-            <input
-              id="scrip-search"
-              type="text"
-              placeholder="e.g. Reliance, TCS, Asian Paints…"
-              value={scripQuery}
-              onChange={(e) => {
-                setScripQuery(e.target.value);
-                setSelectedScrip(null);
-                setShowScripSuggestions(true);
-              }}
-              onFocus={() => setShowScripSuggestions(true)}
-              onBlur={() => setTimeout(() => setShowScripSuggestions(false), 150)}
-              onKeyDown={handleScripKeyDown}
-              autoComplete="off"
-              role="combobox"
-              aria-expanded={showScripSuggestions && scripSuggestions.length > 0}
-              aria-activedescendant={
-                scripHighlighted >= 0 ? `scrip-suggestion-${scripHighlighted}` : undefined
-              }
-            />
-            {showScripSuggestions && scripSuggestions.length > 0 && (
-              <div className="suggestions">
-                {scripSuggestions.map((s, i) => (
-                  <div
-                    key={s.symbol}
-                    id={`scrip-suggestion-${i}`}
-                    className={i === scripHighlighted ? "suggestion-item active" : "suggestion-item"}
-                    onMouseDown={() => pickScripSuggestion(s)}
-                    onMouseEnter={() => setScripHighlighted(i)}
-                  >
-                    <div>{s.symbol}</div>
-                    <div className="name">{s.name}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {selectedScrip && (
-              <button
-                type="button"
-                className="secondary"
-                onClick={clearScripSearch}
-                style={{ marginTop: "0.6rem" }}
+          <div className="row">
+            <div className="field" style={{ flex: "2 1 260px", marginBottom: 0 }}>
+              <label htmlFor="scrip-search">Search scrip (NSE)</label>
+              <input
+                id="scrip-search"
+                type="text"
+                placeholder="e.g. Reliance, TCS, Asian Paints…"
+                value={scripQuery}
+                onChange={(e) => {
+                  setScripQuery(e.target.value);
+                  setSelectedScrip(null);
+                  setShowScripSuggestions(true);
+                }}
+                onFocus={() => setShowScripSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowScripSuggestions(false), 150)}
+                onKeyDown={handleScripKeyDown}
+                autoComplete="off"
+                role="combobox"
+                aria-expanded={showScripSuggestions && scripSuggestions.length > 0}
+                aria-activedescendant={
+                  scripHighlighted >= 0 ? `scrip-suggestion-${scripHighlighted}` : undefined
+                }
+              />
+              {showScripSuggestions && scripSuggestions.length > 0 && (
+                <div className="suggestions">
+                  {scripSuggestions.map((s, i) => (
+                    <div
+                      key={s.symbol}
+                      id={`scrip-suggestion-${i}`}
+                      className={i === scripHighlighted ? "suggestion-item active" : "suggestion-item"}
+                      onMouseDown={() => pickScripSuggestion(s)}
+                      onMouseEnter={() => setScripHighlighted(i)}
+                    >
+                      <div>{s.symbol}</div>
+                      <div className="name">{s.name}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {selectedScrip && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={clearScripSearch}
+                  style={{ marginTop: "0.6rem" }}
+                >
+                  Clear search
+                </button>
+              )}
+            </div>
+
+            <div className="field" style={{ flex: "1 1 160px", marginBottom: 0 }}>
+              <label htmlFor="year-filter">Year (Active as on)</label>
+              <select
+                id="year-filter"
+                value={yearFilter}
+                onChange={(e) => setYearFilter(e.target.value)}
+                disabled={!!selectedScrip || availableYears.length === 0}
               >
-                Clear search
-              </button>
-            )}
+                <option value="">All years</option>
+                {availableYears.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       )}

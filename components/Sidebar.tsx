@@ -21,6 +21,14 @@ export default function Sidebar() {
         <Link
           href="/entry-zone"
           className={pathname === "/entry-zone" ? "sidebar-link active" : "sidebar-link"}
+          onClick={() => {
+            // Same route -- Next.js won't remount the page, so tell it
+            // directly to drop any Search/Year filter and show the main,
+            // unfiltered Prime Trend list again.
+            if (pathname === "/entry-zone") {
+              window.dispatchEvent(new Event("prime-trend-filters-reset"));
+            }
+          }}
         >
           Prime Trend
         </Link>
