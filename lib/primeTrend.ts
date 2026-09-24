@@ -191,6 +191,17 @@ interface WtfInstance {
   endPrice: number | null; // BAR SL2 -> that week's close; own "2" SL / parent-tier SL -> this tier's own ref_low
 }
 
+// Safety valve, not a real-world expectation: a normal stock's history
+// produces at most a few dozen formations per family even over decades.
+// This exists purely to turn a pathological case (a stock whose price
+// data makes this O(trace^2) search -- or the O(dtfDays) DTF simulation
+// computePrimeTrendLive later runs per open instance -- blow up) into a
+// fast, clean, per-stock failure instead of a serverless invocation that
+// hangs long enough to take the whole request down with it. A caught
+// exception here is a scanned-stock failure (see the try/catch around
+// scanStock() in app/api/screener/route.ts), not a broken feature.
+const MAX_INSTANCES_PER_FAMILY = 300;
+
 function wtfInstancesForFamily(wtfTrace: WtfTraceEntry[], family: PrimeTrendFamily): WtfInstance[] {
   const spec = FAMILIES[family];
   const instances: WtfInstance[] = [];
@@ -199,6 +210,11 @@ function wtfInstancesForFamily(wtfTrace: WtfTraceEntry[], family: PrimeTrendFami
     const { day, events, aliveAfter } = wtfTrace[i];
     for (const e of events) {
       if (!e.startsWith(spec.form)) continue;
+      if (instances.length >= MAX_INSTANCES_PER_FAMILY) {
+        throw new Error(
+          `PRIME TREND: ${family} formation count exceeded safety cap (${MAX_INSTANCES_PER_FAMILY}) -- likely pathological price data`
+        );
+      }
       const letter = e.slice(spec.form.length, -1);
       // Which pid does this formation belong to? Whichever pid holds this
       // exact letter right after this candle -- unambiguous.

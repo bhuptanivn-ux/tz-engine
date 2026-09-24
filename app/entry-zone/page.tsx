@@ -384,6 +384,25 @@ export default function EntryZone() {
             {errors.length > 0 && ` ${errors.length} stock(s) failed to fetch and were skipped.`}
           </p>
         )}
+        {errors.length > 0 && (
+          <details style={{ marginTop: "0.5rem" }}>
+            <summary className="muted" style={{ cursor: "pointer" }}>
+              Show failed stock(s) ({errors.length})
+            </summary>
+            <ul style={{ marginTop: "0.5rem", paddingLeft: "1.25rem" }}>
+              {errors.slice(0, 25).map((e, i) => (
+                <li key={i} className="muted" style={{ fontSize: "0.85rem" }}>
+                  {e}
+                </li>
+              ))}
+            </ul>
+            {errors.length > 25 && (
+              <p className="muted" style={{ fontSize: "0.85rem" }}>
+                …and {errors.length - 25} more.
+              </p>
+            )}
+          </details>
+        )}
       </div>
 
       {lastScanned && (
