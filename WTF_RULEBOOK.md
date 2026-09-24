@@ -110,9 +110,122 @@ daily candles alongside the weekly one.
 incomplete once actually worked through against real data -- see the
 separate `PRIME_TREND_RULEBOOK.md` for the corrected, fully-worked
 two-stage version (DTF TZ BUY, then a further DTF TZ BUY ENTRY
-escalation above it). The "BAR ENTRY" side of this table has not yet
-been worked through to the same depth and still stands as originally
-specified above.
+escalation above it). The "BAR ENTRY" side of this table has since been
+worked through to the same depth -- see the next section, which
+supersedes the "BAR ENTRY" bullet above too (still specification only,
+not implemented).
+
+## TAR / TBAR and the separate BAR → BAR ENTRY / BAR 2 track (specification only, NOT implemented)
+
+Fully worked out in a later pass, after the two-stage PRIME TREND
+correction above prompted the same rigor to be applied to the BAR row.
+Renamed to avoid two separate naming collisions: with TZ BUY/TZ BUY 2
+(the base engine's own top-level tiers) and with BAR/BAR 2 (the base
+engine's own lineage tiers) -- reusing either name here would make the
+same word mean different things depending on context, exactly the
+confusion a brief detour into "let RED1/RED2 skip the TZ BUY 2 gate"
+would have caused (considered and rejected -- see "Rules, tier by
+tier" above's spawn-eligibility discussion for why the base engine's
+own TZ BUY 2 gate must never become context-dependent).
+
+**TAR** = the old "TZ BUY" in this specific context: DTF's first
+response to a WTF BAR, confirming the moment DTF's own high crosses the
+WTF BAR's own reference high, with the standard full breakout shape
+(`low >= prev.low`, high clears the reference by `>= THRESH`, close
+holds at/above it).
+
+**TBAR** = the old "TZ BUY ENTRY": TAR's own escalation, confirming
+above TAR's own (quietly climbing) reference high -- mirrors TZ BUY's
+own reactivation-ladder mechanics exactly, nothing new.
+
+**BAR → BAR ENTRY / BAR 2 is a second, fully independent track -- NOT
+sequentially gated on TAR/TBAR at all.** RED1/RED2 for this track pulls
+back directly against the WTF BAR's own reference high, never against
+TAR. So BAR (and its own Stage 2) can be DTF's very first response to a
+WTF BAR, entirely without TAR or TBAR ever forming -- or it can form
+while TAR is active but before TBAR ever confirms, or after TAR's own
+SL. There is no required ordering between the TAR/TBAR track and the
+BAR track beyond one gate, inherited unchanged from the original
+disambiguation above: **once a RED1→RED2→BAR→(BAR ENTRY or BAR 2)
+escalation has completed once for this whole lineage, that door closes
+permanently** -- no fresh BAR cascade can start again after any later
+SL (TAR's, TBAR's, or the BAR family's own), only TAR/TBAR reactivating.
+
+**Naming a cascade's own Stage 2 -- BAR ENTRY vs. BAR 2.** Decided by
+one question, asked at the moment this cascade's own Stage 2 confirms:
+*is there currently an already-active Stage-2-level tier for this
+lineage (TBAR, or an earlier BAR ENTRY)?*
+
+- **No** (neither TBAR nor an earlier BAR ENTRY is active yet --
+  regardless of whether TAR itself happens to be active or not) -- this
+  cascade's Stage 2 is named **BAR ENTRY**. TAR's own presence never
+  affects this naming: RED1/RED2/BAR/BAR ENTRY can complete entirely
+  while TAR is active and un-SL'd, well before TBAR ever confirms.
+  Includes a same-candle tie: if this cascade's own Stage 2 and TBAR
+  happen to confirm on the exact same candle, the cascade's name still
+  resolves to BAR ENTRY, since TBAR wasn't *already* active beforehand.
+- **Yes** (TBAR, or an earlier BAR ENTRY, is already active) -- this
+  cascade's Stage 2 is named **BAR 2** instead.
+
+**No REAR tier in this theory.** Once a nested BAR family (formed under
+BAR ENTRY, under BAR 2, or directly beneath TBAR) reaches its own SL2
+together with its own parent's own SL (`BAR SL + BAR ENTRY SL + BAR
+SL2`, or the equivalent under BAR 2/TBAR), this does NOT escalate to a
+REAR-equivalent tier the way the base engine's own BAR family does. It
+simply reactivates the parent (BAR ENTRY, BAR 2, or TBAR) in place,
+above that parent's own historical highest high.
+
+**Decisive parent/child dependency, same shape as TZ BUY → TZ BUY 2
+everywhere:**
+- TAR's own SL is decisive: wipes TBAR and the entire BAR family under
+  it in one shot.
+- Each BAR-tier's own first formation (call it BAR1 for a given
+  cascade) is *also* decisive with respect to its own Stage 2 (BAR
+  ENTRY or BAR 2): that Stage 2 cannot exist -- neither forming for the
+  first time, nor reactivating -- while its own BAR1 is currently down.
+  When BAR1 SLs, its own Stage 2 doesn't just disappear without a
+  trace: its own accumulated reference persists (see below) as the
+  level BAR1's own reform has to clear.
+
+**One universal reactivation rule, no per-tier special cases:**
+whenever anything needs to reactivate, the threshold it must clear is
+**whichever reference is currently highest across every tier the whole
+structure is holding at that moment** -- TAR, TBAR, BAR1, BAR2/BAR
+ENTRY, and any further nesting -- re-evaluated fresh each time, exactly
+`_current_top_ref`'s existing "whichever is higher" principle, just
+applied to this taller structure. Nothing is restricted to only its own
+specific named reference. Two fully worked examples:
+
+1. `TAR → TBAR → RED1 → RED2 → BAR1 → BAR2` (BAR2 climbs *past* TBAR's
+   own level) → `TAR SL` fires (decisive, wipes TBAR/BAR1/BAR2 all at
+   once) → TAR's own reactivation must clear **BAR2's** level, not
+   TBAR's, since BAR2 was the highest point reached. Once TAR
+   reactivates there, **TBAR's own subsequent reactivation** then has
+   to clear *that* new TAR reference in turn.
+2. `BAR ENTRY → RED1 → RED2 → BAR1 → BAR2` (a fresh cascade forming
+   under an already-active BAR ENTRY, hence named BAR 2 per the naming
+   rule above) -- if BAR2 climbs past BAR ENTRY's own level, that
+   becomes the new high; when BAR ENTRY's own decisive parent (its own
+   BAR1) eventually fails and reforms, it must clear that BAR2-set
+   high, and BAR ENTRY's own subsequent reactivation then has to clear
+   *that* freshly-reformed reference -- the identical leapfrogging
+   pattern as example 1, one tier down.
+
+**The ratchet must never stall, at any tier, ever** -- the exact same
+principle behind the live site's own REAR SL / REAR RE-ENTER SL
+reactivation-reference fix (see "REAR's own SL / REAR RE-ENTER's own
+SL reactivation reference must never stall behind `_milestone_blocked`"
+below): every tier's own highest-high tracking must keep silently
+absorbing every new high made anywhere in this structure for the
+entire time it's dormant -- never restricted to only what happened
+before its own SL. A design that freezes a reference and only resumes
+tracking later reproduces exactly the bug already found and fixed on
+the live site, one layer up.
+
+Confirmed explicitly by the user across a working session tracing
+through IDEA VODAFONE's real numbers; not yet verified against a full
+real dataset the way PRIME TREND was, and not yet implemented in either
+`tz_engine_wtf.py` or `lib/tzEngineWtf.ts`.
 
 **Status:** verified against real weekly OHLC (KALYANKJIL.NS, 2021-03-28
 through 2026-09-15) — reproduces that dataset's own Event column exactly.
