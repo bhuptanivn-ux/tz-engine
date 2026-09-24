@@ -73,6 +73,22 @@ function fmtPercent(n: number): string {
   return Number.isNaN(n) ? NA : `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
+// Risk % = how far the stop loss sits below the activation price, as a
+// percentage of it -- e.g. Activation 100, SL 97 -> 3%. Computed
+// client-side from fields already on ScreenerRow rather than adding a
+// server field for it.
+function riskPercent(activationPrice: number, stopLoss: number | null): number | null {
+  if (stopLoss === null || Number.isNaN(activationPrice) || activationPrice === 0) return null;
+  return ((activationPrice - stopLoss) / activationPrice) * 100;
+}
+
+// Has the Lowest Low (since entry) traded back below the Activation
+// Price? null (NA) until Lowest Low Post Entry itself has a value.
+function retraced(lowestLow: number | null, activationPrice: number): "YES" | "NO" | null {
+  if (lowestLow === null || Number.isNaN(activationPrice)) return null;
+  return lowestLow < activationPrice ? "YES" : "NO";
+}
+
 export default function EntryZone() {
   const [choice, setChoice] = useState<ListChoice>("tzBuyEntry");
   const [segment, setSegment] = useState("");
@@ -95,6 +111,15 @@ export default function EntryZone() {
 
   const [yearFilter, setYearFilter] = useState("");
   const [returnSort, setReturnSort] = useState<ReturnSort>(null);
+
+  // Column visibility -- all on by default; unticking removes that column
+  // from the table. Scrip/Activation/Stop Loss columns are always shown
+  // (not offered as toggles), per an explicit request to keep those fixed.
+  const [colHighPrice, setColHighPrice] = useState(true);
+  const [colHighReturn, setColHighReturn] = useState(true);
+  const [colLowPrice, setColLowPrice] = useState(true);
+  const [colLowRetraced, setColLowRetraced] = useState(true);
+  const [colCurrentClose, setColCurrentClose] = useState(true);
 
   function onChoiceChange(next: ListChoice) {
     setChoice(next);
@@ -384,12 +409,14 @@ export default function EntryZone() {
             one-time snapshot of DTF&apos;s own TZ BUY reference, taken when this list&apos;s
             milestone formed (can differ between the two lists). Stop loss price is that
             milestone&apos;s own live SL level — it ratchets down to a new reference low as one
-            forms, unlike Activation price&apos;s one-time snapshot. Lowest low post entry is the
-            lowest daily low made strictly after the entry day and strictly before today; it
-            shows NA until at least one full day has closed since entry. Highest high is
-            WTF&apos;s own weekly high, live — but freezes the moment WTF hits RED2 or BAR SL2,
-            resuming only once price trades back above that frozen level. % Return is the change
-            from Activation price to Highest high.
+            forms, unlike Activation price&apos;s one-time snapshot. % Risk is how far below
+            Activation price that stop loss sits. Lowest low post entry is the lowest daily low
+            made strictly after the entry day and strictly before today; it shows NA until at
+            least one full day has closed since entry. Retraced is whether that lowest low has
+            traded back below Activation price. Highest high is WTF&apos;s own weekly high,
+            live — but freezes the moment WTF hits RED2 or BAR SL2, resuming only once price
+            trades back above that frozen level. % Return is the change from Activation price to
+            Highest high.
             {errors.length > 0 && ` ${errors.length} stock(s) failed to fetch and were skipped.`}
           </p>
         )}
@@ -484,72 +511,158 @@ export default function EntryZone() {
               </select>
             </div>
           </div>
-        </div>
-      )}
 
-      {rows.length > 0 && (
-        <div className="card">
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th className="col-left">Symbol</th>
-                  <th className="col-left">Co. Name</th>
-                  <th>Active as on</th>
-                  <th>{choice === "tzBuy" ? "TZ BUY entry above" : "Activation price"}</th>
-                  {choice === "tzBuyEntry" && (
-                    <>
-                      <th>Stop loss price</th>
-                      <th>Lowest low post entry</th>
-                    </>
-                  )}
-                  <th>Highest high</th>
-                  <th>
-                    <button
-                      type="button"
-                      className="sort-toggle"
-                      onClick={cycleReturnSort}
-                      aria-label={`Sort by % Return (currently ${
-                        returnSort === "desc" ? "descending" : returnSort === "asc" ? "ascending" : "off"
-                      })`}
-                    >
-                      % Return
-                      <span className={returnSort === "desc" ? "sort-arrow active" : "sort-arrow"}>▼</span>
-                      <span className={returnSort === "asc" ? "sort-arrow active" : "sort-arrow"}>▲</span>
-                    </button>
-                  </th>
-                  <th>Current close</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.symbol}>
-                    <td className="col-left">{r.symbol}</td>
-                    <td className="col-left">{r.name}</td>
-                    <td>{r.activeAsOn === NA ? NA : formatDDMMYYYY(r.activeAsOn)}</td>
-                    <td>{fmt(r.activationPrice)}</td>
-                    {choice === "tzBuyEntry" && (
-                      <>
-                        <td>{fmt(r.stopLoss)}</td>
-                        <td>{fmt(r.lowestLowPostEntry)}</td>
-                      </>
-                    )}
-                    <td>{fmt(r.highestHigh)}</td>
-                    <td
-                      className={
-                        Number.isNaN(r.percentReturn) ? undefined : r.percentReturn >= 0 ? "return-pos" : "return-neg"
-                      }
-                    >
-                      {fmtPercent(r.percentReturn)}
-                    </td>
-                    <td>{fmt(r.currentClose)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="row" style={{ marginTop: "0.75rem" }}>
+            <div className="field" style={{ flex: "1 1 100%", marginBottom: 0 }}>
+              <label style={{ fontSize: "0.8rem" }}>Columns</label>
+              <div className="col-filter-row">
+                <label className="col-filter-item">
+                  <input
+                    type="checkbox"
+                    checked={colHighPrice}
+                    onChange={(e) => setColHighPrice(e.target.checked)}
+                  />
+                  Highest High: Price
+                </label>
+                <label className="col-filter-item">
+                  <input
+                    type="checkbox"
+                    checked={colHighReturn}
+                    onChange={(e) => setColHighReturn(e.target.checked)}
+                  />
+                  Highest High: % Return
+                </label>
+                {choice === "tzBuyEntry" && (
+                  <>
+                    <label className="col-filter-item">
+                      <input
+                        type="checkbox"
+                        checked={colLowPrice}
+                        onChange={(e) => setColLowPrice(e.target.checked)}
+                      />
+                      Lowest Low: Price
+                    </label>
+                    <label className="col-filter-item">
+                      <input
+                        type="checkbox"
+                        checked={colLowRetraced}
+                        onChange={(e) => setColLowRetraced(e.target.checked)}
+                      />
+                      Lowest Low: Retraced
+                    </label>
+                  </>
+                )}
+                <label className="col-filter-item">
+                  <input
+                    type="checkbox"
+                    checked={colCurrentClose}
+                    onChange={(e) => setColCurrentClose(e.target.checked)}
+                  />
+                  Current Close
+                </label>
+              </div>
+            </div>
           </div>
         </div>
       )}
+
+      {rows.length > 0 && (() => {
+        const showStopLoss = choice === "tzBuyEntry";
+        const showLowestLow = choice === "tzBuyEntry";
+        const highGroupCols = (colHighPrice ? 1 : 0) + (colHighReturn ? 1 : 0);
+        const lowGroupCols = showLowestLow ? (colLowPrice ? 1 : 0) + (colLowRetraced ? 1 : 0) : 0;
+
+        return (
+          <div className="card">
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th className="col-left" colSpan={2}>Scrip</th>
+                    <th colSpan={2}>Activation</th>
+                    {showStopLoss && <th colSpan={2}>Stop Loss</th>}
+                    {highGroupCols > 0 && <th colSpan={highGroupCols}>Highest High</th>}
+                    {lowGroupCols > 0 && <th colSpan={lowGroupCols}>Lowest Low</th>}
+                    {colCurrentClose && <th rowSpan={2}>Current Close</th>}
+                  </tr>
+                  <tr>
+                    <th className="col-left">Name</th>
+                    <th className="col-left">Symbol</th>
+                    <th>Date</th>
+                    <th>{choice === "tzBuy" ? "TZ BUY entry above" : "Price"}</th>
+                    {showStopLoss && (
+                      <>
+                        <th>Price</th>
+                        <th>% Risk</th>
+                      </>
+                    )}
+                    {colHighPrice && <th>Price</th>}
+                    {colHighReturn && (
+                      <th>
+                        <button
+                          type="button"
+                          className="sort-toggle"
+                          onClick={cycleReturnSort}
+                          aria-label={`Sort by % Return (currently ${
+                            returnSort === "desc" ? "descending" : returnSort === "asc" ? "ascending" : "off"
+                          })`}
+                        >
+                          % Return
+                          <span className={returnSort === "desc" ? "sort-arrow active" : "sort-arrow"}>▼</span>
+                          <span className={returnSort === "asc" ? "sort-arrow active" : "sort-arrow"}>▲</span>
+                        </button>
+                      </th>
+                    )}
+                    {showLowestLow && colLowPrice && <th>Price</th>}
+                    {showLowestLow && colLowRetraced && <th>Retraced</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const risk = riskPercent(r.activationPrice, r.stopLoss);
+                    const retr = retraced(r.lowestLowPostEntry, r.activationPrice);
+                    return (
+                      <tr key={r.symbol}>
+                        <td className="col-left">{r.name}</td>
+                        <td className="col-left">{r.symbol}</td>
+                        <td>{r.activeAsOn === NA ? NA : formatDDMMYYYY(r.activeAsOn)}</td>
+                        <td>{fmt(r.activationPrice)}</td>
+                        {showStopLoss && (
+                          <>
+                            <td>{fmt(r.stopLoss)}</td>
+                            <td className="return-neg">{risk === null ? NA : `${risk.toFixed(2)}%`}</td>
+                          </>
+                        )}
+                        {colHighPrice && <td>{fmt(r.highestHigh)}</td>}
+                        {colHighReturn && (
+                          <td
+                            className={
+                              Number.isNaN(r.percentReturn)
+                                ? undefined
+                                : r.percentReturn >= 0
+                                ? "return-pos"
+                                : "return-neg"
+                            }
+                          >
+                            {fmtPercent(r.percentReturn)}
+                          </td>
+                        )}
+                        {showLowestLow && colLowPrice && <td>{fmt(r.lowestLowPostEntry)}</td>}
+                        {showLowestLow && colLowRetraced && (
+                          <td className={retr === null ? undefined : retr === "YES" ? "return-pos" : "return-neg"}>
+                            {retr ?? NA}
+                          </td>
+                        )}
+                        {colCurrentClose && <td>{fmt(r.currentClose)}</td>}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {!loading && lastScanned && rows.length === 0 && (
         <p className="muted">No stocks currently active for this list.</p>

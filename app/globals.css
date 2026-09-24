@@ -122,6 +122,32 @@ input, select {
   flex: 1 1 160px;
 }
 
+/* Prime Trend's column-visibility checkboxes, above the results table --
+   deliberately smaller and lighter than the rest of the form controls
+   (which use the global bold, block-level `label` style) to save screen
+   space, per an explicit request. */
+.col-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
+}
+
+.col-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: auto;
+  margin-bottom: 0;
+  font-size: 0.78rem;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.col-filter-item input[type="checkbox"] {
+  width: auto;
+  cursor: pointer;
+}
+
 button {
   background: var(--accent);
   color: white;
