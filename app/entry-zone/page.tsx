@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ScreenerRow } from "@/lib/dtfWtfScreener";
 import { SCREENER_SEGMENTS } from "@/lib/screenerSegments";
 import { formatDDMMYYYY, formatTimestampDDMMYYYY } from "@/lib/dateFormat";
@@ -120,6 +120,16 @@ export default function EntryZone() {
   const [colLowPrice, setColLowPrice] = useState(true);
   const [colLowRetraced, setColLowRetraced] = useState(true);
   const [colCurrentClose, setColCurrentClose] = useState(true);
+
+  // Frozen (sticky) header: the site's generic `thead th { position:
+  // sticky; top: 0 }` rule (globals.css) assumes a single header row, so
+  // it's fine for the Trading Zone page but would make this table's two
+  // header rows stick on top of each other. Row 1 stays at top: 0; row 2's
+  // top is set to row 1's own measured height so it sticks directly below
+  // it instead of overlapping -- measured rather than hard-coded so it
+  // stays correct regardless of font size/zoom/theme.
+  const theadRow1Ref = useRef<HTMLTableRowElement>(null);
+  const [row1Height, setRow1Height] = useState(0);
 
   function onChoiceChange(next: ListChoice) {
     setChoice(next);
@@ -342,6 +352,17 @@ export default function EntryZone() {
               : a.percentReturn - b.percentReturn
             : b.activeAsOn.localeCompare(a.activeAsOn)
         );
+
+  useLayoutEffect(() => {
+    if (theadRow1Ref.current) {
+      setRow1Height(theadRow1Ref.current.getBoundingClientRect().height);
+    }
+  }, [rows.length, choice, colHighPrice, colHighReturn, colLowPrice, colLowRetraced, colCurrentClose]);
+
+  // Sticks row 2's headers directly below row 1's (which sits at the
+  // default `top: 0` from the site-wide sticky rule) instead of on top of
+  // it -- see the row1Height comment above.
+  const row2StickyStyle = { top: row1Height };
 
   return (
     <main className="container">
@@ -577,7 +598,7 @@ export default function EntryZone() {
             <div className="table-wrap">
               <table>
                 <thead>
-                  <tr>
+                  <tr ref={theadRow1Ref}>
                     <th className="col-left" colSpan={2}>Scrip</th>
                     <th colSpan={2}>Activation</th>
                     {showStopLoss && <th colSpan={2}>Stop Loss</th>}
@@ -586,19 +607,19 @@ export default function EntryZone() {
                     {colCurrentClose && <th rowSpan={2}>Current Close</th>}
                   </tr>
                   <tr>
-                    <th className="col-left">Name</th>
-                    <th className="col-left">Symbol</th>
-                    <th>Date</th>
-                    <th>{choice === "tzBuy" ? "TZ BUY entry above" : "Price"}</th>
+                    <th className="col-left" style={row2StickyStyle}>Name</th>
+                    <th className="col-left" style={row2StickyStyle}>Symbol</th>
+                    <th style={row2StickyStyle}>Date</th>
+                    <th style={row2StickyStyle}>{choice === "tzBuy" ? "TZ BUY entry above" : "Price"}</th>
                     {showStopLoss && (
                       <>
-                        <th>Price</th>
-                        <th>% Risk</th>
+                        <th style={row2StickyStyle}>Price</th>
+                        <th style={row2StickyStyle}>% Risk</th>
                       </>
                     )}
-                    {colHighPrice && <th>Price</th>}
+                    {colHighPrice && <th style={row2StickyStyle}>Price</th>}
                     {colHighReturn && (
-                      <th>
+                      <th style={row2StickyStyle}>
                         <button
                           type="button"
                           className="sort-toggle"
@@ -613,8 +634,8 @@ export default function EntryZone() {
                         </button>
                       </th>
                     )}
-                    {showLowestLow && colLowPrice && <th>Price</th>}
-                    {showLowestLow && colLowRetraced && <th>Retraced</th>}
+                    {showLowestLow && colLowPrice && <th style={row2StickyStyle}>Price</th>}
+                    {showLowestLow && colLowRetraced && <th style={row2StickyStyle}>Retraced</th>}
                   </tr>
                 </thead>
                 <tbody>
