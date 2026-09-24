@@ -15,6 +15,27 @@ interface ScripMatch {
 
 const NA = "NA";
 
+// NSE Equity (~2,600 instruments) is too large for one serverless
+// invocation to scan within Vercel's time limit -- doing so previously
+// got the whole request's connection killed mid-scan, which shows up in
+// the browser as a raw "page couldn't load" error rather than a clean
+// in-app one. Scanning in small batches keeps each request comfortably
+// under any reasonable timeout; a segment smaller than BATCH_SIZE (every
+// segment except NSE Equity) still completes in a single batch, so this
+// applies uniformly regardless of which segment is selected.
+const BATCH_SIZE = 150;
+const BATCH_CONCURRENCY = 3;
+
+interface ScreenerBatchResponse {
+  total?: number;
+  scanned?: number;
+  tzBuy?: ScreenerRow[];
+  tzBuyEntry?: ScreenerRow[];
+  errors?: string[];
+  cached?: boolean;
+  error?: string;
+}
+
 function fmt(n: number): string {
   return Number.isNaN(n) ? NA : n.toFixed(2);
 }
@@ -34,6 +55,7 @@ export default function EntryZone() {
   const [error, setError] = useState("");
   const [lastScanned, setLastScanned] = useState("");
   const [cachedResult, setCachedResult] = useState(false);
+  const [scanProgress, setScanProgress] = useState("");
 
   const [scripQuery, setScripQuery] = useState("");
   const [scripSuggestions, setScripSuggestions] = useState<ScripMatch[]>([]);
@@ -88,24 +110,62 @@ export default function EntryZone() {
     setReturnSort((prev) => (prev === null ? "desc" : prev === "desc" ? "asc" : null));
   }
 
+  async function fetchScanBatch(offset: number, limit: number): Promise<ScreenerBatchResponse> {
+    const res = await fetch(
+      `/api/screener?segment=${encodeURIComponent(segment)}&offset=${offset}&limit=${limit}`
+    );
+    const data: ScreenerBatchResponse = await res.json();
+    if (!res.ok) throw new Error(data.error || "Scan failed");
+    return data;
+  }
+
   async function runScan() {
     if (!segment) return;
     setLoading(true);
     setError("");
+    setScanProgress("");
     try {
-      const res = await fetch(`/api/screener?segment=${encodeURIComponent(segment)}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Scan failed");
-      setTzBuy(data.tzBuy || []);
-      setTzBuyEntry(data.tzBuyEntry || []);
-      setScanned(data.scanned || 0);
-      setErrors(data.errors || []);
-      setCachedResult(!!data.cached);
+      const first = await fetchScanBatch(0, BATCH_SIZE);
+      const tzBuyAll = [...(first.tzBuy || [])];
+      const tzBuyEntryAll = [...(first.tzBuyEntry || [])];
+      const errorsAll = [...(first.errors || [])];
+      let scannedTotal = first.scanned || 0;
+      let allCached = !!first.cached;
+      const total = first.total ?? scannedTotal;
+
+      setScanProgress(`${scannedTotal} / ${total}`);
+
+      const remainingOffsets: number[] = [];
+      for (let off = BATCH_SIZE; off < total; off += BATCH_SIZE) remainingOffsets.push(off);
+
+      let idx = 0;
+      async function worker() {
+        while (idx < remainingOffsets.length) {
+          const off = remainingOffsets[idx++];
+          const batch = await fetchScanBatch(off, BATCH_SIZE);
+          tzBuyAll.push(...(batch.tzBuy || []));
+          tzBuyEntryAll.push(...(batch.tzBuyEntry || []));
+          errorsAll.push(...(batch.errors || []));
+          scannedTotal += batch.scanned || 0;
+          allCached = allCached && !!batch.cached;
+          setScanProgress(`${scannedTotal} / ${total}`);
+        }
+      }
+      await Promise.all(
+        Array.from({ length: Math.min(BATCH_CONCURRENCY, remainingOffsets.length) }, worker)
+      );
+
+      setTzBuy(tzBuyAll);
+      setTzBuyEntry(tzBuyEntryAll);
+      setScanned(scannedTotal);
+      setErrors(errorsAll);
+      setCachedResult(allCached);
       setLastScanned(formatTimestampDDMMYYYY(new Date()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
     } finally {
       setLoading(false);
+      setScanProgress("");
     }
   }
 
@@ -256,7 +316,7 @@ export default function EntryZone() {
         </select>
         <br />
         <button onClick={runScan} disabled={loading || !segment}>
-          {loading ? "Scanning…" : "Scan universe"}
+          {loading ? (scanProgress ? `Scanning… ${scanProgress}` : "Scanning…") : "Scan universe"}
         </button>
         {error && <div className="error">{error}</div>}
         {lastScanned && (
