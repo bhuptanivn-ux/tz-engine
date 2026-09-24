@@ -195,10 +195,23 @@ class _WtfInstance:
     end_price: Optional[float]       # BAR SL2 -> that week's close; own "2" SL / parent-tier SL -> this tier's own ref_low
 
 
-def _wtf_instances_for_family(wtf_trace, family: str) -> list[_WtfInstance]:
+def _wtf_instances_for_family(wtf_trace, family: str, last_dtf_date: Optional[str]) -> list[_WtfInstance]:
     spec = FAMILIES[family]
     instances = []
-    last_date = wtf_trace[-1][0].date if wtf_trace else None
+    # A still-open instance's window must extend through the actual last
+    # available DTF trading day, NOT the last WTF trace entry's own date.
+    # The WTF trace has one row per week labeled by that week's FIRST
+    # trading day (see resample_weekly's own fix note) -- so once >=2
+    # trading days have elapsed in the current, still-forming week, the WTF
+    # trace's last date is EARLIER than today. Falling back to it here used
+    # to silently cut the DTF simulation off right at that label, discarding
+    # every later real trading day for any currently-open instance: Highest
+    # High froze at the entry candle's own high (or, if formation happened
+    # on that same label day, never got captured at all and fell back to
+    # showing Activation Price), and any Stage 1/2 formation or SL that
+    # would only trigger on day 2-5 of the current week was never even
+    # evaluated. (Confirmed live, ACMESOLAR.NS/INDORAMA.NS, 2026-09-24.)
+    last_date = last_dtf_date if last_dtf_date is not None else (wtf_trace[-1][0].date if wtf_trace else None)
     for i, (day, evs, pre_ref_low, alive_after, has_tier_after) in enumerate(wtf_trace):
         for e in evs:
             if not e.startswith(spec["form"]):
@@ -241,10 +254,10 @@ def _wtf_instances_for_family(wtf_trace, family: str) -> list[_WtfInstance]:
     return instances
 
 
-def _all_instances(wtf_trace) -> list[_WtfInstance]:
+def _all_instances(wtf_trace, last_dtf_date: Optional[str]) -> list[_WtfInstance]:
     instances = []
     for family in FAMILIES:
-        instances.extend(_wtf_instances_for_family(wtf_trace, family))
+        instances.extend(_wtf_instances_for_family(wtf_trace, family, last_dtf_date))
     instances.sort(key=lambda inst: inst.formation_date)
     return instances
 
@@ -494,7 +507,8 @@ def _prepare(wtf_rows, dtf_rows):
     dtf_days = [_to_day(r) for r in dtf_rows]
     wtf_dates = [d.date for d in wtf_days]
     wtf_trace = _run_wtf_trace(wtf_days)
-    instances = _all_instances(wtf_trace)
+    last_dtf_date = dtf_days[-1].date if dtf_days else None
+    instances = _all_instances(wtf_trace, last_dtf_date)
     return dtf_days, wtf_trace, wtf_dates, instances
 
 

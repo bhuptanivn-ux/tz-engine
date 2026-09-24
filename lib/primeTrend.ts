@@ -202,10 +202,27 @@ interface WtfInstance {
 // scanStock() in app/api/screener/route.ts), not a broken feature.
 const MAX_INSTANCES_PER_FAMILY = 300;
 
-function wtfInstancesForFamily(wtfTrace: WtfTraceEntry[], family: PrimeTrendFamily): WtfInstance[] {
+function wtfInstancesForFamily(
+  wtfTrace: WtfTraceEntry[],
+  family: PrimeTrendFamily,
+  lastDtfDate: string | null
+): WtfInstance[] {
   const spec = FAMILIES[family];
   const instances: WtfInstance[] = [];
-  const lastDate = wtfTrace.length > 0 ? wtfTrace[wtfTrace.length - 1].day.date : null;
+  // A still-open instance's window must extend through the actual last
+  // available DTF trading day, NOT the last WTF trace entry's own date.
+  // The WTF trace has one row per week labeled by that week's FIRST
+  // trading day (see resampleWeekly's own fix note) -- so once >=2 trading
+  // days have elapsed in the current, still-forming week, the WTF trace's
+  // last date is EARLIER than today. Falling back to it here used to
+  // silently cut the DTF simulation off right at that label, discarding
+  // every later real trading day for any currently-open instance: Highest
+  // High froze at the entry candle's own high (or, if formation happened
+  // on that same label day, never got captured at all and fell back to
+  // showing Activation Price), and any Stage 1/2 formation or SL that
+  // would only trigger on day 2-5 of the current week was never even
+  // evaluated. (Confirmed live, ACMESOLAR.NS/INDORAMA.NS, 2026-09-24.)
+  const lastDate = lastDtfDate ?? (wtfTrace.length > 0 ? wtfTrace[wtfTrace.length - 1].day.date : null);
   for (let i = 0; i < wtfTrace.length; i++) {
     const { day, events, aliveAfter } = wtfTrace[i];
     for (const e of events) {
@@ -269,10 +286,10 @@ function wtfInstancesForFamily(wtfTrace: WtfTraceEntry[], family: PrimeTrendFami
   return instances;
 }
 
-function allInstances(wtfTrace: WtfTraceEntry[]): WtfInstance[] {
+function allInstances(wtfTrace: WtfTraceEntry[], lastDtfDate: string | null): WtfInstance[] {
   const instances: WtfInstance[] = [];
   for (const family of FAMILY_NAMES) {
-    instances.push(...wtfInstancesForFamily(wtfTrace, family));
+    instances.push(...wtfInstancesForFamily(wtfTrace, family, lastDtfDate));
   }
   instances.sort((a, b) => (a.formationDate < b.formationDate ? -1 : a.formationDate > b.formationDate ? 1 : 0));
   return instances;
@@ -567,7 +584,8 @@ function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const wtfDates = wtfDays.map((d) => d.date);
   const wtfTrace = runWtfTrace(wtfDays);
-  const instances = allInstances(wtfTrace);
+  const lastDtfDate = dtfDays.length > 0 ? dtfDays[dtfDays.length - 1].date : null;
+  const instances = allInstances(wtfTrace, lastDtfDate);
   return { dtfDays, wtfTrace, wtfDates, instances };
 }
 
