@@ -24,17 +24,27 @@ const NA = "NA";
 // segment except NSE Equity) still completes in a single batch, so this
 // applies uniformly regardless of which segment is selected.
 //
-// Kept small and lightly parallel (rather than fewer/bigger batches) on
-// purpose: a batch that includes one unusually slow symbol (a live
-// Yahoo-fallback fetch, or a stock with an unusually long/eventful
-// history for the WTF/DTF engine to trace) only drags down that one
-// small batch, not a large chunk of the whole scan -- and a per-fetch
-// timeout + retry below means one bad batch can't hang the page
-// indefinitely either.
+// Kept small (rather than fewer/bigger batches) on purpose: a batch that
+// includes one unusually slow symbol (a live Yahoo-fallback fetch, or a
+// stock with an unusually long/eventful history for the WTF/DTF engine to
+// trace) only drags down that one small batch, not a large chunk of the
+// whole scan -- and a per-fetch timeout + retry below means one bad batch
+// can't hang the page indefinitely either. Fully sequential (no
+// concurrency) with a short pause between requests, rather than firing
+// several at once: a scan that got most of the way through NSE Equity and
+// then took the whole page down with it (not a clean in-app error, which
+// every fetch here is already guarded against) looked like it could be
+// tripping some burst-traffic protection on a tight loop of 30+ near-
+// simultaneous requests -- spacing them out removes that risk regardless
+// of whether that's actually the cause.
 const BATCH_SIZE = 75;
-const BATCH_CONCURRENCY = 2;
 const BATCH_TIMEOUT_MS = 45_000;
 const BATCH_MAX_ATTEMPTS = 2;
+const BATCH_GAP_MS = 400;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 interface ScreenerBatchResponse {
   total?: number;
@@ -162,25 +172,28 @@ export default function EntryZone() {
 
       setScanProgress(`${scannedTotal} / ${total}`);
 
-      const remainingOffsets: number[] = [];
-      for (let off = BATCH_SIZE; off < total; off += BATCH_SIZE) remainingOffsets.push(off);
-
-      let idx = 0;
-      async function worker() {
-        while (idx < remainingOffsets.length) {
-          const off = remainingOffsets[idx++];
+      // A batch that still fails after fetchScanBatch's own retries is
+      // skipped rather than aborting the whole scan -- previously one bad
+      // batch (near the very end of NSE Equity, on the evidence of a scan
+      // that got to ~2503/2578) took the entire page down with it. Better
+      // to come back with 2,500-odd stocks scanned and a note about which
+      // range failed than nothing at all.
+      for (let off = BATCH_SIZE; off < total; off += BATCH_SIZE) {
+        await sleep(BATCH_GAP_MS);
+        try {
           const batch = await fetchScanBatch(off, BATCH_SIZE);
           tzBuyAll.push(...(batch.tzBuy || []));
           tzBuyEntryAll.push(...(batch.tzBuyEntry || []));
           errorsAll.push(...(batch.errors || []));
           scannedTotal += batch.scanned || 0;
           allCached = allCached && !!batch.cached;
-          setScanProgress(`${scannedTotal} / ${total}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "batch failed";
+          errorsAll.push(`Instruments ${off + 1}-${off + BATCH_SIZE}: ${msg}`);
+          allCached = false;
         }
+        setScanProgress(`${scannedTotal} / ${total}`);
       }
-      await Promise.all(
-        Array.from({ length: Math.min(BATCH_CONCURRENCY, remainingOffsets.length) }, worker)
-      );
 
       setTzBuy(tzBuyAll);
       setTzBuyEntry(tzBuyEntryAll);
