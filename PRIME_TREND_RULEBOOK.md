@@ -365,6 +365,69 @@ identical defect, introduced as an unintended side effect of the earlier
 week-labeling fix — see above). Not yet re-verified against ADANIENT.NS
 (blocked by this session's standing restriction).
 
+## Bug fix: the pre-Stage-1 anchor waited for a whole WTF week to close instead of climbing day by day (INDORAMA.NS)
+
+Found immediately after the fix above, by hand-tracing INDORAMA.NS day by
+day against the live site's output. A second, more fundamental defect in
+the *same* look-ahead guard: `liveRefAsof` only ever recognized a WTF
+tier's own climbing reference once an entire further WTF week had fully
+closed after it rose — even when the day that actually set the new high
+was the very *first* trading day of a week, and the DTF candle being
+tested was that same week's *last* trading day, days later.
+
+**Real trace, INDORAMA.NS, WTF TZ BUY 2 (B) formed week of 2026-09-07
+(that week's own High: 90.00):**
+
+| Date | High | Close | vs. anchor | Result |
+|---|---|---|---|---|
+| 2026-09-15 (Tue, first trading day of the next week) | 96.50 | 82.81 | clears 90.00 by >0.20, but Close is weak | **Should quietly raise the anchor to 96.50** — the old code kept it at 90.00 until an entire additional week closed |
+| 2026-09-16 | 89.90 | 85.60 | below 96.50 | no change either way |
+| 2026-09-17 | 91.40 | 89.19 | below 96.50 | no change either way |
+| 2026-09-18 (Fri, same week as 09-15) | 93.49 | 91.05 | below the correct 96.50, but **above the stale 90.00** | Old code wrongly confirmed DTF TZ BUY here, @ 93.49 |
+| 2026-09-21 | 109.26 | 106.55 | clears 96.50 decisively | **Correct** DTF TZ BUY confirmation, @ 109.26 |
+
+The user's own framing: "for DTF TZ BUY, it will keep checking every
+working day after the WTF TZ BUY 2 week is over... though week is not
+completed, the reference high should rise." I.e. checking starts once
+the *formation* week is over (unchanged), but from that point on the
+reference is not pinned to WTF week boundaries at all — it climbs on any
+later day's own High via the same quiet-climb ("`0.01` rule") used
+everywhere else in the theory, exactly like Stage 1's or Stage 2's own
+post-formation HH tracking. There is no real look-ahead risk in this:
+WTF is only a resample of the same daily bars PRIME TREND already has in
+full, so a week's cumulative high is genuine, already-known information
+the moment the day that set it has closed — it does not matter whether
+the rest of that week has finished yet.
+
+Because the wrong, stale anchor let DTF TZ BUY confirm a full 3 trading
+days early (18/09 instead of 21/09) at the wrong price (93.49 instead of
+109.26), it also produced a **phantom DTF TZ BUY ENTRY (Stage 2)** on
+21/09 — the user's separate observation "INDORAMA did not even clear TZ
+BUY ENTRY conditions. WHY IS IT THERE IN THE LIST?" Under the corrected
+anchor, Stage 1 itself only confirms on 21/09, and Stage 2's own ladder
+(seeded at 109.26) is not cleared by any day through 23/09 (22/09's High
+of 112.30 comes with a weak Close of 103.57 — a quiet ladder-climb, not a
+confirmation) — so Stage 2 correctly does not exist at all as of the last
+available data.
+
+Fix: removed `_live_ref_asof`/`liveRefAsof` (the week-boundary lookup)
+entirely. The pre-Stage-1 anchor is now a single running value, seeded
+from the WTF instance's own formation-week High, gated only by "is this
+DTF day still inside the formation week itself" (`_containing_week_start`/
+`containingWeekStart` unchanged, still used for that one gate) — once
+past the formation week, it climbs quietly on any day's own High from
+then on, and a full breakout against its current value confirms Stage 1,
+exactly mirroring the breakout-vs-quiet-climb pattern already used for
+every other tier in the engine.
+
+Confirmed no regression: ICICIBANK.NS's historical `compute_prime_trend`
+output is byte-for-byte identical before and after this fix (still 22
+rows across 11 TZ BUY 2 instances) — none of its real confirming breakouts
+happen to land in the specific first-week-after-formation window where
+the stale week-boundary lookup and the corrected day-by-day anchor would
+have disagreed. Not yet re-verified against ADANIENT.NS (blocked by this
+session's standing restriction).
+
 ## Open items
 
 - Implemented in Python (`prime_trend.py`). The multi-cycle-row fix, the

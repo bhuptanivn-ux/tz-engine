@@ -329,20 +329,6 @@ function containingWeekStart(wtfDates: string[], d: string): string | null {
   return start;
 }
 
-/** The WTF reference high as it stood at the end of the most recently
- * FULLY COMPLETED WTF week strictly before the week containing `d` --
- * never the current, still-forming week's own value (look-ahead guard). */
-function liveRefAsof(checkpoints: [string, number][], wtfDates: string[], d: string): number | null {
-  const weekStart = containingWeekStart(wtfDates, d);
-  if (weekStart === null) return null;
-  let ref: number | null = null;
-  for (const [cdate, cref] of checkpoints) {
-    if (cdate < weekStart) ref = cref;
-    else break;
-  }
-  return ref;
-}
-
 // --------------------------------------------------------------------
 // Step 4: the Stage 1 / Stage 2 DTF simulation within one WTF instance's
 // window. Returns EVERY closed entry/exit cycle as its own row -- not
@@ -405,6 +391,21 @@ function simulateDtfAll(
   let hh1 = 0;
   let hh1Date: string | null = null;
 
+  // The anchor Stage 1 breaks out against, BEFORE Stage 1 first forms.
+  // Seeded from the WTF instance's own formation-week High (checkpoints[0]
+  // is always that formation event), then climbs quietly on any later DAY's
+  // own High once the formation week is over -- it does NOT wait for a
+  // whole further WTF week to close first. WTF is only a derived resample
+  // of these same daily bars, so a week's cumulative high is real,
+  // already-known information the moment the day that set it has closed,
+  // not a look-ahead risk to any later day in that same still-forming
+  // week. (Confirmed live, INDORAMA.NS 2026-09-24: 15/09 printed a High of
+  // 96.50 with a weak Close, quietly raising the anchor from 90.00 that
+  // same week -- the old week-boundary-only lookup kept using the stale
+  // 90.00 through 18/09, wrongly confirming Stage 1 there instead of the
+  // genuine breakout on 21/09.)
+  let preS1Ref: number | null = checkpoints.length > 0 ? checkpoints[0][1] : null;
+
   const closePair = (exitType: string, exitDate: string, exitPrice: number) => {
     if (curEntry !== null) {
       rows.push({
@@ -441,13 +442,16 @@ function simulateDtfAll(
 
     // --- Stage 1: DTF TZ BUY ---
     if (s1 === null) {
-      const live = liveRefAsof(checkpoints, wtfDates, cur.date);
-      if (live !== null && breakoutShape(prev, cur, live)) {
-        s1 = new Stage(cur.h, cur.l);
-        s1Since = cur.date;
-        s1ActivationPrice = cur.h;
-        hh1 = 0;
-        hh1Date = null;
+      if (preS1Ref !== null && containingWeekStart(wtfDates, cur.date) !== inst.formationDate) {
+        if (breakoutShape(prev, cur, preS1Ref)) {
+          s1 = new Stage(cur.h, cur.l);
+          s1Since = cur.date;
+          s1ActivationPrice = cur.h;
+          hh1 = 0;
+          hh1Date = null;
+        } else if (cur.h > preS1Ref && cur.h - preS1Ref >= ANY) {
+          preS1Ref = cur.h;
+        }
       }
     } else if (s1.active) {
       if (slShape(cur, s1.refLow)) {
