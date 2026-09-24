@@ -310,6 +310,54 @@ sibling branches reaching a milestone (e.g. both TZ BUY 2) on the exact
 same day is resolved by the existing seq-ordering / collateral-termination
 rules -- no special-casing needed for TZ BUY 2 specifically.
 
+### Confirmed correct (not a bug): a `buy=None` branch gets no special exemption from collateral termination
+
+Investigated at length against real ICICIBANK.NS data (2010-04-05:
+branches D, seq=13, and E, seq=16, both sitting at `buy=None`, vanish the
+instant `REAR(C)` fires, with no explicit event) -- initially suspected as
+a gap, since a branch that hasn't failed on its own terms still gets
+killed outright. Instrumenting the raw per-branch events *before*
+collateral-termination filtering showed exactly what each branch was
+doing that candle:
+
+```
+C (seq=6,  achiever):  ['INVALID BAR HH(C.5)', 'REAR(C)']
+D (seq=13, buy=None):  ['TZ BUY(D)']        -- a genuine, same-candle fresh formation
+E (seq=16, buy=None):  ['TZ GREEN HH(E)']   -- not a milestone at all
+```
+
+D's termination turned out to already be explained by an existing,
+separate, deliberate rule: `is_fresh_buy` -- a brand-new, same-candle TZ
+BUY formation is terminated **unconditionally** when an older achiever's
+milestone fires the same candle, no exemption check even applies. E's
+termination follows the identical principle one level further: E carried
+no competing milestone of its own that day either -- it is simply a later
+branch with nothing to show for itself at that date, so the earlier
+achiever gets preference and the later one is terminated. Both cases are
+the same rule: **whichever branch has actually earned a milestone as of
+that date wins; a later branch that hasn't earned anything yet (whether
+`buy=None` or a same-candle fresh formation with nothing before it) does
+not get to survive alongside it.** Explicit user confirmation, generalized
+worked example: "REAR A and TZ BUY B/REAR B occurring on the same day,
+then REAR A will get active and TZ BUY B will be terminated... to keep
+the later titles available, technically and logically D/E termination was
+correct... later new Lineage D got active as well after REAR SL B and got
+TZ BUY 2 D before REAR RE ENTER B. This way higher milestone got the
+preference though it was later one... It is same as D [for E]. Since it
+is a later branch with no higher milestone at that given date. Earlier
+will get the preference and later one's terminated."
+
+**Independently corroborated**: the live Trading Zone website's own
+historical display for ICICIBANK.NS shows neither `TZ BUY(D)` nor
+anything for E on 2010-04-05 -- matching this conclusion exactly, without
+having seen the engine's internal reasoning.
+
+No fix needed -- `_pre_today_live_buy` correctly requires `pc.buy is not
+None` for exemption; a `buy=None` branch is not meant to be exempted, and
+this is not connected to `_milestone_blocked`'s separate role (blocking a
+dormant branch's own future escalation while a newer sibling leads,
+covered above) at all.
+
 ## Testing
 
 `test_wtf_smoke.py` -- 19 synthetic scenarios (`python3 test_wtf_smoke.py`):
@@ -640,6 +688,64 @@ real breakout exactly, with the same fix additionally confirmed working
 earlier in the same file's own history (2025-03-09's TZ BUY 2 SL(A) no
 longer blocks 2025-05-11's TZ BUY(B)).
 
+## A genuine no-BAR-2 dead-end lineage must not mask a still-alive "2" tier (ICICIBANK.NS)
+
+Follow-on to the fix above, found the same way (real ICICIBANK.NS data,
+2014 window, branch D). `_buy_currently_live`'s three fallback points each
+check `if buy.bar_lineages: return self._bar_lineages_racing(buy)` --
+returning `False` outright the moment nothing in `bar_lineages` is racing,
+with no further check of whether the buy's own "2" tier (`tz_buy2` /
+`rear.rear2` / `rear_reenter.rre2`) was still un-SL'd. This conflated two
+structurally different "not racing" reasons:
+
+- a genuine **permanent dead end**: that lineage's own SL fired with no
+  BAR 2 ever having formed (`lin.sl is not None and lin.bar2 is None`) --
+  should fall through and check the "2" tier instead, exactly like the
+  "no BAR family at all" case already does;
+- **BAR SL2 reached** (deep failure, REAR pending): an intentional "not
+  live" signal, used by `tip_deep_failure`/spawn eligibility the instant
+  SL2 fires -- must NOT fall through, or a buy that's genuinely reached
+  deep failure would wrongly report itself as "still live" via its own
+  TZ BUY 2/REAR 2/REAR RE-ENTER 2 state, permanently blocking every
+  sibling's own spawn eligibility that SL2 is supposed to open.
+
+Confirmed real trace (ICICIBANK.NS branch D, 2014): `TZ BUY 2(D)` formed
+2014-05-05, peaked at 289.67 (2014-05-12, `TZ BUY 2 HH(D)`) and was NEVER
+SL'd. D's one BAR lineage (`BAR(D.1)`, formed 2014-06-30) hit `BAR SL(D.1)`
+2014-07-07 with no BAR 2 ever formed -- a genuine dead end, not deep
+failure. Because `_buy_currently_live(D)` checked `bar_lineages` first and
+returned `False` outright without falling through to D's still-alive TZ
+BUY 2, D got no termination exemption. `REAR RE-ENTER(C)` (an unrelated,
+much older dormant sibling) confirmed 2014-08-18 and terminated D outright
+with **zero explicit event** -- no `TZ BUY 2 SL(D)`, nothing. D's letter
+freed up; a fresh `TZ GREEN(D)` formed 2014-10-13, and a wholly unrelated
+`TZ BUY(A)`/`TZ BUY 2(A)` on 2014-10-27/2014-11-03 looked like it "came
+from nowhere."
+
+**Fix**: added `_bar_lineages_permanent_dead_end(buy)` -- `True` only when
+EVERY current lineage is `sl is not None and bar2 is None`. Each of the
+three fallback points now does: if racing, live; else if NOT a permanent
+dead end (i.e. genuine SL2 deep failure), not live; else fall through to
+check the "2" tier, same as the no-BAR-family case.
+
+**Verification**: full `test_wtf_smoke.py` suite passes; zero diffs on
+EICHERMOT.NS, PAYTM.NS, BBOX.NS (×3), KALYANKJIL.NS, NSEI, MAXESTATES.NS
+(WTF+DTF) -- confirming this fix changes nothing for the already-correct
+"BAR SL2 masks nothing" case documented above. On ICICIBANK.NS, D now
+correctly reforms `BAR(D.1)` in place on 2014-08-18 instead of dying, `C`
+correctly stays exempt/dormant (its own REAR RE-ENTER can't confirm while
+D remains live, mirroring the "hidden until newer fails" rule below), and
+the whole spurious `TZ GREEN(D)` → `TZ BUY(A)`/`TZ BUY 2(A)` chain never
+occurs -- those same real highs (296.95, 307.59) instead become D's own
+`BAR 2 HH(D.1)` reference-high updates, silently extending its already-
+running climb.
+
+**Independently corroborated**: the live Trading Zone website's own
+historical display for ICICIBANK.NS shows `TZ BUY 2(D)` on 2014-05-05,
+matching the corrected engine -- not the buggy pre-fix trace, where D's
+TZ BUY 2 would have been silently hijacked and hidden by an incorrect
+`REAR RE-ENTER(C)`.
+
 ## A BAR lineage's own RED1/RED2 progress must not freeze once REAR exists above it
 
 Major bug found against real data (NSEI, ~19 years of Nifty history): the
@@ -951,6 +1057,51 @@ downstream worked tables (in `PRIME_TREND_RULEBOOK.md` and locked into
 `test_prime_trend_smoke.py`) were recomputed against the fixed engine —
 see `PRIME_TREND_RULEBOOK.md` for the updated results.
 
+## REAR's own SL / REAR RE-ENTER's own SL reactivation reference must never stall behind `_milestone_blocked` (ICICIBANK.NS)
+
+Follow-on to the fix above (the "1" tiers' own post-SL quiet-climb) --
+the `elif` branches added there for `_eval_rear_sl_progress` (REAR's own
+SL → REAR RE-ENTER) and `_eval_rear_reenter_sl_progress` (REAR RE-ENTER's
+own SL → self-recovery) were each wrapped in `not self._milestone_blocked
+(pc)`, mirroring the reenter-CONFIRMATION check right above them. That's
+correct for the confirmation itself (a blocked branch must never surface
+a milestone while a newer sibling leads, per "hidden until newer fails"
+below) -- but the STATE UPDATE for the quiet ratchet was accidentally
+folded into the same gate, so the reference itself stopped climbing
+entirely while blocked, instead of continuing to silently track the real
+market high the way every analogous recovery does (TZ BUY's own SL-
+recovery, and TZ BUY 2/REAR 2/REAR RE-ENTER 2's own SL-recoveries -- none
+of which gate their own ratchet on `_milestone_blocked` at all).
+
+Confirmed real trace (ICICIBANK.NS branch C): `REAR SL(C)` fired
+2010-04-12. From then until 2015-08-31, a newer sibling (D) held a
+continuously live buy (with one brief gap), so C sat `_milestone_blocked`
+almost the entire stretch -- including the week D itself peaked at 357.64
+(2015-01-27/28). Because the ratchet's state update was gated too, C's
+own reference never moved off its 2010 level; it only ticked twice
+(266.09 on 2015-10-12, 271.27 on 2016-11-07) once D was no longer
+blocking it. `REAR RE-ENTER(C)` then confirmed cheaply on 2017-05-02
+against that stale ~271 reference, instead of needing to clear D's true
+357.64+ peak first -- and won a same-candle collision against what should
+have been a fresh `TZ BUY`, which the user had already independently
+flagged as suspicious ("TZ BUY B was correct") without yet knowing why.
+
+**Fix**: removed `not self._milestone_blocked(pc) and` from the ratchet
+line only, in both functions -- the confirmation check directly above
+keeps its own `_milestone_blocked` gate unchanged.
+
+**Verification**: full `test_wtf_smoke.py` suite passes (Tests 27/28,
+which already covered this ratchet in the *unblocked* case, are
+unaffected since they never had a genuinely live blocking sibling).
+Old-vs-new diff, both fixes together: zero diffs on EICHERMOT.NS,
+PAYTM.NS, BBOX.NS (×3), KALYANKJIL.NS, NSEI, MAXESTATES.NS (WTF+DTF);
+ICICIBANK.NS shows 392 diffs on WTF / 695 on DTF, all downstream of C no
+longer confirming `REAR RE-ENTER` on 2017-05-02 -- traced by hand and
+confirmed correct: instead, a fresh `TZ BUY`/`TZ BUY 2` forms on
+2017-05-02/2017-05-22 (and again 2017-10-30/2018-01-17 after its own
+first cycle SLs), exactly matching the user's independently-reconstructed
+real dates and prices for that stock.
+
 ## PRIME TREND is now its own theory — see `PRIME_TREND_RULEBOOK.md`
 
 The DTF-with-respect-to-WTF cross-timeframe follow-up layer (WTF TZ BUY
@@ -972,6 +1123,18 @@ but is tracked independently going forward.
   SL, REAR's own SL, REAR RE-ENTER's own SL) has **not yet** been
   re-verified against the other real datasets beyond ADANIENT.NS and
   ICICIBANK.NS, nor ported to `main`/TypeScript.
+- The no-BAR-2 dead-end / still-alive "2" tier fix and the REAR SL /
+  REAR RE-ENTER SL `_milestone_blocked` ratchet fix (both above) are
+  applied to `tz_engine_wtf.py` and re-verified (zero diffs on
+  EICHERMOT.NS, PAYTM.NS, BBOX.NS ×3, KALYANKJIL.NS, NSEI, MAXESTATES.NS;
+  confirmed-correct diffs on ICICIBANK.NS) but **not yet** checked against
+  ADANIENT.NS (standing restriction this session), nor ported to
+  `main`/TypeScript.
+- A `buy=None` branch's lack of exemption from collateral termination
+  (ICICIBANK.NS, 2010-04-05, branches D/E) was investigated at length and
+  **confirmed to be correct, existing behavior, not a bug** -- see
+  "Confirmed correct (not a bug)" under "Multi-branch / spawn eligibility
+  / leadership" above. No fix needed.
 - The `extra_reentry_floor` cross-theory hook (deferred to
   DTF-with-respect-to-TZ-BUY work) — now documented as its own separate
   theory in `PRIME_TREND_RULEBOOK.md` (the TZ BUY 2 → TZ BUY → TZ BUY
