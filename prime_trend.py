@@ -409,7 +409,7 @@ def _simulate_dtf_all(
                     s1 = _Stage(cur.h, cur.l)
                     s1_since, s1_activation_price = cur.date, cur.h
                     hh1, hh1_date = 0.0, None
-                elif cur.h > s1.frozen_ref:
+                elif cur.h > s1.frozen_ref and (cur.h - s1.frozen_ref) >= ANY:
                     s1.frozen_ref = cur.h
 
         # --- Stage 2: DTF TZ BUY ENTRY (only while Stage 1 is active) ---
@@ -421,7 +421,7 @@ def _simulate_dtf_all(
                     s2 = _Stage(cur.h, cur.l)
                     cur_entry = (cur.date, entry_price)
                     hh, hh_date = 0.0, None
-                elif cur.h > ref2:
+                elif cur.h > ref2 and (cur.h - ref2) >= ANY:
                     s1.entry_ratchet = cur.h
             else:
                 if s2.active:
@@ -440,7 +440,7 @@ def _simulate_dtf_all(
                         s2 = _Stage(cur.h, cur.l)
                         cur_entry = (cur.date, entry_price)
                         hh, hh_date = 0.0, None
-                    elif cur.h > s2.frozen_ref:
+                    elif cur.h > s2.frozen_ref and (cur.h - s2.frozen_ref) >= ANY:
                         s2.frozen_ref = cur.h
         i += 1
 

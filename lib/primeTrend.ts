@@ -473,7 +473,7 @@ function simulateDtfAll(
         s1ActivationPrice = cur.h;
         hh1 = 0;
         hh1Date = null;
-      } else if (cur.h > frozenRef) {
+      } else if (cur.h > frozenRef && cur.h - frozenRef >= ANY) {
         s1.frozenRef = cur.h;
       }
     }
@@ -488,7 +488,7 @@ function simulateDtfAll(
           curEntry = [cur.date, entryPrice];
           hh = 0;
           hhDate = null;
-        } else if (cur.h > ref2) {
+        } else if (cur.h > ref2 && cur.h - ref2 >= ANY) {
           s1.entryRatchet = cur.h;
         }
       } else if (s2.active) {
@@ -508,7 +508,7 @@ function simulateDtfAll(
           curEntry = [cur.date, entryPrice];
           hh = 0;
           hhDate = null;
-        } else if (cur.h > frozenRef2) {
+        } else if (cur.h > frozenRef2 && cur.h - frozenRef2 >= ANY) {
           s2.frozenRef = cur.h;
         }
       }
