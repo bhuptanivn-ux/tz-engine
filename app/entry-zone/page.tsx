@@ -369,8 +369,12 @@ export default function EntryZone() {
                   <th className="col-left">Co. Name</th>
                   <th>Active as on</th>
                   <th>{choice === "tzBuy" ? "TZ BUY entry above" : "Activation price"}</th>
-                  <th>Stop loss price</th>
-                  <th>Lowest low post entry</th>
+                  {choice === "tzBuyEntry" && (
+                    <>
+                      <th>Stop loss price</th>
+                      <th>Lowest low post entry</th>
+                    </>
+                  )}
                   <th>Highest high</th>
                   <th>
                     <button
@@ -396,8 +400,12 @@ export default function EntryZone() {
                     <td className="col-left">{r.name}</td>
                     <td>{r.activeAsOn === NA ? NA : formatDDMMYYYY(r.activeAsOn)}</td>
                     <td>{fmt(r.activationPrice)}</td>
-                    <td>{fmt(r.stopLoss)}</td>
-                    <td>{fmt(r.lowestLowPostEntry)}</td>
+                    {choice === "tzBuyEntry" && (
+                      <>
+                        <td>{fmt(r.stopLoss)}</td>
+                        <td>{fmt(r.lowestLowPostEntry)}</td>
+                      </>
+                    )}
                     <td>{fmt(r.highestHigh)}</td>
                     <td
                       className={
