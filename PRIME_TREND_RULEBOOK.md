@@ -428,6 +428,39 @@ the stale week-boundary lookup and the corrected day-by-day anchor would
 have disagreed. Not yet re-verified against ADANIENT.NS (blocked by this
 session's standing restriction).
 
+## Fix: unify the 0.01 quiet-climb rule across every reference, not just the ones already active
+
+Found by re-reading the code after the two fixes above, prompted by the
+user asking directly whether there were any other doubts. Three spots
+quietly raised a reference on `cur.h > ref` alone, with no minimum-move
+check — inconsistent with every other quiet climb in the file (Stage 1's
+own High while active, Stage 2's own High while active, and the
+pre-Stage-1 anchor above), all of which require clearing by at least
+`ANY` (0.01) to count:
+
+- Stage 1's own frozen reference while searching for reactivation
+  (`s1.frozen_ref`/`s1.frozenRef`).
+- Stage 2's own frozen reference while searching for reactivation
+  (`s2.frozen_ref`/`s2.frozenRef`).
+- **Stage 2's own escalation ladder** (`s1.entry_ratchet`/
+  `s1.entryRatchet`) — this one isn't just a style inconsistency: the
+  Stage 2 section above is explicit that the ladder "climbs on every new
+  daily high (again the ordinary 0.01 rule — this is the SAME quiet climb
+  as Stage 1's own HH, not a separate mechanism)". The code didn't
+  actually apply that rule.
+
+All three now require `cur.h - ref >= ANY` before the reference moves,
+matching the rest of the file. The two `cur.h > hh`/`cur.h > hh1`
+comparisons elsewhere (the plain running Highest-High *statistic*, not a
+state-machine reference used for breakout/reactivation checks) are
+deliberately left as bare `>` -- any new max, however small, is by
+definition the new highest high.
+
+No regression: ICICIBANK.NS's historical output is still byte-for-byte
+identical (22 rows), and AEGISVOPAK.NS/CORDSCABLE.NS's live status is
+unchanged from before this fix -- none of their real data happened to hit
+a climb smaller than 0.01 in these three spots.
+
 ## Open items
 
 - Implemented in Python (`prime_trend.py`). The multi-cycle-row fix, the
