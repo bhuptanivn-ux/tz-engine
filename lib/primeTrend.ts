@@ -202,10 +202,27 @@ interface WtfInstance {
 // scanStock() in app/api/screener/route.ts), not a broken feature.
 const MAX_INSTANCES_PER_FAMILY = 300;
 
-function wtfInstancesForFamily(wtfTrace: WtfTraceEntry[], family: PrimeTrendFamily): WtfInstance[] {
+function wtfInstancesForFamily(
+  wtfTrace: WtfTraceEntry[],
+  family: PrimeTrendFamily,
+  lastDtfDate: string | null
+): WtfInstance[] {
   const spec = FAMILIES[family];
   const instances: WtfInstance[] = [];
-  const lastDate = wtfTrace.length > 0 ? wtfTrace[wtfTrace.length - 1].day.date : null;
+  // A still-open instance's window must extend through the actual last
+  // available DTF trading day, NOT the last WTF trace entry's own date.
+  // The WTF trace has one row per week labeled by that week's FIRST
+  // trading day (see resampleWeekly's own fix note) -- so once >=2 trading
+  // days have elapsed in the current, still-forming week, the WTF trace's
+  // last date is EARLIER than today. Falling back to it here used to
+  // silently cut the DTF simulation off right at that label, discarding
+  // every later real trading day for any currently-open instance: Highest
+  // High froze at the entry candle's own high (or, if formation happened
+  // on that same label day, never got captured at all and fell back to
+  // showing Activation Price), and any Stage 1/2 formation or SL that
+  // would only trigger on day 2-5 of the current week was never even
+  // evaluated. (Confirmed live, ACMESOLAR.NS/INDORAMA.NS, 2026-09-24.)
+  const lastDate = lastDtfDate ?? (wtfTrace.length > 0 ? wtfTrace[wtfTrace.length - 1].day.date : null);
   for (let i = 0; i < wtfTrace.length; i++) {
     const { day, events, aliveAfter } = wtfTrace[i];
     for (const e of events) {
@@ -269,10 +286,10 @@ function wtfInstancesForFamily(wtfTrace: WtfTraceEntry[], family: PrimeTrendFami
   return instances;
 }
 
-function allInstances(wtfTrace: WtfTraceEntry[]): WtfInstance[] {
+function allInstances(wtfTrace: WtfTraceEntry[], lastDtfDate: string | null): WtfInstance[] {
   const instances: WtfInstance[] = [];
   for (const family of FAMILY_NAMES) {
-    instances.push(...wtfInstancesForFamily(wtfTrace, family));
+    instances.push(...wtfInstancesForFamily(wtfTrace, family, lastDtfDate));
   }
   instances.sort((a, b) => (a.formationDate < b.formationDate ? -1 : a.formationDate > b.formationDate ? 1 : 0));
   return instances;
@@ -310,20 +327,6 @@ function containingWeekStart(wtfDates: string[], d: string): string | null {
     else break;
   }
   return start;
-}
-
-/** The WTF reference high as it stood at the end of the most recently
- * FULLY COMPLETED WTF week strictly before the week containing `d` --
- * never the current, still-forming week's own value (look-ahead guard). */
-function liveRefAsof(checkpoints: [string, number][], wtfDates: string[], d: string): number | null {
-  const weekStart = containingWeekStart(wtfDates, d);
-  if (weekStart === null) return null;
-  let ref: number | null = null;
-  for (const [cdate, cref] of checkpoints) {
-    if (cdate < weekStart) ref = cref;
-    else break;
-  }
-  return ref;
 }
 
 // --------------------------------------------------------------------
@@ -388,6 +391,21 @@ function simulateDtfAll(
   let hh1 = 0;
   let hh1Date: string | null = null;
 
+  // The anchor Stage 1 breaks out against, BEFORE Stage 1 first forms.
+  // Seeded from the WTF instance's own formation-week High (checkpoints[0]
+  // is always that formation event), then climbs quietly on any later DAY's
+  // own High once the formation week is over -- it does NOT wait for a
+  // whole further WTF week to close first. WTF is only a derived resample
+  // of these same daily bars, so a week's cumulative high is real,
+  // already-known information the moment the day that set it has closed,
+  // not a look-ahead risk to any later day in that same still-forming
+  // week. (Confirmed live, INDORAMA.NS 2026-09-24: 15/09 printed a High of
+  // 96.50 with a weak Close, quietly raising the anchor from 90.00 that
+  // same week -- the old week-boundary-only lookup kept using the stale
+  // 90.00 through 18/09, wrongly confirming Stage 1 there instead of the
+  // genuine breakout on 21/09.)
+  let preS1Ref: number | null = checkpoints.length > 0 ? checkpoints[0][1] : null;
+
   const closePair = (exitType: string, exitDate: string, exitPrice: number) => {
     if (curEntry !== null) {
       rows.push({
@@ -424,16 +442,19 @@ function simulateDtfAll(
 
     // --- Stage 1: DTF TZ BUY ---
     if (s1 === null) {
-      const live = liveRefAsof(checkpoints, wtfDates, cur.date);
-      if (live !== null && breakoutShape(prev, cur, live)) {
-        s1 = new Stage(cur.h, cur.l);
-        s1Since = cur.date;
-        s1ActivationPrice = cur.h;
-        // Highest High includes the entry candle's own High, not just
-        // days after it -- see the Highest High comment on
-        // PrimeTrendLiveStatus above.
-        hh1 = cur.h;
-        hh1Date = cur.date;
+      if (preS1Ref !== null && containingWeekStart(wtfDates, cur.date) !== inst.formationDate) {
+        if (breakoutShape(prev, cur, preS1Ref)) {
+          s1 = new Stage(cur.h, cur.l);
+          s1Since = cur.date;
+          s1ActivationPrice = cur.h;
+          // Highest High includes the entry candle's own High, not just
+          // days after it -- see the Highest High comment on
+          // PrimeTrendLiveStatus above.
+          hh1 = cur.h;
+          hh1Date = cur.date;
+        } else if (cur.h > preS1Ref && cur.h - preS1Ref >= ANY) {
+          preS1Ref = cur.h;
+        }
       }
     } else if (s1.active) {
       if (slShape(cur, s1.refLow)) {
@@ -455,7 +476,7 @@ function simulateDtfAll(
         s1ActivationPrice = cur.h;
         hh1 = cur.h;
         hh1Date = cur.date;
-      } else if (cur.h > frozenRef) {
+      } else if (cur.h > frozenRef && cur.h - frozenRef >= ANY) {
         s1.frozenRef = cur.h;
       }
     }
@@ -475,7 +496,7 @@ function simulateDtfAll(
           // the next day, so a strong entry-day breakout isn't discarded.
           hh = cur.h;
           hhDate = cur.date;
-        } else if (cur.h > ref2) {
+        } else if (cur.h > ref2 && cur.h - ref2 >= ANY) {
           s1.entryRatchet = cur.h;
         }
       } else if (s2.active) {
@@ -495,7 +516,7 @@ function simulateDtfAll(
           curEntry = [cur.date, entryPrice];
           hh = cur.h;
           hhDate = cur.date;
-        } else if (cur.h > frozenRef2) {
+        } else if (cur.h > frozenRef2 && cur.h - frozenRef2 >= ANY) {
           s2.frozenRef = cur.h;
         }
       }
@@ -575,7 +596,8 @@ function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const wtfDates = wtfDays.map((d) => d.date);
   const wtfTrace = runWtfTrace(wtfDays);
-  const instances = allInstances(wtfTrace);
+  const lastDtfDate = dtfDays.length > 0 ? dtfDays[dtfDays.length - 1].date : null;
+  const instances = allInstances(wtfTrace, lastDtfDate);
   return { dtfDays, wtfTrace, wtfDates, instances };
 }
 

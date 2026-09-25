@@ -308,6 +308,171 @@ ICICIBANK.NS instance, and all four ADANIENT.NS instances, are
 unaffected. `test_prime_trend_smoke.py` has been updated to lock in the
 corrected value.
 
+## Bug fix: a still-open instance's DTF simulation window was truncated to the current week's own label, not today (INDORAMA.NS, ACMESOLAR.NS)
+
+Found live in production, 2026-09-24, from two independent bug reports:
+ACMESOLAR.NS showing Highest High exactly equal to Activation Price despite
+a clearly higher Current Close, and INDORAMA.NS showing in the "TZ BUY
+ENTRY" (Stage 2) live list with the same Highest-High-stuck-at-Activation
+symptom, plus a general "no stocks shown in PRIME TREND for the last 2
+days" report.
+
+Root cause: a still-open (never-failed) WTF anchor instance's own
+`end_date` / `endDate` fell back to the WTF trace's own last entry's date
+whenever no explicit SL/BAR-SL2 exit was ever found for it. The WTF trace
+has exactly one row per calendar week, labeled by that week's FIRST
+trading day (see the `resample_weekly`/`resampleWeekly` week-labeling fix
+above). So once 2+ trading days have elapsed in the current, still-forming
+week, that label is EARLIER than today — and the DTF simulation
+(`_simulate_dtf_all`/`simulateDtfAll`) is hard-bounded by
+`dtf_days[i].date <= inst.end_date`, so it silently stopped processing
+every later real trading day for any currently-open instance.
+
+Two independent, compounding consequences, both reproduced end-to-end
+against real INDORAMA.NS WTF+DTF data:
+
+- **Highest High freezes.** `hh`/`hh1` only start accumulating from the day
+  *after* a stage (re)forms (the formation candle itself resets `hh` to 0
+  after already having skipped this candle's own high). If the simulation
+  window ends right at (or before) the day after formation, `hh`/`hh1`
+  never get a single data point, so the live status reports `null`, which
+  the screener then displays as `Activation Price` (the documented
+  fallback in `lib/dtfWtfScreener.ts`) — exactly the observed "Highest
+  High == Activation Price, but Current Close is clearly higher" symptom.
+  Reproduced: INDORAMA.NS Stage 1 (formed 2026-09-18) and Stage 2 (formed
+  2026-09-21) both under-reported Highest High as 109.26 / the activation
+  price respectively, when the real max across the available DTF data
+  (through 2026-09-23) was 112.30 (2026-09-22) — one day the truncated
+  window never reached.
+- **Later-in-week formations/SLs are invisible.** Since the simulation
+  loop for a currently-open instance never advances past the current
+  week's first trading day, ANY Stage 1/Stage 2 formation or SL that would
+  only trigger on day 2-5 of that week is never evaluated at all — this is
+  the mechanism behind "no stocks shown in PRIME TREND for the last 2
+  days": those two days are structurally unreachable for every currently-
+  open instance across the whole scanned universe, not just one stock.
+
+Fix: thread the actual last DTF trading day through
+`_all_instances`/`allInstances` → `_wtf_instances_for_family`/
+`wtfInstancesForFamily`, and use it (not the WTF trace's own last date) as
+the `end_date`/`endDate` fallback for a still-open instance. A genuinely
+closed instance's `end_date` (resolved from an explicit WTF-side event) is
+untouched.
+
+Confirmed no regression: ICICIBANK.NS's historical `compute_prime_trend`
+output is unchanged (still 22 rows across 11 TZ BUY 2 instances, same exit
+types/prices/highest-highs) — the fix only widens the window for instances
+still open as of the most recent data, which closed-instance history never
+touches.
+
+INDORAMA.NS's own Stage 2 (TZ BUY ENTRY) formation on 2026-09-21 was
+separately confirmed to genuinely satisfy the coded breakout condition
+(High 109.26 vs. the required 93.69, Close 106.55 well above the 93.49
+reference) — a decisive, non-borderline break, not a misfire of the
+breakout rule itself. Its presence in the live list is correct; only its
+Highest High figure (and the general late-week blind spot) was the bug.
+
+Applied to `prime_trend.py` and `lib/primeTrend.ts` (both engines share the
+identical defect, introduced as an unintended side effect of the earlier
+week-labeling fix — see above). Not yet re-verified against ADANIENT.NS
+(blocked by this session's standing restriction).
+
+## Bug fix: the pre-Stage-1 anchor waited for a whole WTF week to close instead of climbing day by day (INDORAMA.NS)
+
+Found immediately after the fix above, by hand-tracing INDORAMA.NS day by
+day against the live site's output. A second, more fundamental defect in
+the *same* look-ahead guard: `liveRefAsof` only ever recognized a WTF
+tier's own climbing reference once an entire further WTF week had fully
+closed after it rose — even when the day that actually set the new high
+was the very *first* trading day of a week, and the DTF candle being
+tested was that same week's *last* trading day, days later.
+
+**Real trace, INDORAMA.NS, WTF TZ BUY 2 (B) formed week of 2026-09-07
+(that week's own High: 90.00):**
+
+| Date | High | Close | vs. anchor | Result |
+|---|---|---|---|---|
+| 2026-09-15 (Tue, first trading day of the next week) | 96.50 | 82.81 | clears 90.00 by >0.20, but Close is weak | **Should quietly raise the anchor to 96.50** — the old code kept it at 90.00 until an entire additional week closed |
+| 2026-09-16 | 89.90 | 85.60 | below 96.50 | no change either way |
+| 2026-09-17 | 91.40 | 89.19 | below 96.50 | no change either way |
+| 2026-09-18 (Fri, same week as 09-15) | 93.49 | 91.05 | below the correct 96.50, but **above the stale 90.00** | Old code wrongly confirmed DTF TZ BUY here, @ 93.49 |
+| 2026-09-21 | 109.26 | 106.55 | clears 96.50 decisively | **Correct** DTF TZ BUY confirmation, @ 109.26 |
+
+The user's own framing: "for DTF TZ BUY, it will keep checking every
+working day after the WTF TZ BUY 2 week is over... though week is not
+completed, the reference high should rise." I.e. checking starts once
+the *formation* week is over (unchanged), but from that point on the
+reference is not pinned to WTF week boundaries at all — it climbs on any
+later day's own High via the same quiet-climb ("`0.01` rule") used
+everywhere else in the theory, exactly like Stage 1's or Stage 2's own
+post-formation HH tracking. There is no real look-ahead risk in this:
+WTF is only a resample of the same daily bars PRIME TREND already has in
+full, so a week's cumulative high is genuine, already-known information
+the moment the day that set it has closed — it does not matter whether
+the rest of that week has finished yet.
+
+Because the wrong, stale anchor let DTF TZ BUY confirm a full 3 trading
+days early (18/09 instead of 21/09) at the wrong price (93.49 instead of
+109.26), it also produced a **phantom DTF TZ BUY ENTRY (Stage 2)** on
+21/09 — the user's separate observation "INDORAMA did not even clear TZ
+BUY ENTRY conditions. WHY IS IT THERE IN THE LIST?" Under the corrected
+anchor, Stage 1 itself only confirms on 21/09, and Stage 2's own ladder
+(seeded at 109.26) is not cleared by any day through 23/09 (22/09's High
+of 112.30 comes with a weak Close of 103.57 — a quiet ladder-climb, not a
+confirmation) — so Stage 2 correctly does not exist at all as of the last
+available data.
+
+Fix: removed `_live_ref_asof`/`liveRefAsof` (the week-boundary lookup)
+entirely. The pre-Stage-1 anchor is now a single running value, seeded
+from the WTF instance's own formation-week High, gated only by "is this
+DTF day still inside the formation week itself" (`_containing_week_start`/
+`containingWeekStart` unchanged, still used for that one gate) — once
+past the formation week, it climbs quietly on any day's own High from
+then on, and a full breakout against its current value confirms Stage 1,
+exactly mirroring the breakout-vs-quiet-climb pattern already used for
+every other tier in the engine.
+
+Confirmed no regression: ICICIBANK.NS's historical `compute_prime_trend`
+output is byte-for-byte identical before and after this fix (still 22
+rows across 11 TZ BUY 2 instances) — none of its real confirming breakouts
+happen to land in the specific first-week-after-formation window where
+the stale week-boundary lookup and the corrected day-by-day anchor would
+have disagreed. Not yet re-verified against ADANIENT.NS (blocked by this
+session's standing restriction).
+
+## Fix: unify the 0.01 quiet-climb rule across every reference, not just the ones already active
+
+Found by re-reading the code after the two fixes above, prompted by the
+user asking directly whether there were any other doubts. Three spots
+quietly raised a reference on `cur.h > ref` alone, with no minimum-move
+check — inconsistent with every other quiet climb in the file (Stage 1's
+own High while active, Stage 2's own High while active, and the
+pre-Stage-1 anchor above), all of which require clearing by at least
+`ANY` (0.01) to count:
+
+- Stage 1's own frozen reference while searching for reactivation
+  (`s1.frozen_ref`/`s1.frozenRef`).
+- Stage 2's own frozen reference while searching for reactivation
+  (`s2.frozen_ref`/`s2.frozenRef`).
+- **Stage 2's own escalation ladder** (`s1.entry_ratchet`/
+  `s1.entryRatchet`) — this one isn't just a style inconsistency: the
+  Stage 2 section above is explicit that the ladder "climbs on every new
+  daily high (again the ordinary 0.01 rule — this is the SAME quiet climb
+  as Stage 1's own HH, not a separate mechanism)". The code didn't
+  actually apply that rule.
+
+All three now require `cur.h - ref >= ANY` before the reference moves,
+matching the rest of the file. The two `cur.h > hh`/`cur.h > hh1`
+comparisons elsewhere (the plain running Highest-High *statistic*, not a
+state-machine reference used for breakout/reactivation checks) are
+deliberately left as bare `>` -- any new max, however small, is by
+definition the new highest high.
+
+No regression: ICICIBANK.NS's historical output is still byte-for-byte
+identical (22 rows), and AEGISVOPAK.NS/CORDSCABLE.NS's live status is
+unchanged from before this fix -- none of their real data happened to hit
+a climb smaller than 0.01 in these three spots.
+
 ## Open items
 
 - Implemented in Python (`prime_trend.py`). The multi-cycle-row fix, the

@@ -195,10 +195,23 @@ class _WtfInstance:
     end_price: Optional[float]       # BAR SL2 -> that week's close; own "2" SL / parent-tier SL -> this tier's own ref_low
 
 
-def _wtf_instances_for_family(wtf_trace, family: str) -> list[_WtfInstance]:
+def _wtf_instances_for_family(wtf_trace, family: str, last_dtf_date: Optional[str]) -> list[_WtfInstance]:
     spec = FAMILIES[family]
     instances = []
-    last_date = wtf_trace[-1][0].date if wtf_trace else None
+    # A still-open instance's window must extend through the actual last
+    # available DTF trading day, NOT the last WTF trace entry's own date.
+    # The WTF trace has one row per week labeled by that week's FIRST
+    # trading day (see resample_weekly's own fix note) -- so once >=2
+    # trading days have elapsed in the current, still-forming week, the WTF
+    # trace's last date is EARLIER than today. Falling back to it here used
+    # to silently cut the DTF simulation off right at that label, discarding
+    # every later real trading day for any currently-open instance: Highest
+    # High froze at the entry candle's own high (or, if formation happened
+    # on that same label day, never got captured at all and fell back to
+    # showing Activation Price), and any Stage 1/2 formation or SL that
+    # would only trigger on day 2-5 of the current week was never even
+    # evaluated. (Confirmed live, ACMESOLAR.NS/INDORAMA.NS, 2026-09-24.)
+    last_date = last_dtf_date if last_dtf_date is not None else (wtf_trace[-1][0].date if wtf_trace else None)
     for i, (day, evs, pre_ref_low, alive_after, has_tier_after) in enumerate(wtf_trace):
         for e in evs:
             if not e.startswith(spec["form"]):
@@ -241,10 +254,10 @@ def _wtf_instances_for_family(wtf_trace, family: str) -> list[_WtfInstance]:
     return instances
 
 
-def _all_instances(wtf_trace) -> list[_WtfInstance]:
+def _all_instances(wtf_trace, last_dtf_date: Optional[str]) -> list[_WtfInstance]:
     instances = []
     for family in FAMILIES:
-        instances.extend(_wtf_instances_for_family(wtf_trace, family))
+        instances.extend(_wtf_instances_for_family(wtf_trace, family, last_dtf_date))
     instances.sort(key=lambda inst: inst.formation_date)
     return instances
 
@@ -280,22 +293,6 @@ def _containing_week_start(wtf_dates: list[str], d: str) -> Optional[str]:
         else:
             break
     return start
-
-
-def _live_ref_asof(checkpoints, wtf_dates: list[str], d: str) -> Optional[float]:
-    """The WTF reference high as it stood at the end of the most recently
-    FULLY COMPLETED WTF week strictly before the week containing `d` --
-    never the current, still-forming week's own value (look-ahead guard)."""
-    week_start = _containing_week_start(wtf_dates, d)
-    if week_start is None:
-        return None
-    ref = None
-    for cdate, cref in checkpoints:
-        if cdate < week_start:
-            ref = cref
-        else:
-            break
-    return ref
 
 
 # --------------------------------------------------------------------------
@@ -352,6 +349,21 @@ def _simulate_dtf_all(
     s1_activation_price = None
     hh1, hh1_date = 0.0, None
 
+    # The anchor Stage 1 breaks out against, BEFORE Stage 1 first forms.
+    # Seeded from the WTF instance's own formation-week High (checkpoints[0]
+    # is always that formation event), then climbs quietly on any later DAY's
+    # own High once the formation week is over -- it does NOT wait for a
+    # whole further WTF week to close first. WTF is only a derived resample
+    # of these same daily bars, so a week's cumulative high is real,
+    # already-known information the moment the day that set it has closed,
+    # not a look-ahead risk to any later day in that same still-forming
+    # week. (Confirmed live, INDORAMA.NS 2026-09-24: 15/09 printed a High of
+    # 96.50 with a weak Close, quietly raising the anchor from 90.00 that
+    # same week -- the old week-boundary-only lookup kept using the stale
+    # 90.00 through 18/09, wrongly confirming Stage 1 there instead of the
+    # genuine breakout on 21/09.)
+    pre_s1_ref = checkpoints[0][1] if checkpoints else None
+
     def close_pair(exit_type: str, exit_date: str, exit_price: float):
         nonlocal cur_entry, hh, hh_date
         if cur_entry is not None:
@@ -372,11 +384,13 @@ def _simulate_dtf_all(
 
         # --- Stage 1: DTF TZ BUY ---
         if s1 is None:
-            live = _live_ref_asof(checkpoints, wtf_dates, cur.date)
-            if live is not None and _breakout_shape(prev, cur, live):
-                s1 = _Stage(cur.h, cur.l)
-                s1_since, s1_activation_price = cur.date, cur.h
-                hh1, hh1_date = 0.0, None
+            if pre_s1_ref is not None and _containing_week_start(wtf_dates, cur.date) != inst.formation_date:
+                if _breakout_shape(prev, cur, pre_s1_ref):
+                    s1 = _Stage(cur.h, cur.l)
+                    s1_since, s1_activation_price = cur.date, cur.h
+                    hh1, hh1_date = 0.0, None
+                elif cur.h > pre_s1_ref and (cur.h - pre_s1_ref) >= ANY:
+                    pre_s1_ref = cur.h
         else:
             if s1.active:
                 if _sl_shape(cur, s1.ref_low):
@@ -395,7 +409,7 @@ def _simulate_dtf_all(
                     s1 = _Stage(cur.h, cur.l)
                     s1_since, s1_activation_price = cur.date, cur.h
                     hh1, hh1_date = 0.0, None
-                elif cur.h > s1.frozen_ref:
+                elif cur.h > s1.frozen_ref and (cur.h - s1.frozen_ref) >= ANY:
                     s1.frozen_ref = cur.h
 
         # --- Stage 2: DTF TZ BUY ENTRY (only while Stage 1 is active) ---
@@ -407,7 +421,7 @@ def _simulate_dtf_all(
                     s2 = _Stage(cur.h, cur.l)
                     cur_entry = (cur.date, entry_price)
                     hh, hh_date = 0.0, None
-                elif cur.h > ref2:
+                elif cur.h > ref2 and (cur.h - ref2) >= ANY:
                     s1.entry_ratchet = cur.h
             else:
                 if s2.active:
@@ -426,7 +440,7 @@ def _simulate_dtf_all(
                         s2 = _Stage(cur.h, cur.l)
                         cur_entry = (cur.date, entry_price)
                         hh, hh_date = 0.0, None
-                    elif cur.h > s2.frozen_ref:
+                    elif cur.h > s2.frozen_ref and (cur.h - s2.frozen_ref) >= ANY:
                         s2.frozen_ref = cur.h
         i += 1
 
@@ -494,7 +508,8 @@ def _prepare(wtf_rows, dtf_rows):
     dtf_days = [_to_day(r) for r in dtf_rows]
     wtf_dates = [d.date for d in wtf_days]
     wtf_trace = _run_wtf_trace(wtf_days)
-    instances = _all_instances(wtf_trace)
+    last_dtf_date = dtf_days[-1].date if dtf_days else None
+    instances = _all_instances(wtf_trace, last_dtf_date)
     return dtf_days, wtf_trace, wtf_dates, instances
 
 
