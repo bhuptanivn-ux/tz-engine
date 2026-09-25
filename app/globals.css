@@ -122,16 +122,6 @@ input, select {
   flex: 1 1 160px;
 }
 
-/* Prime Trend's two screener sections (DTF trading with TZ BUY / DTF TZ
-   BUY ENTRY) are shown stacked, both at once -- a visible gap plus a top
-   border on all but the first keeps them from reading as one continuous
-   block. */
-main section + section {
-  margin-top: 2rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
-}
-
 /* Prime Trend's column-visibility checkboxes, above the results table --
    deliberately smaller and lighter than the rest of the form controls
    (which use the global bold, block-level `label` style) to save screen
