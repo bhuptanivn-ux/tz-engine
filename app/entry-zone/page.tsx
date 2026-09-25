@@ -539,24 +539,24 @@ export default function EntryZone() {
             <div className="field" style={{ flex: "1 1 100%", marginBottom: 0 }}>
               <label style={{ fontSize: "0.8rem" }}>Columns</label>
               <div className="col-filter-row">
-                <label className="col-filter-item">
-                  <input
-                    type="checkbox"
-                    checked={colHighPrice}
-                    onChange={(e) => setColHighPrice(e.target.checked)}
-                  />
-                  Highest High: Price
-                </label>
-                <label className="col-filter-item">
-                  <input
-                    type="checkbox"
-                    checked={colHighReturn}
-                    onChange={(e) => setColHighReturn(e.target.checked)}
-                  />
-                  Highest High: % Return
-                </label>
                 {choice === "tzBuyEntry" && (
                   <>
+                    <label className="col-filter-item">
+                      <input
+                        type="checkbox"
+                        checked={colHighPrice}
+                        onChange={(e) => setColHighPrice(e.target.checked)}
+                      />
+                      Highest High: Price
+                    </label>
+                    <label className="col-filter-item">
+                      <input
+                        type="checkbox"
+                        checked={colHighReturn}
+                        onChange={(e) => setColHighReturn(e.target.checked)}
+                      />
+                      Highest High: % Return
+                    </label>
                     <label className="col-filter-item">
                       <input
                         type="checkbox"
@@ -592,7 +592,8 @@ export default function EntryZone() {
       {rows.length > 0 && (() => {
         const showStopLoss = choice === "tzBuyEntry";
         const showLowestLow = choice === "tzBuyEntry";
-        const highGroupCols = (colHighPrice ? 1 : 0) + (colHighReturn ? 1 : 0);
+        const showHighestHigh = choice === "tzBuyEntry";
+        const highGroupCols = showHighestHigh ? (colHighPrice ? 1 : 0) + (colHighReturn ? 1 : 0) : 0;
         const lowGroupCols = showLowestLow ? (colLowPrice ? 1 : 0) + (colLowRetraced ? 1 : 0) : 0;
 
         return (
@@ -619,8 +620,8 @@ export default function EntryZone() {
                         <th style={row2StickyStyle}>% Risk</th>
                       </>
                     )}
-                    {colHighPrice && <th style={row2StickyStyle}>Price</th>}
-                    {colHighReturn && (
+                    {showHighestHigh && colHighPrice && <th style={row2StickyStyle}>Price</th>}
+                    {showHighestHigh && colHighReturn && (
                       <th style={row2StickyStyle}>
                         <button
                           type="button"
@@ -656,8 +657,8 @@ export default function EntryZone() {
                             <td className="return-neg">{risk === null ? NA : `${risk.toFixed(2)}%`}</td>
                           </>
                         )}
-                        {colHighPrice && <td>{fmt(r.highestHigh)}</td>}
-                        {colHighReturn && (
+                        {showHighestHigh && colHighPrice && <td>{fmt(r.highestHigh)}</td>}
+                        {showHighestHigh && colHighReturn && (
                           <td
                             className={
                               Number.isNaN(r.percentReturn)
