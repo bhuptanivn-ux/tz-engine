@@ -90,7 +90,6 @@ function retraced(lowestLow: number | null, activationPrice: number): "YES" | "N
 }
 
 export default function EntryZone() {
-  const [choice, setChoice] = useState<ListChoice>("tzBuyEntry");
   const [segment, setSegment] = useState("");
   const [tzBuy, setTzBuy] = useState<ScreenerRow[]>([]);
   const [tzBuyEntry, setTzBuyEntry] = useState<ScreenerRow[]>([]);
@@ -102,79 +101,13 @@ export default function EntryZone() {
   const [cachedResult, setCachedResult] = useState(false);
   const [scanProgress, setScanProgress] = useState("");
 
-  const [scripQuery, setScripQuery] = useState("");
-  const [scripSuggestions, setScripSuggestions] = useState<ScripMatch[]>([]);
-  const [showScripSuggestions, setShowScripSuggestions] = useState(false);
-  const [scripHighlighted, setScripHighlighted] = useState(-1);
-  const [selectedScrip, setSelectedScrip] = useState<ScripMatch | null>(null);
-  const scripDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const [yearFilter, setYearFilter] = useState("");
-  const [returnSort, setReturnSort] = useState<ReturnSort>(null);
-
-  // Column visibility -- all on by default; unticking removes that column
-  // from the table. Scrip/Activation/Stop Loss columns are always shown
-  // (not offered as toggles), per an explicit request to keep those fixed.
-  const [colHighPrice, setColHighPrice] = useState(true);
-  const [colHighReturn, setColHighReturn] = useState(true);
-  const [colLowPrice, setColLowPrice] = useState(true);
-  const [colLowRetraced, setColLowRetraced] = useState(true);
-  const [colCurrentClose, setColCurrentClose] = useState(true);
-
-  // Frozen (sticky) header: the site's generic `thead th { position:
-  // sticky; top: 0 }` rule (globals.css) assumes a single header row, so
-  // it's fine for the Trading Zone page but would make this table's two
-  // header rows stick on top of each other. Row 1 stays at top: 0; row 2's
-  // top is set to row 1's own measured height so it sticks directly below
-  // it instead of overlapping -- measured rather than hard-coded so it
-  // stays correct regardless of font size/zoom/theme.
-  const theadRow1Ref = useRef<HTMLTableRowElement>(null);
-  const [row1Height, setRow1Height] = useState(0);
-
-  // Switching tabs is a pure view change -- one scan already computes BOTH
-  // tzBuy and tzBuyEntry together (every batch response carries both, see
-  // runScan below), so there is no need to re-scan, and no reason to
-  // throw away either tab's results just because the other tab was
-  // clicked. Only the per-tab view filters reset (a Year/search/sort that
-  // made sense for one tab's results may not for the other's); the scan
-  // itself (segment, tzBuy, tzBuyEntry, lastScanned) is left completely
-  // alone.
-  function onChoiceChange(next: ListChoice) {
-    setChoice(next);
-    clearScripSearch();
-    setYearFilter("");
-    setReturnSort(null);
-  }
-
   function onSegmentChange(next: string) {
     setSegment(next);
     setTzBuy([]);
     setTzBuyEntry([]);
     setLastScanned("");
     setError("");
-    clearScripSearch();
-    setYearFilter("");
-    setReturnSort(null);
-  }
-
-  // Clicking the "Prime Trend" nav link while already on this page doesn't
-  // trigger a Next.js navigation (same route), so Sidebar dispatches this
-  // event instead -- reset the Search/Year/% Return filters and fall back
-  // to the main, unfiltered list.
-  useEffect(() => {
-    function resetFilters() {
-      clearScripSearch();
-      setYearFilter("");
-      setReturnSort(null);
-    }
-    window.addEventListener("prime-trend-filters-reset", resetFilters);
-    return () => window.removeEventListener("prime-trend-filters-reset", resetFilters);
-  }, []);
-
-  // Cycles % Return sort: off (Active as on, newest first) -> descending ->
-  // ascending -> back to off.
-  function cycleReturnSort() {
-    setReturnSort((prev) => (prev === null ? "desc" : prev === "desc" ? "asc" : null));
+    window.dispatchEvent(new Event("prime-trend-filters-reset"));
   }
 
   async function fetchScanBatch(offset: number, limit: number): Promise<ScreenerBatchResponse> {
@@ -256,117 +189,6 @@ export default function EntryZone() {
     }
   }
 
-  useEffect(() => {
-    if (scripDebounceRef.current) clearTimeout(scripDebounceRef.current);
-    if (scripQuery.trim().length < 1 || selectedScrip?.symbol === scripQuery) {
-      setScripSuggestions([]);
-      return;
-    }
-    scripDebounceRef.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/screener/search?q=${encodeURIComponent(scripQuery)}`);
-        const data = await res.json();
-        setScripSuggestions(data.results || []);
-        setScripHighlighted(-1);
-      } catch {
-        setScripSuggestions([]);
-      }
-    }, 300);
-    return () => {
-      if (scripDebounceRef.current) clearTimeout(scripDebounceRef.current);
-    };
-  }, [scripQuery, selectedScrip]);
-
-  function pickScripSuggestion(match: ScripMatch) {
-    setSelectedScrip(match);
-    setScripQuery(`${match.name} (${match.symbol})`);
-    setScripSuggestions([]);
-    setShowScripSuggestions(false);
-    setScripHighlighted(-1);
-  }
-
-  function clearScripSearch() {
-    setSelectedScrip(null);
-    setScripQuery("");
-    setScripSuggestions([]);
-    setShowScripSuggestions(false);
-    setScripHighlighted(-1);
-  }
-
-  function handleScripKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
-    if (!showScripSuggestions || scripSuggestions.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setScripHighlighted((i) => Math.min(i + 1, scripSuggestions.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setScripHighlighted((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter") {
-      if (scripHighlighted >= 0 && scripHighlighted < scripSuggestions.length) {
-        e.preventDefault();
-        pickScripSuggestion(scripSuggestions[scripHighlighted]);
-      }
-    } else if (e.key === "Escape") {
-      setShowScripSuggestions(false);
-      setScripHighlighted(-1);
-    }
-  }
-
-  const activeList = choice === "tzBuy" ? tzBuy : tzBuyEntry;
-
-  // Years present in the current tab's active list, latest first, for the
-  // Year filter dropdown.
-  const availableYears = Array.from(new Set(activeList.map((r) => r.activeAsOn.slice(0, 4)))).sort(
-    (a, b) => b.localeCompare(a)
-  );
-
-  // Default order is newest activation first. A searched scrip narrows the
-  // table to just that one scrip: its own row if it's currently active for
-  // this tab, or an "NA" placeholder row (name only) if it isn't -- the
-  // Year filter and % Return sort are both ignored while a scrip is
-  // selected. Otherwise, the Year filter narrows the list, and % Return
-  // sort (toggled via the two arrows in that column header) overrides the
-  // default Active-as-on ordering while it's set to descending/ascending;
-  // cycling it back to "off" returns to Active-as-on, newest first.
-  const rows = selectedScrip
-    ? (() => {
-        const match = activeList.find((r) => r.symbol === selectedScrip.symbol);
-        if (match) return [match];
-        return [
-          {
-            symbol: selectedScrip.symbol,
-            name: selectedScrip.name,
-            activeAsOn: NA,
-            activationPrice: NaN,
-            stopLoss: null,
-            lowestLowPostEntry: null,
-            highestHigh: NaN,
-            percentReturn: NaN,
-            currentClose: NaN,
-          },
-        ];
-      })()
-    : [...activeList]
-        .filter((r) => !yearFilter || r.activeAsOn.slice(0, 4) === yearFilter)
-        .sort((a, b) =>
-          returnSort
-            ? returnSort === "desc"
-              ? b.percentReturn - a.percentReturn
-              : a.percentReturn - b.percentReturn
-            : b.activeAsOn.localeCompare(a.activeAsOn)
-        );
-
-  useLayoutEffect(() => {
-    if (theadRow1Ref.current) {
-      setRow1Height(theadRow1Ref.current.getBoundingClientRect().height);
-    }
-  }, [rows.length, choice, colHighPrice, colHighReturn, colLowPrice, colLowRetraced, colCurrentClose]);
-
-  // Sticks row 2's headers directly below row 1's (which sits at the
-  // default `top: 0` from the site-wide sticky rule) instead of on top of
-  // it -- see the row1Height comment above.
-  const row2StickyStyle = { top: row1Height };
-
   return (
     <main className="container">
       <h1>Prime Trend</h1>
@@ -377,25 +199,6 @@ export default function EntryZone() {
       </p>
 
       <div className="card">
-        <div className="tabs">
-          <button
-            className={choice === "tzBuy" ? "tab active" : "tab"}
-            onClick={() => onChoiceChange("tzBuy")}
-          >
-            DTF trading with TZ BUY
-          </button>
-          <button
-            className={choice === "tzBuyEntry" ? "tab active" : "tab"}
-            onClick={() => onChoiceChange("tzBuyEntry")}
-          >
-            DTF TZ BUY ENTRY
-          </button>
-        </div>
-        <p className="muted" style={{ marginTop: "-0.5rem", marginBottom: "1rem" }}>
-          {choice === "tzBuy"
-            ? "Above WTF TZ BUY 2 reference high"
-            : "DTF's own TZ BUY 2, above DTF TZ BUY"}
-        </p>
         <label className="muted" htmlFor="segment-select" style={{ display: "block", marginBottom: "0.35rem" }}>
           Segment
         </label>
@@ -429,17 +232,18 @@ export default function EntryZone() {
             {" "}
             Powered by the full PRIME TREND theory: DTF is anchored off WTF&apos;s own currently
             LIVE TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 reference, which keeps climbing for as long as
-            that WTF tier stays alive. Activation price is a one-time snapshot of DTF&apos;s own
-            stage price, taken when this list&apos;s milestone most recently (re)formed (can differ
-            between the two lists). Stop loss price is that milestone&apos;s own live SL level — it
-            ratchets down to a new reference low as one forms, unlike Activation price&apos;s
-            one-time snapshot. % Risk is how far below Activation price that stop loss sits. Lowest
-            low post entry is the lowest daily low made strictly after the entry day and strictly
-            before today; it shows NA until at least one full day has closed since entry. Retraced
-            is whether that lowest low has traded back below Activation price. Highest high is
-            DTF&apos;s own running maximum daily high from that same (re)formation day onward
-            (including that day&apos;s own high) — not a weekly figure. % Return is the change from
-            Activation price to Highest high.
+            that WTF tier stays alive. One scan computes both lists below together, so they&apos;re
+            both shown at once rather than as a tab switch. Activation price is a one-time snapshot
+            of DTF&apos;s own stage price, taken when a list&apos;s milestone most recently
+            (re)formed (can differ between the two lists). Stop loss price is that milestone&apos;s
+            own live SL level — it ratchets down to a new reference low as one forms, unlike
+            Activation price&apos;s one-time snapshot. % Risk is how far below Activation price that
+            stop loss sits. Lowest low post entry is the lowest daily low made strictly after the
+            entry day and strictly before today; it shows NA until at least one full day has closed
+            since entry. Retraced is whether that lowest low has traded back below Activation price.
+            Highest high is DTF&apos;s own running maximum daily high from that same (re)formation
+            day onward (including that day&apos;s own high) — not a weekly figure. % Return is the
+            change from Activation price to Highest high.
             {errors.length > 0 && ` ${errors.length} stock(s) failed to fetch and were skipped.`}
           </p>
         )}
@@ -464,13 +268,230 @@ export default function EntryZone() {
         )}
       </div>
 
-      {lastScanned && (
+      <ScreenerSection
+        title="DTF trading with TZ BUY"
+        subtitle="Above WTF TZ BUY 2 reference high"
+        which="tzBuy"
+        sourceRows={tzBuy}
+        hasScanned={!!lastScanned}
+        loading={loading}
+      />
+
+      <ScreenerSection
+        title="DTF TZ BUY ENTRY"
+        subtitle="DTF's own TZ BUY 2, above DTF TZ BUY"
+        which="tzBuyEntry"
+        sourceRows={tzBuyEntry}
+        hasScanned={!!lastScanned}
+        loading={loading}
+      />
+    </main>
+  );
+}
+
+// Both lists (Stage 1 "DTF trading with TZ BUY" and Stage 2 "DTF TZ BUY
+// ENTRY") are shown at once, each as its own independent section with its
+// own search/year/sort/column-visibility controls -- previously they were
+// mutually-exclusive tabs, so seeing one meant losing sight of the other
+// entirely. The underlying scan is still a single shared operation (see
+// runScan in the parent) since one pass over the universe already computes
+// both lists together; only the display was ever exclusive.
+function ScreenerSection({
+  title,
+  subtitle,
+  which,
+  sourceRows,
+  hasScanned,
+  loading,
+}: {
+  title: string;
+  subtitle: string;
+  which: ListChoice;
+  sourceRows: ScreenerRow[];
+  hasScanned: boolean;
+  loading: boolean;
+}) {
+  const [scripQuery, setScripQuery] = useState("");
+  const [scripSuggestions, setScripSuggestions] = useState<ScripMatch[]>([]);
+  const [showScripSuggestions, setShowScripSuggestions] = useState(false);
+  const [scripHighlighted, setScripHighlighted] = useState(-1);
+  const [selectedScrip, setSelectedScrip] = useState<ScripMatch | null>(null);
+  const scripDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [yearFilter, setYearFilter] = useState("");
+  const [returnSort, setReturnSort] = useState<ReturnSort>(null);
+
+  // Column visibility -- all on by default; unticking removes that column
+  // from the table. Scrip/Activation/Stop Loss columns are always shown
+  // (not offered as toggles), per an explicit request to keep those fixed.
+  const [colHighPrice, setColHighPrice] = useState(true);
+  const [colHighReturn, setColHighReturn] = useState(true);
+  const [colLowPrice, setColLowPrice] = useState(true);
+  const [colLowRetraced, setColLowRetraced] = useState(true);
+  const [colCurrentClose, setColCurrentClose] = useState(true);
+
+  // Frozen (sticky) header: the site's generic `thead th { position:
+  // sticky; top: 0 }` rule (globals.css) assumes a single header row, so
+  // it's fine for the Trading Zone page but would make this table's two
+  // header rows stick on top of each other. Row 1 stays at top: 0; row 2's
+  // top is set to row 1's own measured height so it sticks directly below
+  // it instead of overlapping -- measured rather than hard-coded so it
+  // stays correct regardless of font size/zoom/theme. Each section has its
+  // own table, so each needs its own measurement.
+  const theadRow1Ref = useRef<HTMLTableRowElement>(null);
+  const [row1Height, setRow1Height] = useState(0);
+
+  function clearScripSearch() {
+    setSelectedScrip(null);
+    setScripQuery("");
+    setScripSuggestions([]);
+    setShowScripSuggestions(false);
+    setScripHighlighted(-1);
+  }
+
+  // Clicking the "Prime Trend" nav link while already on this page doesn't
+  // trigger a Next.js navigation (same route), so Sidebar dispatches this
+  // event instead -- reset this section's Search/Year/% Return filters.
+  // Changing the segment also dispatches it (see onSegmentChange in the
+  // parent), since a new segment invalidates any scrip search/year
+  // selection made against the old one.
+  useEffect(() => {
+    function resetFilters() {
+      clearScripSearch();
+      setYearFilter("");
+      setReturnSort(null);
+    }
+    window.addEventListener("prime-trend-filters-reset", resetFilters);
+    return () => window.removeEventListener("prime-trend-filters-reset", resetFilters);
+  }, []);
+
+  // Cycles % Return sort: off (Active as on, newest first) -> descending ->
+  // ascending -> back to off.
+  function cycleReturnSort() {
+    setReturnSort((prev) => (prev === null ? "desc" : prev === "desc" ? "asc" : null));
+  }
+
+  useEffect(() => {
+    if (scripDebounceRef.current) clearTimeout(scripDebounceRef.current);
+    if (scripQuery.trim().length < 1 || selectedScrip?.symbol === scripQuery) {
+      setScripSuggestions([]);
+      return;
+    }
+    scripDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/screener/search?q=${encodeURIComponent(scripQuery)}`);
+        const data = await res.json();
+        setScripSuggestions(data.results || []);
+        setScripHighlighted(-1);
+      } catch {
+        setScripSuggestions([]);
+      }
+    }, 300);
+    return () => {
+      if (scripDebounceRef.current) clearTimeout(scripDebounceRef.current);
+    };
+  }, [scripQuery, selectedScrip]);
+
+  function pickScripSuggestion(match: ScripMatch) {
+    setSelectedScrip(match);
+    setScripQuery(`${match.name} (${match.symbol})`);
+    setScripSuggestions([]);
+    setShowScripSuggestions(false);
+    setScripHighlighted(-1);
+  }
+
+  function handleScripKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (!showScripSuggestions || scripSuggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setScripHighlighted((i) => Math.min(i + 1, scripSuggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setScripHighlighted((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      if (scripHighlighted >= 0 && scripHighlighted < scripSuggestions.length) {
+        e.preventDefault();
+        pickScripSuggestion(scripSuggestions[scripHighlighted]);
+      }
+    } else if (e.key === "Escape") {
+      setShowScripSuggestions(false);
+      setScripHighlighted(-1);
+    }
+  }
+
+  // Years present in this section's active list, latest first, for the
+  // Year filter dropdown.
+  const availableYears = Array.from(new Set(sourceRows.map((r) => r.activeAsOn.slice(0, 4)))).sort(
+    (a, b) => b.localeCompare(a)
+  );
+
+  // Default order is newest activation first. A searched scrip narrows the
+  // table to just that one scrip: its own row if it's currently active for
+  // this list, or an "NA" placeholder row (name only) if it isn't -- the
+  // Year filter and % Return sort are both ignored while a scrip is
+  // selected. Otherwise, the Year filter narrows the list, and % Return
+  // sort (toggled via the two arrows in that column header) overrides the
+  // default Active-as-on ordering while it's set to descending/ascending;
+  // cycling it back to "off" returns to Active-as-on, newest first.
+  const rows = selectedScrip
+    ? (() => {
+        const match = sourceRows.find((r) => r.symbol === selectedScrip.symbol);
+        if (match) return [match];
+        return [
+          {
+            symbol: selectedScrip.symbol,
+            name: selectedScrip.name,
+            activeAsOn: NA,
+            activationPrice: NaN,
+            stopLoss: null,
+            lowestLowPostEntry: null,
+            highestHigh: NaN,
+            percentReturn: NaN,
+            currentClose: NaN,
+          },
+        ];
+      })()
+    : [...sourceRows]
+        .filter((r) => !yearFilter || r.activeAsOn.slice(0, 4) === yearFilter)
+        .sort((a, b) =>
+          returnSort
+            ? returnSort === "desc"
+              ? b.percentReturn - a.percentReturn
+              : a.percentReturn - b.percentReturn
+            : b.activeAsOn.localeCompare(a.activeAsOn)
+        );
+
+  useLayoutEffect(() => {
+    if (theadRow1Ref.current) {
+      setRow1Height(theadRow1Ref.current.getBoundingClientRect().height);
+    }
+  }, [rows.length, colHighPrice, colHighReturn, colLowPrice, colLowRetraced, colCurrentClose]);
+
+  // Sticks row 2's headers directly below row 1's (which sits at the
+  // default `top: 0` from the site-wide sticky rule) instead of on top of
+  // it -- see the row1Height comment above.
+  const row2StickyStyle = { top: row1Height };
+
+  const showStopLoss = which === "tzBuyEntry";
+  const showLowestLow = which === "tzBuyEntry";
+  const showHighestHigh = which === "tzBuyEntry";
+  const highGroupCols = showHighestHigh ? (colHighPrice ? 1 : 0) + (colHighReturn ? 1 : 0) : 0;
+  const lowGroupCols = showLowestLow ? (colLowPrice ? 1 : 0) + (colLowRetraced ? 1 : 0) : 0;
+
+  return (
+    <section>
+      <h2 style={{ marginBottom: "0.15rem" }}>{title}</h2>
+      <p className="muted" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
+        {subtitle}
+      </p>
+
+      {hasScanned && (
         <div className="card">
           <div className="row">
             <div className="field" style={{ flex: "2 1 260px", marginBottom: 0 }}>
-              <label htmlFor="scrip-search">Search scrip (NSE)</label>
+              <label htmlFor={`scrip-search-${which}`}>Search scrip (NSE)</label>
               <input
-                id="scrip-search"
+                id={`scrip-search-${which}`}
                 type="text"
                 placeholder="e.g. Reliance, TCS, Asian Paints…"
                 value={scripQuery}
@@ -486,7 +507,7 @@ export default function EntryZone() {
                 role="combobox"
                 aria-expanded={showScripSuggestions && scripSuggestions.length > 0}
                 aria-activedescendant={
-                  scripHighlighted >= 0 ? `scrip-suggestion-${scripHighlighted}` : undefined
+                  scripHighlighted >= 0 ? `scrip-suggestion-${which}-${scripHighlighted}` : undefined
                 }
               />
               {showScripSuggestions && scripSuggestions.length > 0 && (
@@ -494,7 +515,7 @@ export default function EntryZone() {
                   {scripSuggestions.map((s, i) => (
                     <div
                       key={s.symbol}
-                      id={`scrip-suggestion-${i}`}
+                      id={`scrip-suggestion-${which}-${i}`}
                       className={i === scripHighlighted ? "suggestion-item active" : "suggestion-item"}
                       onMouseDown={() => pickScripSuggestion(s)}
                       onMouseEnter={() => setScripHighlighted(i)}
@@ -518,9 +539,9 @@ export default function EntryZone() {
             </div>
 
             <div className="field" style={{ flex: "1 1 160px", marginBottom: 0 }}>
-              <label htmlFor="year-filter">Year (Active as on)</label>
+              <label htmlFor={`year-filter-${which}`}>Year (Active as on)</label>
               <select
-                id="year-filter"
+                id={`year-filter-${which}`}
                 value={yearFilter}
                 onChange={(e) => setYearFilter(e.target.value)}
                 disabled={!!selectedScrip || availableYears.length === 0}
@@ -539,7 +560,7 @@ export default function EntryZone() {
             <div className="field" style={{ flex: "1 1 100%", marginBottom: 0 }}>
               <label style={{ fontSize: "0.8rem" }}>Columns</label>
               <div className="col-filter-row">
-                {choice === "tzBuyEntry" && (
+                {which === "tzBuyEntry" && (
                   <>
                     <label className="col-filter-item">
                       <input
@@ -589,108 +610,100 @@ export default function EntryZone() {
         </div>
       )}
 
-      {rows.length > 0 && (() => {
-        const showStopLoss = choice === "tzBuyEntry";
-        const showLowestLow = choice === "tzBuyEntry";
-        const showHighestHigh = choice === "tzBuyEntry";
-        const highGroupCols = showHighestHigh ? (colHighPrice ? 1 : 0) + (colHighReturn ? 1 : 0) : 0;
-        const lowGroupCols = showLowestLow ? (colLowPrice ? 1 : 0) + (colLowRetraced ? 1 : 0) : 0;
-
-        return (
-          <div className="card">
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr ref={theadRow1Ref}>
-                    <th className="col-left" colSpan={2}>Scrip</th>
-                    <th colSpan={2}>Activation</th>
-                    {showStopLoss && <th colSpan={2}>Stop Loss</th>}
-                    {highGroupCols > 0 && <th colSpan={highGroupCols}>Highest High</th>}
-                    {lowGroupCols > 0 && <th colSpan={lowGroupCols}>Lowest Low</th>}
-                    {colCurrentClose && <th rowSpan={2}>Current Close</th>}
-                  </tr>
-                  <tr>
-                    <th className="col-left" style={row2StickyStyle}>Name</th>
-                    <th className="col-left" style={row2StickyStyle}>Symbol</th>
-                    <th style={row2StickyStyle}>Date</th>
-                    <th style={row2StickyStyle}>{choice === "tzBuy" ? "TZ BUY entry above" : "Price"}</th>
-                    {showStopLoss && (
-                      <>
-                        <th style={row2StickyStyle}>Price</th>
-                        <th style={row2StickyStyle}>% Risk</th>
-                      </>
-                    )}
-                    {showHighestHigh && colHighPrice && <th style={row2StickyStyle}>Price</th>}
-                    {showHighestHigh && colHighReturn && (
-                      <th style={row2StickyStyle}>
-                        <button
-                          type="button"
-                          className="sort-toggle"
-                          onClick={cycleReturnSort}
-                          aria-label={`Sort by % Return (currently ${
-                            returnSort === "desc" ? "descending" : returnSort === "asc" ? "ascending" : "off"
-                          })`}
+      {rows.length > 0 && (
+        <div className="card">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr ref={theadRow1Ref}>
+                  <th className="col-left" colSpan={2}>Scrip</th>
+                  <th colSpan={2}>Activation</th>
+                  {showStopLoss && <th colSpan={2}>Stop Loss</th>}
+                  {highGroupCols > 0 && <th colSpan={highGroupCols}>Highest High</th>}
+                  {lowGroupCols > 0 && <th colSpan={lowGroupCols}>Lowest Low</th>}
+                  {colCurrentClose && <th rowSpan={2}>Current Close</th>}
+                </tr>
+                <tr>
+                  <th className="col-left" style={row2StickyStyle}>Name</th>
+                  <th className="col-left" style={row2StickyStyle}>Symbol</th>
+                  <th style={row2StickyStyle}>Date</th>
+                  <th style={row2StickyStyle}>{which === "tzBuy" ? "TZ BUY entry above" : "Price"}</th>
+                  {showStopLoss && (
+                    <>
+                      <th style={row2StickyStyle}>Price</th>
+                      <th style={row2StickyStyle}>% Risk</th>
+                    </>
+                  )}
+                  {showHighestHigh && colHighPrice && <th style={row2StickyStyle}>Price</th>}
+                  {showHighestHigh && colHighReturn && (
+                    <th style={row2StickyStyle}>
+                      <button
+                        type="button"
+                        className="sort-toggle"
+                        onClick={cycleReturnSort}
+                        aria-label={`Sort by % Return (currently ${
+                          returnSort === "desc" ? "descending" : returnSort === "asc" ? "ascending" : "off"
+                        })`}
+                      >
+                        % Return
+                        <span className={returnSort === "desc" ? "sort-arrow active" : "sort-arrow"}>▼</span>
+                        <span className={returnSort === "asc" ? "sort-arrow active" : "sort-arrow"}>▲</span>
+                      </button>
+                    </th>
+                  )}
+                  {showLowestLow && colLowPrice && <th style={row2StickyStyle}>Price</th>}
+                  {showLowestLow && colLowRetraced && <th style={row2StickyStyle}>Retraced</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const risk = riskPercent(r.activationPrice, r.stopLoss);
+                  const retr = retraced(r.lowestLowPostEntry, r.activationPrice);
+                  return (
+                    <tr key={r.symbol}>
+                      <td className="col-left">{r.name}</td>
+                      <td className="col-left">{r.symbol}</td>
+                      <td>{r.activeAsOn === NA ? NA : formatDDMMYYYY(r.activeAsOn)}</td>
+                      <td>{fmt(r.activationPrice)}</td>
+                      {showStopLoss && (
+                        <>
+                          <td>{fmt(r.stopLoss)}</td>
+                          <td className="return-neg">{risk === null ? NA : `${risk.toFixed(2)}%`}</td>
+                        </>
+                      )}
+                      {showHighestHigh && colHighPrice && <td>{fmt(r.highestHigh)}</td>}
+                      {showHighestHigh && colHighReturn && (
+                        <td
+                          className={
+                            Number.isNaN(r.percentReturn)
+                              ? undefined
+                              : r.percentReturn >= 0
+                              ? "return-pos"
+                              : "return-neg"
+                          }
                         >
-                          % Return
-                          <span className={returnSort === "desc" ? "sort-arrow active" : "sort-arrow"}>▼</span>
-                          <span className={returnSort === "asc" ? "sort-arrow active" : "sort-arrow"}>▲</span>
-                        </button>
-                      </th>
-                    )}
-                    {showLowestLow && colLowPrice && <th style={row2StickyStyle}>Price</th>}
-                    {showLowestLow && colLowRetraced && <th style={row2StickyStyle}>Retraced</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => {
-                    const risk = riskPercent(r.activationPrice, r.stopLoss);
-                    const retr = retraced(r.lowestLowPostEntry, r.activationPrice);
-                    return (
-                      <tr key={r.symbol}>
-                        <td className="col-left">{r.name}</td>
-                        <td className="col-left">{r.symbol}</td>
-                        <td>{r.activeAsOn === NA ? NA : formatDDMMYYYY(r.activeAsOn)}</td>
-                        <td>{fmt(r.activationPrice)}</td>
-                        {showStopLoss && (
-                          <>
-                            <td>{fmt(r.stopLoss)}</td>
-                            <td className="return-neg">{risk === null ? NA : `${risk.toFixed(2)}%`}</td>
-                          </>
-                        )}
-                        {showHighestHigh && colHighPrice && <td>{fmt(r.highestHigh)}</td>}
-                        {showHighestHigh && colHighReturn && (
-                          <td
-                            className={
-                              Number.isNaN(r.percentReturn)
-                                ? undefined
-                                : r.percentReturn >= 0
-                                ? "return-pos"
-                                : "return-neg"
-                            }
-                          >
-                            {fmtPercent(r.percentReturn)}
-                          </td>
-                        )}
-                        {showLowestLow && colLowPrice && <td>{fmt(r.lowestLowPostEntry)}</td>}
-                        {showLowestLow && colLowRetraced && (
-                          <td className={retr === null ? undefined : retr === "YES" ? "return-pos" : "return-neg"}>
-                            {retr ?? NA}
-                          </td>
-                        )}
-                        {colCurrentClose && <td>{fmt(r.currentClose)}</td>}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                          {fmtPercent(r.percentReturn)}
+                        </td>
+                      )}
+                      {showLowestLow && colLowPrice && <td>{fmt(r.lowestLowPostEntry)}</td>}
+                      {showLowestLow && colLowRetraced && (
+                        <td className={retr === null ? undefined : retr === "YES" ? "return-pos" : "return-neg"}>
+                          {retr ?? NA}
+                        </td>
+                      )}
+                      {colCurrentClose && <td>{fmt(r.currentClose)}</td>}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        );
-      })()}
+        </div>
+      )}
 
-      {!loading && lastScanned && rows.length === 0 && (
+      {!loading && hasScanned && rows.length === 0 && (
         <p className="muted">No stocks currently active for this list.</p>
       )}
-    </main>
+    </section>
   );
 }
