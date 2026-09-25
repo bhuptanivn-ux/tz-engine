@@ -1298,6 +1298,138 @@ is documented as its own separate theory in `PRIME_TREND_RULEBOOK.md`,
 not as a section of this file. It depends on TZ BUY as a prerequisite,
 but is tracked independently going forward.
 
+## Three real bugs found against INDIA NIPPON ELECTRICALS (INDNIPPON.NS), all confirmed and fixed
+
+Found via the user's own manual trace of real weekly data, cross-checked
+against the engine's own generated output. All three are base-engine bugs
+(`tz_engine_wtf.py`/`lib/tzEngineWtf.ts`), not PRIME TREND bugs — a
+reminder that a PRIME TREND-level anomaly can have its true root cause
+one layer down, in the WTF engine itself.
+
+### Bug 1: a branch's own post-RED1 quiet-climb check compared against a frozen, one-time snapshot instead of its own live reference
+
+Five separate tiers — TZ GREEN's own top-level ref_high, TZ BUY's own
+(post-RED1), a BAR lineage's own (post-RED1), REAR's own (post-RED1), and
+REAR RE-ENTER's own (post-RED1) — share an identical quiet-climb
+mechanic: once RED1 has fired once, a candle that clears the reference
+without fully confirming (low doesn't hold, OR the clear is under
+THRESH, OR the close doesn't confirm) still counts as a quiet climb. The
+"close doesn't confirm" leg of that check was copy-pasted five times as
+`cur.c < X.ref_high_at_red` / `X.ref_high_at_red1` — a **frozen snapshot
+taken the moment RED1 first fired**, not the tier's own **current** live
+reference. The bug is invisible for a branch that has never climbed
+since its own RED1 (frozen snapshot == current reference, so the buggy
+comparison happens to give the same answer as the correct one) — which
+is exactly why it went undetected everywhere else: it only surfaces once
+a branch has climbed one or more times since RED1, at which point the
+frozen snapshot is stale and sits far below the live reference, making
+the "close confirms" check compare `cur.c` against the wrong, decades-old
+number.
+
+Real trace, INDNIPPON.NS, branches C and D: on 2023-12-04, the SAME
+candle (High 575.00, Close 536.55) correctly raised D's own reference to
+575.00 (`TZ GREEN HH(D)`) but silently failed to raise C's identical
+547.50 reference the same way — because D's own RED1-time snapshot
+happened to equal its then-current reference (D hadn't climbed since its
+own RED1), while C's snapshot (509.45) was stale relative to its current
+547.50. The next week, C's own 572.00 High wrongly cleared the
+stale 547.50 and confirmed `TZ BUY(C)` — a full month and a materially
+different price early. User's framing, confirmed directly: "[C's]
+reference high... should have had [climbed]." Fixed by comparing against
+the tier's own live reference (`pc.ref_high` / `buy.ref_high` /
+`lin.ref_high` / `rear.ref_high` / `rre.ref_high`) in all five spots,
+in both engines. A defensive `max(ref_high, ref_high_at_red)` already
+existed at TZ BUY's own formation check specifically (masking the bug
+there alone, never fixing the underlying `ref_high` value itself, which
+every OTHER reader of that field still saw stale) — left in place as
+harmless now that the root value is correct.
+
+No regression: ICICIBANK.NS's historical PRIME TREND output is unchanged
+by this fix alone (byte-for-byte identical, 22 rows) — it never hit the
+specific "climbed since RED1" pattern this bug required.
+
+### Bug 2: a dormant (superseded) branch could still independently spawn a brand-new BAR lineage
+
+`_bar_entry_shape`/`barEntryShape` — the confirming condition for a fresh
+BAR formation — checks only the candle's own shape (`cur.h > prev.h` by
+the threshold, low holding, close confirming) with **no branch-specific
+reference at all**. So any branch with `bar_pending` already armed
+(RED2 fired at some earlier point) fires a brand-new BAR lineage on
+literally the same real breakout candle as every other similarly-armed
+branch — including a branch that has since gone **dormant** (superseded
+by a newer sibling reaching its own later milestone). A dormant branch's
+own RED1/RED2 progression is invisible in the normal event trace
+(neither a milestone nor an SL/LL type), so this had been happening
+silently.
+
+Real trace, INDNIPPON.NS: branch B went dormant when branch C reached its
+own `TZ BUY 2` milestone (2024-01-08). B's own `bar_lineages` were empty
+at that point and never shown forming — yet B silently formed `BAR(B.1)`,
+`BAR(B.2)`, `BAR(B.3)` on the **exact same three candles** as C's own
+`BAR(C.1)`/`(C.2)`/`(C.3)`, each with identical reference values (since a
+freshly-formed lineage's own ref_high/ref_low is just that candle's own
+High/Low — the same real number for every branch it fires for). Each of
+B's own milestone formations even attempted to collaterally-terminate C
+per the leadership rules, was correctly exempted (C's buy was already
+live), and that exemption is *also* what suppressed B's own formation
+event from ever being visible — until B's identical, silently-tracked
+lineages later failed at the *exact same candles* as C's own, surfacing
+as `BAR SL(B.3)`/`BAR SL(B.2)`/`BAR SL2(B.2)` right alongside C's own
+real `BAR SL(C.3)`/`(C.2)`/`SL2(C.2)`. User's framing, confirmed
+directly: "Since B lineage was dormant, its BAR were not supposed to be
+there." Fixed by refusing fresh BAR formation for a dormant branch at
+both of its two independent trigger points (`_check_bar_pending`'s own
+entry-shape confirmation, and the second, RED1/RED2-free trigger inside
+`_eval_bar_lineages_progress`) — an already-existing lineage's own HH/
+LL/SL/SL2 tracking is untouched; only *new* lineage formation is blocked.
+
+Impact was not confined to INDNIPPON.NS: re-running the ICICIBANK.NS
+PRIME TREND regression after this fix changed the previously-"verified"
+22-row baseline to 23 rows — branch F, which the pre-fix engine had
+wrongly let terminate and restart under a fresh letter G (2022-07-25),
+now correctly continues as F itself. The 22-row baseline was itself
+downstream of this same bug; it was never a clean baseline to begin with.
+
+### Bug 3: an older BAR lineage racing in parallel never got its own Low updated, so its SL fired against a stale reference
+
+A BAR lineage's own SL check (`cur.l < lin.ref_low` etc.) runs for
+**every** pre-SL lineage in `buy.bar_lineages`, not just the newest —
+correctly, since an older lineage keeps racing in parallel behind a newer
+one until the newest one's own BAR 2 confirms. But the quiet
+"Lower Low" update that's supposed to keep `lin.ref_low` current (a weak
+breach with a strong close, mirroring TZ GREEN's own analogous rule) is
+computed inside `_eval_bar_lineage_hh`/`evalBarLineageHh` — and that
+function is only ever called once per candle, for the single **newest**
+lineage. An older, still-pre-SL lineage's own `ref_low` was therefore
+frozen the moment a newer lineage formed, even though its own SL
+condition kept being checked against that same frozen value indefinitely.
+
+Real trace, INDNIPPON.NS: lineage C.2 (older, still pre-SL, racing behind
+the newer C.3) had `ref_low` frozen at 595.30. The week of 27/01/2025
+printed a real Low of 591.20 with a strong Close of 631.85 — exactly a
+quiet Lower Low, which should have dragged `ref_low` down to 591.20 (and
+did, at the equivalent point in TZ GREEN's own tracking, which has no
+such newest-only restriction). It didn't. Two weeks later, a Close of
+591.80 — genuinely *above* the correct 591.20 — wrongly triggered
+`BAR SL(C.2)` because it was still being checked against the stale
+595.30. User's framing, confirmed directly: "How is BAR SL possible[?]
+Close is 591.80 > 591.20." Fixed by adding a dedicated, LL-only check
+(touching only `ref_low`, deliberately not reusing the HH-tracking
+value/pool update, which stays intentionally restricted to the newest
+lineage) that now runs for every OTHER pre-SL lineage each candle.
+Confirmed after the fix: `BAR LL(C.2)` now correctly fires on 27/01/2025
+(591.20) and again on 10/02/2025 (573.40, another genuine quiet LL) —
+`BAR SL(C.2)` now correctly fires two weeks later than before, on
+24/02/2025, against the correct, up-to-date 573.40 reference.
+
+All three fixes verified together against INDNIPPON.NS: every phantom
+`(B.x)` event is gone, and branch C's own real history now continues
+naturally past 2025 into REAR/REAR RE-ENTER territory that the phantom
+interference had previously obscured. ICICIBANK.NS's PRIME TREND output
+after all three fixes: 23 rows (see Bug 2 above for why the count moved
+from the old 22-row baseline). Not yet re-verified against ADANIENT.NS
+(blocked by this session's standing restriction).
+
 ## Open items
 
 - The RED1/RED2-without-BAR-2 rule reversal (above) has since been

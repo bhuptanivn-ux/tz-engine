@@ -457,7 +457,7 @@ export class TZEngine {
       }
     } else {
       const diff = cur.h - pc.refHigh;
-      if (cur.h > pc.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < pc.refHighAtRed)) {
+      if (cur.h > pc.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < pc.refHigh)) {
         pc.refHigh = cur.h;
         hh = true;
       }
@@ -533,7 +533,7 @@ export class TZEngine {
             }
           } else {
             const diff = cur.h - buy.refHigh;
-            if (cur.h > buy.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < buy.refHighAtRed1)) {
+            if (cur.h > buy.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < buy.refHigh)) {
               buy.refHigh = cur.h;
               hh = true;
             }
@@ -604,6 +604,25 @@ export class TZEngine {
         ev.push(...linHhEv);
       } else {
         ev.push(...linHhEv.filter((e) => e.startsWith("BAR LL(")));
+      }
+    }
+
+    // Real-data bug (INDNIPPON.NS): an older lineage racing in parallel
+    // behind the newest one (still pre-SL, not yet dead) never got its own
+    // refLow updated at all, since evalBarLineageHh (where "BAR LL(" is
+    // computed) was only ever called for newestLin above. Its own SL check
+    // further down still runs for every pre-SL lineage, so that SL kept
+    // firing against a stale, un-lowered refLow. HH is deliberately NOT
+    // extended to older lineages -- that suppression is the documented,
+    // intentional rule one tier up; only the LL side needed this fix.
+    for (const lin of buy.barLineages) {
+      if (lin === newestLin || lin.sl !== null) continue;
+      if (cur.l < lin.refLow) {
+        const gap = lin.refLow - cur.l;
+        if ((gap >= THRESH - EPS && cur.c > lin.refLow + EPS) || gap < THRESH - EPS) {
+          lin.refLow = cur.l;
+          ev.push(`BAR LL(${lin.label})`);
+        }
       }
     }
 
@@ -915,6 +934,11 @@ export class TZEngine {
 
   // -----------------------------------------------------------------
   private checkBarPending(pc: ParentCycle, buy: Buy, prev: Day, cur: Day, supersedeRear = true): string[] {
+    // A dormant branch has already been superseded by a newer sibling and
+    // must not independently spawn a brand-new BAR lineage -- see the
+    // matching comment in tz_engine_wtf.py's own checkBarPending for the
+    // full real-data trace (INDNIPPON.NS) that exposed this.
+    if (pc.dormant) return [];
     if (cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
       const subLabel = this.nextBarLabel(buy, branchLabel(pc.id));
       buy.barLineages.push(new BarLineage(subLabel, cur.h, cur.l));
@@ -937,7 +961,7 @@ export class TZEngine {
       }
     } else {
       const diff = cur.h - lin.refHigh;
-      if (cur.h > lin.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < lin.refHighAtRed1)) {
+      if (cur.h > lin.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < lin.refHigh)) {
         lin.refHigh = cur.h;
         buy.barHighPool = Math.max(buy.barHighPool, lin.refHigh);
         ev.push(`BAR HH(${lin.label})`);
@@ -1315,7 +1339,7 @@ export class TZEngine {
     const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
     const newestIsDead = newest === null || (newest.sl !== null && !newest.sl.sl2);
     const freshBarReady = newestIsDead || buy.barPending;
-    if (!reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
+    if (!pc.dormant && !reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
       const surviving: BarLineage[] = [];
       const dropped: BarLineage[] = [];
       for (const l of buy.barLineages) {
@@ -1353,7 +1377,7 @@ export class TZEngine {
       }
     } else {
       const diff = cur.h - rear.refHigh;
-      if (cur.h > rear.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rear.refHighAtRed1)) {
+      if (cur.h > rear.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rear.refHigh)) {
         rear.refHigh = cur.h;
         ev.push(`REAR HH(${label})`);
       }
@@ -1427,7 +1451,7 @@ export class TZEngine {
       }
     } else {
       const diff = cur.h - rre.refHigh;
-      if (cur.h > rre.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rre.refHighAtRed1)) {
+      if (cur.h > rre.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rre.refHigh)) {
         rre.refHigh = cur.h;
         ev.push(`REAR RE-ENTER HH(${label})`);
       }
