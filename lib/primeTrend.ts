@@ -429,8 +429,11 @@ function simulateDtfAll(
         s1 = new Stage(cur.h, cur.l);
         s1Since = cur.date;
         s1ActivationPrice = cur.h;
-        hh1 = 0;
-        hh1Date = null;
+        // Highest High includes the entry candle's own High, not just
+        // days after it -- see the Highest High comment on
+        // PrimeTrendLiveStatus above.
+        hh1 = cur.h;
+        hh1Date = cur.date;
       }
     } else if (s1.active) {
       if (slShape(cur, s1.refLow)) {
@@ -450,8 +453,8 @@ function simulateDtfAll(
         s1 = new Stage(cur.h, cur.l);
         s1Since = cur.date;
         s1ActivationPrice = cur.h;
-        hh1 = 0;
-        hh1Date = null;
+        hh1 = cur.h;
+        hh1Date = cur.date;
       } else if (cur.h > frozenRef) {
         s1.frozenRef = cur.h;
       }
@@ -465,8 +468,13 @@ function simulateDtfAll(
           const entryPrice = ref2 + THRESH;
           s2 = new Stage(cur.h, cur.l);
           curEntry = [cur.date, entryPrice];
-          hh = 0;
-          hhDate = null;
+          // Entry price is a computed ladder level (ref + THRESH), not
+          // necessarily this candle's own High -- e.g. price can break out
+          // and run well past entry intraday. Seed Highest High with that
+          // real High rather than resetting to 0 and only picking up from
+          // the next day, so a strong entry-day breakout isn't discarded.
+          hh = cur.h;
+          hhDate = cur.date;
         } else if (cur.h > ref2) {
           s1.entryRatchet = cur.h;
         }
@@ -485,8 +493,8 @@ function simulateDtfAll(
           const entryPrice = frozenRef2 + THRESH;
           s2 = new Stage(cur.h, cur.l);
           curEntry = [cur.date, entryPrice];
-          hh = 0;
-          hhDate = null;
+          hh = cur.h;
+          hhDate = cur.date;
         } else if (cur.h > frozenRef2) {
           s2.frozenRef = cur.h;
         }

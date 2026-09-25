@@ -51,7 +51,7 @@ function blobUrlFor(pathname: string): string {
 // version bump, any segment already scanned (and cached) earlier the same
 // day the fix deployed would have kept serving the pre-fix result to
 // every subsequent visitor until midnight UTC.
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 
 function cachePathFor(segment: string, dateISO: string, batchKey: string): string {
   return `screener-cache/${CACHE_VERSION}/${segment}/${dateISO}/${batchKey}.json`;

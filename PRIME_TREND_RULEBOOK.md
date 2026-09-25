@@ -206,19 +206,31 @@ understand that 1st sl Triggered in DTF followed by wtf."
 
 ## Highest High
 
-Maximum daily High strictly *after* the (final) entry date, up to and
-including the exit date — never the entry candle's own High.
+Maximum daily High from the (final) entry date onward, **including** the
+entry candle's own High, up to and including the exit date.
+
+Corrected from an earlier version of this rule ("never the entry
+candle's own High"): entry price is a computed ladder level (Stage 1's
+own breakout High, or for Stage 2, ref + THRESH), not necessarily equal
+to that candle's actual High — price can break out and run well past
+entry intraday, and that real high was being discarded by starting the
+Highest-High tracker only from the following day. Concrete case that
+surfaced this: GNA Axles Ltd, Stage 2 activated 2026-09-24 @ 601.85,
+but that day's actual High was 648 — Highest High showed as 601.85
+(silently falling back to Activation Price, since the tracker hadn't
+picked up a value yet) instead of 648.
 
 ## Worked results, ADANIENT.NS (all 6 WTF TZ BUY 2 dates checked)
 
 **Stale pending re-verification**: the table below was computed under the
 pre-correction implementation (last-cycle-only, TZ BUY 2 anchor only, no
-combined DTF/WTF exit label). It has not yet been recomputed against
-ADANIENT.NS under the corrected implementation (multi-cycle rows, all
-three anchor families, combined exit labels) — held pending, since
-ADANIENT.NS testing is under a standing restriction this session. Do not
-treat the table below as current until it's re-verified and this note is
-removed.
+combined DTF/WTF exit label, AND the old entry-day-excluded Highest High
+rule above). It has not yet been recomputed against ADANIENT.NS under the
+corrected implementation (multi-cycle rows, all three anchor families,
+combined exit labels, entry-day-included Highest High) — held pending,
+since ADANIENT.NS testing is under a standing restriction this session.
+Do not treat the table below as current until it's re-verified and this
+note is removed.
 
 | WTF TZ BUY 2 | PRIME TREND Entry | Exit | Exit Price | Highest High |
 |---|---|---|---|---|

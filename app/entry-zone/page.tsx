@@ -434,8 +434,9 @@ export default function EntryZone() {
             low post entry is the lowest daily low made strictly after the entry day and strictly
             before today; it shows NA until at least one full day has closed since entry. Retraced
             is whether that lowest low has traded back below Activation price. Highest high is
-            DTF&apos;s own running maximum daily high since that same (re)formation — not a weekly
-            figure. % Return is the change from Activation price to Highest high.
+            DTF&apos;s own running maximum daily high from that same (re)formation day onward
+            (including that day&apos;s own high) — not a weekly figure. % Return is the change from
+            Activation price to Highest high.
             {errors.length > 0 && ` ${errors.length} stock(s) failed to fetch and were skipped.`}
           </p>
         )}
