@@ -131,13 +131,16 @@ export default function EntryZone() {
   const theadRow1Ref = useRef<HTMLTableRowElement>(null);
   const [row1Height, setRow1Height] = useState(0);
 
+  // Switching tabs is a pure view change -- one scan already computes BOTH
+  // tzBuy and tzBuyEntry together (every batch response carries both, see
+  // runScan below), so there is no need to re-scan, and no reason to
+  // throw away either tab's results just because the other tab was
+  // clicked. Only the per-tab view filters reset (a Year/search/sort that
+  // made sense for one tab's results may not for the other's); the scan
+  // itself (segment, tzBuy, tzBuyEntry, lastScanned) is left completely
+  // alone.
   function onChoiceChange(next: ListChoice) {
     setChoice(next);
-    setSegment("");
-    setTzBuy([]);
-    setTzBuyEntry([]);
-    setLastScanned("");
-    setError("");
     clearScripSearch();
     setYearFilter("");
     setReturnSort(null);
