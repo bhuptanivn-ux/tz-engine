@@ -159,7 +159,7 @@ def _run_wtf_trace(wtf_days: list[Day]):
     `pid` at the point of use, since it's a pure function of `pid` for as
     long as that specific branch is alive."""
     engine = TZEngine()
-    trace = []  # (Day, events, {pid: letter alive AFTER}, {family: {pid: pre-candle ref_low}}, {family: {pid currently holding that tier}})
+    trace = []  # (Day, events, {family: {pid: pre-candle ref_low}}, {lineage label: pre-candle BAR SL ref_low}, {pid: letter alive AFTER}, {family: {pid currently holding that tier}})
     for i in range(1, len(wtf_days)):
         prev, cur = wtf_days[i - 1], wtf_days[i]
         pre_ref_low = {family: {} for family in FAMILIES}
@@ -168,13 +168,27 @@ def _run_wtf_trace(wtf_days: list[Day]):
                 tier = _tier_object(pc, family)
                 if tier is not None:
                     pre_ref_low[family][pid] = tier.ref_low
+        # BAR SL2's own exit price needs that SPECIFIC BAR lineage's own SL
+        # reference low, as it stood before this candle -- not any of the
+        # per-family snapshots above (which only ever track the single
+        # top-level "2" tier), since a branch can hold several BAR lineages
+        # racing in parallel at once, each with its own separate SL object.
+        # Keyed by the lineage's own full label ("B.2"), unique per pid for
+        # that pid's whole life.
+        pre_bar_sl_ref_low = {}
+        for pid, pc in engine.branches.items():
+            if pc.buy is None:
+                continue
+            for lin in pc.buy.bar_lineages:
+                if lin.sl is not None:
+                    pre_bar_sl_ref_low[lin.label] = lin.sl.ref_low
         evs = engine.process(prev, cur)
         alive_after = {pid: branch_label(pid) for pid in engine.branches}
         has_tier_after = {
             family: {pid for pid, pc in engine.branches.items() if _tier_object(pc, family) is not None}
             for family in FAMILIES
         }
-        trace.append((cur, evs, pre_ref_low, alive_after, has_tier_after))
+        trace.append((cur, evs, pre_ref_low, pre_bar_sl_ref_low, alive_after, has_tier_after))
     return trace
 
 
@@ -192,7 +206,7 @@ class _WtfInstance:
     formation_date: str
     end_date: str                    # this instance's own failure date, or the last WTF date if it never fails
     end_event: Optional[str]         # None if it never fails (or fails with no explicit SL-type event) within the data
-    end_price: Optional[float]       # BAR SL2 -> that week's close; own "2" SL / parent-tier SL -> this tier's own ref_low
+    end_price: Optional[float]       # BAR SL2 -> that BAR lineage's own SL reference low; own "2" SL / parent-tier SL -> this tier's own ref_low
 
 
 def _wtf_instances_for_family(wtf_trace, family: str, last_dtf_date: Optional[str]) -> list[_WtfInstance]:
@@ -212,7 +226,7 @@ def _wtf_instances_for_family(wtf_trace, family: str, last_dtf_date: Optional[st
     # would only trigger on day 2-5 of the current week was never even
     # evaluated. (Confirmed live, ACMESOLAR.NS/INDORAMA.NS, 2026-09-24.)
     last_date = last_dtf_date if last_dtf_date is not None else (wtf_trace[-1][0].date if wtf_trace else None)
-    for i, (day, evs, pre_ref_low, alive_after, has_tier_after) in enumerate(wtf_trace):
+    for i, (day, evs, pre_ref_low, pre_bar_sl_ref_low, alive_after, has_tier_after) in enumerate(wtf_trace):
         for e in evs:
             if not e.startswith(spec["form"]):
                 continue
@@ -224,7 +238,7 @@ def _wtf_instances_for_family(wtf_trace, family: str, last_dtf_date: Optional[st
             if pid is None:
                 continue  # shouldn't happen, but don't fabricate an instance if it does
             end_date, end_event, end_price = last_date, None, None
-            for day2, evs2, pre2, alive2, has2 in wtf_trace[i + 1:]:
+            for day2, evs2, pre2, pre_bar_sl2, alive2, has2 in wtf_trace[i + 1:]:
                 hit = None
                 for e2 in evs2:
                     for exit_prefix in spec["exits"]:
@@ -236,7 +250,8 @@ def _wtf_instances_for_family(wtf_trace, family: str, last_dtf_date: Optional[st
                         break
                     if e2.startswith(f"{spec['bar_prefix']}{letter}."):
                         hit = e2
-                        end_price = day2.c
+                        lin_label = e2[len(spec["bar_prefix"]):-1]
+                        end_price = pre_bar_sl2.get(lin_label, day2.c)
                         break
                 if hit is not None:
                     end_date, end_event = day2.date, hit

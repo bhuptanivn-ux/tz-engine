@@ -130,6 +130,7 @@ interface WtfTraceEntry {
   day: Day;
   events: string[];
   preRefLow: Record<PrimeTrendFamily, Map<number, number>>;
+  preBarSlRefLow: Map<string, number>;
   aliveAfter: Map<number, string>;
   hasTierAfter: Record<PrimeTrendFamily, Set<number>>;
 }
@@ -152,6 +153,22 @@ function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
       "REAR 2": new Map(),
       "REAR RE-ENTER 2": new Map(),
     };
+    // BAR SL2's own exit price needs that SPECIFIC BAR lineage's own SL
+    // reference low, as it stood before this candle -- not any of the
+    // three per-family snapshots above (which only ever track the single
+    // top-level "2" tier), since a branch can hold several BAR lineages
+    // racing in parallel at once, each with its own separate SL object.
+    // Keyed by the lineage's own full label ("B.2"), which is already
+    // unique per pid for that pid's whole life (see the branch-letter-
+    // recycling note above -- the numeric suffix is never reused within
+    // one buy's own bar_sub_counter).
+    const preBarSlRefLow = new Map<string, number>();
+    for (const [, pc] of engine.branches) {
+      if (pc.buy === null) continue;
+      for (const lin of pc.buy.barLineages) {
+        if (lin.sl !== null) preBarSlRefLow.set(lin.label, lin.sl.refLow);
+      }
+    }
     for (const [pid, pc] of engine.branches) {
       for (const family of FAMILY_NAMES) {
         const tier = tierObject(pc, family);
@@ -171,7 +188,7 @@ function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
         if (tierObject(pc, family) !== null) hasTierAfter[family].add(pid);
       }
     }
-    trace.push({ day: cur, events, preRefLow, aliveAfter, hasTierAfter });
+    trace.push({ day: cur, events, preRefLow, preBarSlRefLow, aliveAfter, hasTierAfter });
   }
   return trace;
 }
@@ -188,7 +205,7 @@ interface WtfInstance {
   formationDate: string;
   endDate: string; // this instance's own failure date, or the last WTF date if it never fails
   endEvent: string | null; // null if it never fails (or fails with no explicit SL-type event) within the data
-  endPrice: number | null; // BAR SL2 -> that week's close; own "2" SL / parent-tier SL -> this tier's own ref_low
+  endPrice: number | null; // BAR SL2 -> that BAR lineage's own SL reference low; own "2" SL / parent-tier SL -> this tier's own ref_low
 }
 
 // Safety valve, not a real-world expectation: a normal stock's history
@@ -249,7 +266,14 @@ function wtfInstancesForFamily(
       let endPrice: number | null = null;
 
       for (let j = i + 1; j < wtfTrace.length; j++) {
-        const { day: day2, events: evs2, preRefLow: pre2, aliveAfter: alive2, hasTierAfter: has2 } = wtfTrace[j];
+        const {
+          day: day2,
+          events: evs2,
+          preRefLow: pre2,
+          preBarSlRefLow: preBarSl2,
+          aliveAfter: alive2,
+          hasTierAfter: has2,
+        } = wtfTrace[j];
         let hit: string | null = null;
         for (const e2 of evs2) {
           for (const exitPrefix of spec.exits) {
@@ -262,7 +286,8 @@ function wtfInstancesForFamily(
           if (hit !== null) break;
           if (e2.startsWith(`${spec.barPrefix}${letter}.`)) {
             hit = e2;
-            endPrice = day2.c;
+            const linLabel = e2.slice(spec.barPrefix.length, -1);
+            endPrice = preBarSl2.get(linLabel) ?? day2.c;
             break;
           }
         }

@@ -473,6 +473,43 @@ identical (22 rows), and AEGISVOPAK.NS/CORDSCABLE.NS's live status is
 unchanged from before this fix -- none of their real data happened to hit
 a climb smaller than 0.01 in these three spots.
 
+## Fix: BAR SL2's own exit price used the week's Close instead of BAR SL's own reference low
+
+Found by the user questioning the "Exit" section directly: why does
+`BAR SL2` report the WTF week's own Close as the exit price, when the
+other two exit types (the tier's own "2" SL, or its parent tier's SL)
+report "that tier's own reference low" instead — especially since BAR
+SL2's own trigger condition is the exact same shape (`close <= reference
+low`, a weak-close breach by `>= THRESH`) as those other two.
+
+There was no theoretical reason for the difference — it was an
+implementation gap. The code snapshots each branch's own reference
+**before** every candle so it can report "the reference as it stood
+going into the SL candle," but that snapshot only ever tracked **one**
+value per branch: the top-level "2" tier's own reference (`tz_buy2`/
+`rear2`/`rre2`). That's sufficient for the other two exit types, which
+correspond directly to that same snapshotted object. BAR SL2 is
+different: a branch can hold **several separate BAR lineages** racing in
+parallel at once, each with its own separate SL object and its own
+separate reference low -- and none of those were ever snapshotted, so
+the code fell back to the one number always on hand regardless of which
+lineage failed: the candle's own Close.
+
+Fixed by adding a second snapshot, keyed by each BAR lineage's own full
+label (e.g. `"B.2"`, unique for that lineage's whole life), capturing
+that lineage's own SL's reference low before each candle -- then using
+it (falling back to the candle's Close only if the lookup is somehow
+empty) as BAR SL2's own exit price, in both engines.
+
+Confirmed against ICICIBANK.NS: where the SL2-confirming candle's Close
+happened to land exactly on the reference low, the reported price is
+unchanged (139.89 stayed 139.89, 187.65/287.64/773.10 stayed the same) --
+those are the boundary case where the two formulas agree. Where the two
+genuinely differed, the number changed to the correct one: instance
+C.5's own SL2 (2008-06-02) now reports 141.49 (the true reference low) in
+place of the old 139.89 (that candle's own Close, which had traded
+lower than the reference low the SL was actually measured against).
+
 ## Open items
 
 - Implemented in Python (`prime_trend.py`). The multi-cycle-row fix, the
