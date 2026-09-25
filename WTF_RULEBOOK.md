@@ -227,6 +227,81 @@ through IDEA VODAFONE's real numbers; not yet verified against a full
 real dataset the way PRIME TREND was, and not yet implemented in either
 `tz_engine_wtf.py` or `lib/tzEngineWtf.ts`.
 
+### Two separate rules, evaluated at different moments -- worked examples
+
+A follow-up round of questioning (prompted by an apparent contradiction:
+"BAR 2 can only occur if there will be TBAR" read against a worked
+example that showed BAR 2 forming with no TBAR anywhere in the chain)
+pinned down that there are **two separate rules here, answering two
+different questions at two different moments** -- easy to conflate, so
+spelled out explicitly:
+
+- **Rule A -- naming, re-evaluated fresh every time a Stage 2 confirms:**
+  is a Stage-2-level tier (TBAR, or an earlier still-active BAR ENTRY/BAR
+  2) active **right now, at this exact moment**? Yes → **BAR 2**. No →
+  **BAR ENTRY**. This is a live, moment-by-moment check -- NOT a "has
+  TBAR ever existed anywhere in this lineage's history" flag. A lineage
+  that had TAR/TBAR earlier can still produce a BAR ENTRY later, if TBAR
+  happens to be down (SL'd, not yet reactivated) at the exact moment this
+  new BAR 1's own Stage 2 confirms.
+- **Rule B -- "the door closes permanently," a one-time lineage-level
+  flag:** has a BAR1→(BAR ENTRY or BAR 2) escalation **ever fully
+  completed** for this lineage, at any point in its history? Once yes,
+  that door never reopens for the rest of the lineage's life -- no fresh,
+  from-scratch BAR 1 can ever form again, no matter how far everything
+  later collapses (even all the way back to TAR itself failing); only
+  reactivation is possible from then on.
+
+Rule B decides whether a fresh BAR 1 is even allowed to exist at all;
+Rule A decides what to call its Stage 2 once it does form. Six worked
+examples, confirmed by the user against these two rules:
+
+1. `WTF TZ BUY 2 → TAR → TBAR → RED1 → RED2 → BAR1 → BAR2 → RED1 → RED2
+   → BAR1 → BAR2` -- TBAR hosts a BAR1→BAR2 cascade, it fails, TBAR
+   self-reactivates in place (no REAR), a fresh RED1-RED2-BAR1 nests
+   under it again -- still named BAR 2 (never reverts to BAR ENTRY),
+   since the door already closed after the first BAR 2 (Rule B), and
+   TBAR is active again by the time this second Stage 2 confirms
+   (Rule A).
+2. `WTF TZ BUY 2 → RED1 → RED2 → BAR1 → BAR ENTRY → RED1 → RED2 → BAR1
+   → BAR2` -- pure independent track, no TAR/TBAR ever. BAR1→BAR ENTRY
+   forms first (nothing active yet, Rule A → BAR ENTRY; this also
+   triggers Rule B, closing the door for this lineage from here on). A
+   nested cascade under it is BAR 2 (BAR ENTRY is active, Rule A).
+3. `WTF TZ BUY 2 → TAR → TBAR → RED1 → RED2 + TBAR SL → BAR1 → BAR ENTRY
+   + TBAR (reactivation)` **or** `... → BAR1 → BAR ENTRY (before TBAR
+   reactivation)` -- RED1-RED2 pulls back against TBAR and TBAR SLs
+   *before any BAR1 ever formed* -- no BAR1→StageX escalation has ever
+   completed for this lineage, so Rule B was never triggered and a fresh
+   BAR1 is still allowed. At the moment this fresh BAR1's own Stage 2
+   confirms, TBAR is down (Rule A) -- correctly named BAR ENTRY, whether
+   or not TBAR has reactivated yet on its own, fully independent track.
+4. `WTF TZ BUY 2 → TAR → TBAR → RED1 → RED2 → TAR SL → BAR → BAR ENTRY`
+   -- same shape as #3, but the decisive TAR SL fires instead (wiping
+   TBAR and everything under it in one shot). Again, no BAR1 ever formed
+   before this failure, so Rule B doesn't block a fresh BAR1, and it's
+   named BAR ENTRY (Rule A: nothing active at that moment).
+5. `WTF TZ BUY 2 → TAR → TBAR → RED1 → RED2 → BAR1 → BAR2 → RED1 → RED2
+   → BAR1 → BAR2 → RED1 + BAR SL → BAR SL2 → TAR SL → TAR (above the
+   BAR2/TBAR reference, whichever is higher)` -- two full BAR1→BAR2
+   cascades complete under TAR-TBAR, then on a third attempt everything
+   collapses all the way down to TAR itself failing. Even from total
+   collapse, BAR1-BAR ENTRY cannot occur -- the door closed permanently
+   after the very first BAR 2 (Rule B), so the only valid recovery is TAR
+   reactivating, above whichever of BAR2's/TBAR's own references is
+   higher (the universal reactivation rule).
+6. `WTF TZ BUY 2 → RED1 → RED2 → BAR1 → BAR ENTRY → RED1 → RED2 → BAR1 →
+   BAR2 → BAR1 SL → BAR ENTRY SL + BAR SL2 → BAR1 SL → BAR1 (not REAR,
+   the cycle reactivates) → BAR ENTRY` -- independent track, door closes
+   at the very first BAR1→BAR ENTRY (Rule B). A nested BAR1→BAR2 forms
+   under it. The nested BAR1 SLs; BAR ENTRY's own SL fires together with
+   the nested BAR SL2 (BAR ENTRY failing on its own reference, not merely
+   because its nested child failed); then the original, outer BAR1 also
+   SLs, wiping everything. Since the door already closed, the only valid
+   recovery is BAR1 reactivating in place (explicitly NOT a REAR-style
+   escalation, even from a full collapse-to-zero), followed by BAR ENTRY
+   reforming on top of it.
+
 **Status:** verified against real weekly OHLC (KALYANKJIL.NS, 2021-03-28
 through 2026-09-15) — reproduces that dataset's own Event column exactly.
 That run also exposed a real bug (engine going silent for 84 weeks after a
