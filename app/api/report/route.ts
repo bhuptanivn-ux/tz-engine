@@ -3,6 +3,7 @@ import { fetchHistory } from "@/lib/marketData";
 import { SCREENER_UNIVERSE } from "@/lib/screenerUniverse";
 import { OTHER_MARKETS } from "@/lib/otherMarkets";
 import { TZEngine, type Day, type HistoryRowLike } from "@/lib/tzEngineWtf";
+import { computePrimeTrend } from "@/lib/primeTrend";
 import { readReportCache, writeReportCache, type ReportMatch } from "@/lib/reportCache";
 
 // Same reasoning as /api/screener: a full-segment scan (NSE Equity is
@@ -13,11 +14,16 @@ export const maxDuration = 300;
 
 const ENGINE_HISTORY_FLOOR = "1900-01-01";
 
+// "PRIME TREND" isn't one of tzEngineWtf's own event tokens -- it's the
+// separate dual-timeframe DTF/WTF theory (lib/primeTrend.ts), so it isn't
+// keyed here; see the dedicated branch in the scan loop below instead.
 const EVENT_PREFIXES: Record<string, string> = {
   "TZ BUY 2": "TZ BUY 2(",
   BAR: "BAR(",
   "BAR 2": "BAR 2(",
 };
+
+const VALID_EVENTS = new Set([...Object.keys(EVENT_PREFIXES), "PRIME TREND"]);
 
 const TIMEFRAMES = new Set(["daily", "weekly", "monthly", "yearly"]);
 
@@ -153,10 +159,10 @@ export async function GET(req: NextRequest) {
   if (!instruments) {
     return NextResponse.json({ error: "Missing or unrecognized segment" }, { status: 400 });
   }
-  const eventPrefix = EVENT_PREFIXES[event];
-  if (!eventPrefix) {
+  if (!VALID_EVENTS.has(event)) {
     return NextResponse.json({ error: "Missing or unrecognized event" }, { status: 400 });
   }
+  const eventPrefix = EVENT_PREFIXES[event]; // undefined for PRIME TREND -- see the scan loop's dedicated branch
   if (!TIMEFRAMES.has(timeframe)) {
     return NextResponse.json({ error: "Missing or unrecognized time frame" }, { status: 400 });
   }
@@ -185,6 +191,26 @@ export async function GET(req: NextRequest) {
 
   await mapWithConcurrency(batchInstruments, 24, async (entry) => {
     try {
+      // PRIME TREND is a fixed dual-timeframe theory (WTF = weekly, DTF =
+      // daily, always -- see PRIME_TREND_RULEBOOK.md) rather than a single
+      // event token on a user-selected timeframe, so it runs its own engine
+      // (computePrimeTrend) regardless of the Time frame dropdown. Each
+      // returned row is one confirmed DTF TZ BUY ENTRY (Stage 2) occurrence
+      // -- exactly what "PRIME TREND happened here" means.
+      if (event === "PRIME TREND") {
+        const rows = await fetchHistory(entry.symbol, ENGINE_HISTORY_FLOOR, end, "1d");
+        const days = toDays(rows);
+        if (days.length < 2) return;
+        const wtfRows = resampleWeekly(days);
+        for (const r of computePrimeTrend(wtfRows, days)) {
+          if (r.entryDate.startsWith(year)) {
+            matches.push({ symbol: entry.symbol, name: entry.name, date: r.entryDate });
+          }
+        }
+        return;
+      }
+
+      if (!eventPrefix) return; // unreachable given VALID_EVENTS, but keeps TS happy
       const days = await seriesForTimeframe(entry.symbol, timeframe, end);
       if (days.length < 2) return;
       const eventsByDate = eventsFromDays(days);
