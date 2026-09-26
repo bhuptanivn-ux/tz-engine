@@ -813,7 +813,7 @@ export default function Home() {
             WTF_RULEBOOK.md). Still a technical-analysis heuristic, not investment advice. The
             first row never shows an event: each day is only evaluated against the one before it.
           </p>
-          <div className="table-wrap">
+          <div className="table-wrap table-wrap-fixed">
             <table className="ledger-table">
               <thead>
                 <tr>

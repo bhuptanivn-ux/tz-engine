@@ -420,6 +420,17 @@ th:first-child, td:first-child {
   border-radius: 8px;
 }
 
+/* Trading Zone's OHLC/Event table only: a FIXED height (not just a cap),
+   so filtering the Event column down to a handful of matches (or just
+   one) doesn't make the whole table -- and the card around it -- shrink
+   to hug the remaining rows. The table's own rows stay top-aligned inside
+   this box by default (plain block layout, no vertical centering), so a
+   short result just leaves blank space below it instead of resizing
+   anything; a longer one scrolls exactly as before. */
+.table-wrap-fixed {
+  height: 480px;
+}
+
 thead th {
   position: sticky;
   top: 0;
