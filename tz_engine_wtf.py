@@ -730,7 +730,7 @@ class TZEngine:
                 hh = True
         else:
             diff = cur.h - pc.ref_high
-            if cur.h > pc.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < pc.ref_high_at_red):
+            if cur.h > pc.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < pc.ref_high):
                 pc.ref_high = cur.h
                 hh = True
         if cur.l < pc.ref_low:
@@ -810,7 +810,7 @@ class TZEngine:
                             hh = True
                     else:
                         diff = cur.h - buy.ref_high
-                        if cur.h > buy.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < buy.ref_high_at_red1):
+                        if cur.h > buy.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < buy.ref_high):
                             buy.ref_high = cur.h
                             hh = True
             if cur.l < buy.ref_low:
@@ -960,6 +960,32 @@ class TZEngine:
                 ev += lin_hh_ev
             else:
                 ev += [e for e in lin_hh_ev if e.startswith("BAR LL(")]
+
+        # Real-data bug (INDNIPPON.NS): an OLDER lineage racing in parallel
+        # behind the newest one (still pre-SL, not yet dead) never got its
+        # own ref_low updated at all, because _eval_bar_lineage_hh -- which
+        # is where BAR LL(" is computed -- was only ever called for
+        # newest_lin above. Its own SL check a few lines below (in
+        # _eval_bar_lineages_progress) still runs for EVERY pre-SL lineage,
+        # so that SL kept firing against a stale, un-lowered ref_low long
+        # after the real price had already made a quiet, weak-close lower
+        # low that should have dragged it down first -- confirmed real
+        # trace: BAR SL(C.2) fired at Close 591.80 against a stale ref_low
+        # of 595.30, when the actual reference should already have been
+        # 591.20 (set the prior week, Low 591.2, Close 631.85 -- nowhere
+        # near a weak close). HH is deliberately NOT extended to older
+        # lineages here -- "an older, superseded lineage's own HH stops
+        # being recorded" is the documented, intentional rule one tier up;
+        # only the LL side (which every pre-SL lineage's own SL threshold
+        # depends on regardless of seniority) needed this fix.
+        for lin in buy.bar_lineages:
+            if lin is newest_lin or lin.sl is not None:
+                continue
+            if cur.l < lin.ref_low:
+                gap = lin.ref_low - cur.l
+                if (gap >= THRESH - EPS and cur.c > lin.ref_low + EPS) or gap < THRESH - EPS:
+                    lin.ref_low = cur.l
+                    ev.append(f"BAR LL({lin.label})")
 
         # BAR 2 variant: formation check + forever-ungoverned HH/LL/SL
         # tracking for EVERY lineage currently in buy.bar_lineages -- not
@@ -1316,6 +1342,24 @@ class TZEngine:
 
     # -----------------------------------------------------------------
     def _check_bar_pending(self, pc, buy, prev: Day, cur: Day, supersede_rear: bool = True):
+        # A dormant branch has already been superseded by a newer sibling
+        # and must not independently spawn a brand-new BAR lineage -- doing
+        # so lets it silently accumulate real state (which can even attempt
+        # to collaterally-terminate the very sibling that superseded it,
+        # per the milestone-achiever rule above, before being exempted and
+        # rendered invisible) that later resurfaces as a phantom BAR SL/
+        # BAR SL2 under the dormant branch's own letter (real-data bug,
+        # INDNIPPON.NS: a dormant branch B silently formed BAR(B.1)/(B.2)/
+        # (B.3) on the exact same candles as the active branch C's own
+        # BAR(C.1)/(C.2)/(C.3) -- since _bar_entry_shape checks only the
+        # candle's own shape, not any branch-specific reference, ANY branch
+        # with bar_pending=True fires on the same breakout candle. B's own
+        # SL/SL2 later fired right alongside C's, under B's own letter,
+        # even though "B lineage was dormant" and should never have formed
+        # a fresh BAR at all -- explicit user correction). Existing,
+        # already-formed lineages' own HH/LL/SL/SL2 tracking is untouched.
+        if pc.dormant:
+            return []
         if (cur.l >= prev.l and cur.h > prev.h and
                 (cur.h - prev.h) >= THRESH - EPS and cur.c >= prev.h):
             sub_label = self._next_bar_label(buy, branch_label(pc.id))
@@ -1346,7 +1390,7 @@ class TZEngine:
                 ev.append(f"BAR HH({lin.label})")
         else:
             diff = cur.h - lin.ref_high
-            if cur.h > lin.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < lin.ref_high_at_red1):
+            if cur.h > lin.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < lin.ref_high):
                 lin.ref_high = cur.h
                 buy.bar_high_pool = max(buy.bar_high_pool, lin.ref_high)
                 ev.append(f"BAR HH({lin.label})")
@@ -1830,7 +1874,8 @@ class TZEngine:
         newest = buy.bar_lineages[-1] if buy.bar_lineages else None
         newest_is_dead = newest is None or (newest.sl is not None and not newest.sl.sl2)
         fresh_bar_ready = newest_is_dead or buy.bar_pending
-        if not reactivated_this_candle and buy.active and fresh_bar_ready and self._bar_entry_shape(prev, cur):
+        if (not pc.dormant and not reactivated_this_candle and buy.active and fresh_bar_ready and
+                self._bar_entry_shape(prev, cur)):
             surviving, dropped = [], []
             for l in buy.bar_lineages:
                 if l.sl is None or (not l.sl.invalidated and l.bar2 is not None):
@@ -1859,7 +1904,7 @@ class TZEngine:
                 ev.append(f"REAR HH({branch_label(pc.id)})")
         else:
             diff = cur.h - rear.ref_high
-            if cur.h > rear.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < rear.ref_high_at_red1):
+            if cur.h > rear.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < rear.ref_high):
                 rear.ref_high = cur.h
                 ev.append(f"REAR HH({branch_label(pc.id)})")
         if cur.l < rear.ref_low:
@@ -1943,7 +1988,7 @@ class TZEngine:
                 ev.append(f"REAR RE-ENTER HH({branch_label(pc.id)})")
         else:
             diff = cur.h - rre.ref_high
-            if cur.h > rre.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < rre.ref_high_at_red1):
+            if cur.h > rre.ref_high and (diff < THRESH - EPS or cur.l < prev.l or cur.c < rre.ref_high):
                 rre.ref_high = cur.h
                 ev.append(f"REAR RE-ENTER HH({branch_label(pc.id)})")
         if cur.l < rre.ref_low:
