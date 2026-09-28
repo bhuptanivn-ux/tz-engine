@@ -34,8 +34,14 @@ role BAR SL2 plays in the base engine.
   failed breach) before TZ BUY can ever form. If price never pulls back at
   all, TZ BUY never forms — there is no direct TZ GREEN → TZ BUY path in
   DTF BAR, unlike the base engine.
-- **TZ BUY** — forms the same way as always (standard breakout shape),
-  referenced off RED2's own (quietly climbing) reference high.
+- **TZ BUY** — does NOT confirm by breaking above TZ GREEN's or RED2's own
+  reference high. Instead, once RED1→RED2 has completed, TZ BUY forms the
+  same way BAR1 does in the base engine: a plain day-over-day breakout
+  shape test with no fixed reference level to clear at all (`low >=
+  prev.low`, `high` clears `prev.high` by ≥ 0.20 pts, `close` holds at/above
+  `prev.high`). So TZ BUY can confirm on any qualifying breakout candle
+  after RED2, even one that sits below both TZ GREEN's and RED2's own
+  tracked highs.
 - **TZ BUY SL** — same as always: standard SL test against TZ BUY's own
   reference low.
 - **TZ BUY reactivation** — above TZ BUY's own reference high, same
@@ -56,6 +62,10 @@ role BAR SL2 plays in the base engine.
 - **REAR 2 / REAR RE-ENTER are NOT compulsory** — the sequence can go
   straight from REAR into a fresh RED1→RED2→BAR1→BAR2 cascade without
   REAR 2 (or REAR RE-ENTER) needing to confirm first.
+- **REAR SL → REAR RE-ENTER** — if REAR forms and is then stopped out
+  (REAR SL), REAR RE-ENTER can form above REAR's own reference high, same
+  reactivate-above-reference principle as everywhere else. REAR RE-ENTER 2
+  is not required, the same "2-tier optional" treatment as REAR 2.
 - **Reactivation, for every tier throughout** — reused unchanged from the
   base TZ BUY engine (react above whichever tier's reference is currently
   highest, quiet climbs, etc.).
