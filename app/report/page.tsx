@@ -32,8 +32,16 @@ function primeTrendRemark(m: ReportMatch): string {
   // the WTF-side failure into the LAST cycle of an instance (see
   // lib/primeTrend.ts's wtfSlLabel/DTF_SL_EXIT_TYPES), so an unmerged DTF
   // SL is followed by another cycle for the same still-open WTF anchor.
-  if (m.exitType === "DTF TZ BUY ENTRY SL" || m.exitType === "DTF TZ BUY SL (wipes ENTRY)") {
-    const also = m.exitType === "DTF TZ BUY SL (wipes ENTRY)" ? " DTF TZ BUY SL also triggered." : "";
+  const DTF_SL_TYPES: Record<string, string> = {
+    "DTF TZ BUY ENTRY SL": "",
+    "DTF TZ BUY SL (wipes ENTRY)": " DTF TZ BUY SL also triggered.",
+    // PRIME TREND 1.1 (experimental 3-stage variant) equivalents, one tier up.
+    "TZ BUY 3 SL": "",
+    "DTF TZ BUY ENTRY SL (wipes TZ BUY 3)": " DTF TZ BUY ENTRY SL also triggered.",
+    "DTF TZ BUY SL (wipes ENTRY AND TZ BUY 3)": " DTF TZ BUY SL also triggered (wiping ENTRY and TZ BUY 3 too).",
+  };
+  if (m.exitType in DTF_SL_TYPES) {
+    const also = DTF_SL_TYPES[m.exitType];
     const reentry = m.reentryDate
       ? ` WTF ${family} is still active — re-entered on ${formatDDMMYYYY(m.reentryDate)}.`
       : ` WTF ${family} is still active — no re-entry yet.`;
@@ -52,7 +60,7 @@ function primeTrendRemark(m: ReportMatch): string {
   return `WTF ${family} failed directly (${wtfLabel}) on ${exitDateStr} while this entry was still open.`;
 }
 
-const EVENTS = ["TZ BUY 2", "BAR", "BAR 2", "PRIME TREND"];
+const EVENTS = ["TZ BUY 2", "BAR", "BAR 2", "PRIME TREND", "PRIME TREND 1.1"];
 
 // PRIME TREND is a fixed dual-timeframe theory (WTF = weekly, DTF = daily,
 // always -- see PRIME_TREND_RULEBOOK.md), not a single event on a
@@ -125,7 +133,7 @@ export default function Report() {
           // PRIME TREND ignores the Time frame dropdown server-side (it's
           // always weekly WTF / daily DTF) -- send a fixed value regardless
           // of whatever the (disabled) dropdown currently shows.
-          timeframe: event === "PRIME TREND" ? "daily" : timeframe,
+          timeframe: event === "PRIME TREND" || event === "PRIME TREND 1.1" ? "daily" : timeframe,
           offset: String(offset),
           limit: String(limit),
         });
@@ -246,7 +254,7 @@ export default function Report() {
               id="report-timeframe"
               value={timeframe}
               onChange={(e) => setTimeframe(e.target.value)}
-              disabled={event === "PRIME TREND"}
+              disabled={event === "PRIME TREND" || event === "PRIME TREND 1.1"}
             >
               {TIMEFRAMES.map((t) => (
                 <option key={t.value} value={t.value}>
@@ -254,9 +262,9 @@ export default function Report() {
                 </option>
               ))}
             </select>
-            {event === "PRIME TREND" && (
+            {(event === "PRIME TREND" || event === "PRIME TREND 1.1") && (
               <p className="muted" style={{ fontSize: "0.8rem", marginTop: "0.35rem" }}>
-                PRIME TREND always uses its own Weekly (WTF) / Daily (DTF) pair.
+                {event} always uses its own Weekly (WTF) / Daily (DTF) pair.
               </p>
             )}
           </div>
@@ -297,7 +305,7 @@ export default function Report() {
       </div>
 
       {lastScanned && matches.length > 0 && (() => {
-        const showRemarks = resultEvent === "PRIME TREND";
+        const showRemarks = resultEvent === "PRIME TREND" || resultEvent === "PRIME TREND 1.1";
         return (
           <div className="card">
             <div className="table-wrap">

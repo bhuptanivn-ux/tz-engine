@@ -71,20 +71,26 @@ export interface PrimeTrendLiveStatus {
 // Stage 1 / Stage 2 state (mirrors Buy/Bar2's own ref_high/ref_low shape)
 // --------------------------------------------------------------------
 
-class Stage {
+// Exported (visibility only, no behavior change) so a separate, DTF-only
+// experimental variant (lib/primeTrend11.ts, "PRIME TREND 1.1" -- adds a
+// third DTF stage, TZ BUY 3, above DTF TZ BUY ENTRY) can reuse the exact
+// same WTF-trace/instance machinery and Stage 1/Stage 2 primitives without
+// forking or reimplementing them. Nothing about computePrimeTrend or
+// computePrimeTrendLive's own behavior changes.
+export class Stage {
   active = true;
   frozenRef: number | null = null;
-  entryRatchet: number; // only meaningful on Stage 1; tracks Stage 2's escalation ladder
+  entryRatchet: number; // tracks the NEXT tier's own escalation ladder (Stage 1 -> Stage 2's ladder, Stage 2 -> Stage 3's, etc.)
   constructor(public refHigh: number, public refLow: number) {
     this.entryRatchet = refHigh;
   }
 }
 
-function breakoutShape(prev: Day, cur: Day, ref: number): boolean {
+export function breakoutShape(prev: Day, cur: Day, ref: number): boolean {
   return cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref;
 }
 
-function slShape(cur: Day, refLow: number): boolean {
+export function slShape(cur: Day, refLow: number): boolean {
   return cur.l < refLow && refLow - cur.l >= THRESH - EPS && cur.c <= refLow + EPS;
 }
 
@@ -126,7 +132,7 @@ function tierObject(pc: ParentCycle, family: PrimeTrendFamily): { refLow: number
   return pc.buy.rearReenter !== null ? pc.buy.rearReenter.rre2 : null;
 }
 
-interface WtfTraceEntry {
+export interface WtfTraceEntry {
   day: Day;
   events: string[];
   preRefLow: Record<PrimeTrendFamily, Map<number, number>>;
@@ -199,7 +205,7 @@ function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
 // Tracked by pid, not by letter.
 // --------------------------------------------------------------------
 
-interface WtfInstance {
+export interface WtfInstance {
   family: PrimeTrendFamily;
   letter: string;
   formationDate: string;
@@ -324,7 +330,7 @@ function allInstances(wtfTrace: WtfTraceEntry[], lastDtfDate: string | null): Wt
 // Step 3: live (week-lagged) WTF reference lookup for a given instance
 // --------------------------------------------------------------------
 
-function wtfCheckpoints(
+export function wtfCheckpoints(
   wtfTrace: WtfTraceEntry[],
   family: PrimeTrendFamily,
   letter: string,
@@ -345,7 +351,7 @@ function wtfCheckpoints(
 }
 
 /** Largest wtf_date <= d -- the WTF week that contains this DTF day. */
-function containingWeekStart(wtfDates: string[], d: string): string | null {
+export function containingWeekStart(wtfDates: string[], d: string): string | null {
   let start: string | null = null;
   for (const wd of wtfDates) {
     if (wd <= d) start = wd;
@@ -361,13 +367,13 @@ function containingWeekStart(wtfDates: string[], d: string): string | null {
 // more row.
 // --------------------------------------------------------------------
 
-const DTF_SL_EXIT_TYPES = new Set(["DTF TZ BUY ENTRY SL", "DTF TZ BUY SL (wipes ENTRY)"]);
+export const DTF_SL_EXIT_TYPES = new Set(["DTF TZ BUY ENTRY SL", "DTF TZ BUY SL (wipes ENTRY)"]);
 
 /** Short label for an instance's own terminal WTF-side event, for the
  * merged "DTF SL - <WTF SL>" exit-type annotation -- null if the instance
  * never explicitly fails (still open, or collaterally terminated with no
  * event) within the data. */
-function wtfSlLabel(endEvent: string | null): string | null {
+export function wtfSlLabel(endEvent: string | null): string | null {
   if (endEvent === null) return null;
   if (
     endEvent.startsWith("TZ BUY 2 SL(") ||
@@ -616,7 +622,7 @@ export interface OhlcRow {
   c: number;
 }
 
-function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
+export function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const wtfDates = wtfDays.map((d) => d.date);

@@ -81,7 +81,7 @@ export interface ScreenerRow {
  * `null` if `entryDate` isn't found or that window is empty (entry was
  * yesterday or today, so no full day has closed in between yet).
  */
-function lowestLowPostEntry(days: Day[], entryDate: string | null): number | null {
+export function lowestLowPostEntry(days: Day[], entryDate: string | null): number | null {
   if (entryDate === null) return null;
   const entryIdx = days.findIndex((d) => d.date === entryDate);
   if (entryIdx === -1) return null;
@@ -97,7 +97,7 @@ function lowestLowPostEntry(days: Day[], entryDate: string | null): number | nul
   return min;
 }
 
-function toDays(rows: HistoryRowLike[]): Day[] {
+export function toDays(rows: HistoryRowLike[]): Day[] {
   return rows
     .filter((r) => r.open !== null && r.high !== null && r.low !== null && r.close !== null)
     .map((r) => ({
@@ -161,7 +161,7 @@ export interface ScanResult {
   tzBuyEntry: ScreenerRow | null;
 }
 
-function toOhlcRow(d: Day): OhlcRow {
+export function toOhlcRow(d: Day): OhlcRow {
   return { date: d.date, o: d.o, h: d.h, l: d.l, c: d.c };
 }
 
