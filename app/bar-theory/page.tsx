@@ -335,8 +335,8 @@ export default function BarTheory() {
         </div>
         <p className="muted" style={{ marginTop: "-0.5rem", marginBottom: "1rem" }}>
           {choice === "bar"
-            ? "BAR has occurred and is active — leaves once BAR SL fires or BAR 2 occurs."
-            : "BAR 2 has occurred — leaves once BAR 2 SL triggers or RED 2 occurs."}
+            ? "BAR has occurred and is active — leaves once BAR SL fires or BAR 2 occurs (unless the same scrip goes on to trade with another BAR, or BAR 2 itself hits its own SL — both bring it back here with Activation price shifted to the new reference high)."
+            : "BAR 2 has occurred — leaves once BAR 2 SL triggers (moves back to TRADING WITH BAR) or RED 2 occurs (leaves both lists until a fresh BAR forms)."}
         </p>
         <div className="row">
           <div className="field" style={{ flex: "1 1 220px", marginBottom: 0 }}>
