@@ -11,6 +11,9 @@ restructures the top-level skeleton itself --
     reference high
   - a new TZ BUY SL 2 concept, playing the exact role BAR SL2 plays in
     the base engine: it's what opens the door to REAR
+  - confirmed: if a post-TZ-BUY (or post-REAR) RED2 dip is also deep
+    enough to breach the parent tier's own SL threshold on the same
+    candle, the parent tier's own SL wins outright -- not RED2, not both
 
 Reuses THRESH/EPS and the Day dataclass from tz_engine_wtf.py so every
 numeric rule here (0.20 pt clearance, Close confirmation, quiet-climb/
@@ -308,6 +311,13 @@ class DtfBarEngine:
             return self._eval_rear(buy, buy.rear, prev, cur)
 
         if buy.active:
+            # Confirmed rule: if a post-TZ-BUY RED2 dip on this candle is
+            # also deep enough to breach TZ BUY's OWN SL threshold, TZ
+            # BUY's own SL wins outright -- not RED2, not both. This is
+            # enforced structurally, not by an explicit tie-break: is_sl
+            # is checked here, before the post-TZ-BUY RED1/RED2 block
+            # below, and returns immediately when it fires, so RED1/RED2
+            # is never even evaluated on that candle.
             is_sl = _is_sl(cur, buy.ref_low)
             new_high = _quiet_hh(cur, buy.ref_high)
             if new_high is not None:
@@ -494,6 +504,12 @@ class DtfBarEngine:
                 tier = rear.rear2
                 base_tier_name = "REAR2"
 
+            # Same confirmed rule as TZ BUY's own SL vs. post-TZ-BUY RED2
+            # (see _eval_buy): if a post-REAR RED2 dip is also deep enough
+            # to breach REAR's (or REAR2's) own SL threshold on the same
+            # candle, that SL wins outright, not RED2. Enforced the same
+            # way -- this check returns before the post-REAR RED1/RED2
+            # block below is ever reached.
             is_sl = _is_sl(cur, tier.ref_low)
             new_high = _quiet_hh(cur, tier.ref_high)
             if new_high is not None:
