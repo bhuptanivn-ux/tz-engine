@@ -32,6 +32,9 @@ export default function Sidebar() {
         >
           Prime Trend
         </Link>
+        <Link href="/bar-theory" className={pathname === "/bar-theory" ? "sidebar-link active" : "sidebar-link"}>
+          BAR Theory
+        </Link>
         <Link href="/report" className={pathname === "/report" ? "sidebar-link active" : "sidebar-link"}>
           Report
         </Link>
