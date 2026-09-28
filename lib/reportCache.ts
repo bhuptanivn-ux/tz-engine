@@ -17,6 +17,15 @@ export interface ReportMatch {
   symbol: string;
   name: string;
   date: string;
+  // PRIME TREND only: this specific DTF entry/exit cycle's own outcome --
+  // how (and when) it closed, which WTF anchor family it belongs to, and
+  // (when the WTF anchor stayed alive and DTF re-entered afterward) the
+  // date of that next entry within the SAME still-open WTF instance. All
+  // undefined for the other events, which have no such lifecycle.
+  family?: string;
+  exitType?: string | null;
+  exitDate?: string | null;
+  reentryDate?: string | null;
 }
 
 export interface ReportCachePayload {
@@ -36,7 +45,7 @@ function blobUrlFor(pathname: string): string {
 // Bump whenever the report scan's own computation changes in a way that
 // would change a previously-cached result -- see screenerCache.ts's
 // CACHE_VERSION comment for the exact failure mode this guards against.
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 
 function cachePathFor(
   segment: string,

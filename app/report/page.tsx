@@ -8,6 +8,48 @@ interface ReportMatch {
   symbol: string;
   name: string;
   date: string;
+  family?: string;
+  exitType?: string | null;
+  exitDate?: string | null;
+  reentryDate?: string | null;
+}
+
+// Turns one PRIME TREND cycle's raw exitType/exitDate/reentryDate into the
+// plain-language remark shown in the Remarks column -- e.g. "SL triggered
+// on 18/02/2019. DTF TZ BUY SL also triggered. WTF TZ BUY 2 is still
+// active — re-entered on 03/05/2019." Blank for every other event, which
+// has no entry/exit lifecycle to describe.
+function primeTrendRemark(m: ReportMatch): string {
+  if (!m.exitType) return "";
+  if (m.exitType === "still open") return "Still active — no exit yet.";
+
+  const exitDateStr = m.exitDate ? formatDDMMYYYY(m.exitDate) : "";
+  const family = m.family ?? "anchor";
+
+  // A raw DTF-side SL (Stage 2's own, or Stage 1's SL wiping Stage 2 too)
+  // that is NOT the merged "DTF SL - <WTF label>" form below always means
+  // the WTF anchor stayed alive afterward -- computePrimeTrend only merges
+  // the WTF-side failure into the LAST cycle of an instance (see
+  // lib/primeTrend.ts's wtfSlLabel/DTF_SL_EXIT_TYPES), so an unmerged DTF
+  // SL is followed by another cycle for the same still-open WTF anchor.
+  if (m.exitType === "DTF TZ BUY ENTRY SL" || m.exitType === "DTF TZ BUY SL (wipes ENTRY)") {
+    const also = m.exitType === "DTF TZ BUY SL (wipes ENTRY)" ? " DTF TZ BUY SL also triggered." : "";
+    const reentry = m.reentryDate
+      ? ` WTF ${family} is still active — re-entered on ${formatDDMMYYYY(m.reentryDate)}.`
+      : ` WTF ${family} is still active — no re-entry yet.`;
+    return `SL triggered on ${exitDateStr}.${also}${reentry}`;
+  }
+
+  if (m.exitType.startsWith("DTF SL - ")) {
+    const wtfLabel = m.exitType.slice("DTF SL - ".length);
+    return `SL triggered on ${exitDateStr}. WTF ${family} then also failed (${wtfLabel}) — no further DTF re-entry.`;
+  }
+
+  // Whatever's left is a raw WTF-side event name (e.g. "TZ BUY 2 SL(A)") --
+  // the WTF anchor itself failed while this DTF entry was still open, with
+  // no DTF-side SL of its own firing first.
+  const wtfLabel = m.exitType.split("(")[0].trim();
+  return `WTF ${family} failed directly (${wtfLabel}) on ${exitDateStr} while this entry was still open.`;
 }
 
 const EVENTS = ["TZ BUY 2", "BAR", "BAR 2", "PRIME TREND"];
@@ -61,6 +103,7 @@ export default function Report() {
   const [timeframe, setTimeframe] = useState("daily");
 
   const [matches, setMatches] = useState<ReportMatch[]>([]);
+  const [resultEvent, setResultEvent] = useState("");
   const [scanned, setScanned] = useState(0);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -135,6 +178,7 @@ export default function Report() {
 
       matchesAll.sort((a, b) => a.date.localeCompare(b.date) || a.symbol.localeCompare(b.symbol));
       setMatches(matchesAll);
+      setResultEvent(event);
       setScanned(scannedTotal);
       setErrors(errorsAll);
       setCachedResult(allCached);
@@ -252,33 +296,38 @@ export default function Report() {
         )}
       </div>
 
-      {lastScanned && matches.length > 0 && (
-        <div className="card">
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th className="col-left">Scrip</th>
-                  <th className="col-left">Symbol</th>
-                  <th>Date of occurrence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {matches.map((m, i) => (
-                  <tr key={`${m.symbol}-${m.date}-${i}`}>
-                    <td className="col-left">{m.name}</td>
-                    <td className="col-left">{m.symbol}</td>
-                    <td>{formatDDMMYYYY(m.date)}</td>
+      {lastScanned && matches.length > 0 && (() => {
+        const showRemarks = resultEvent === "PRIME TREND";
+        return (
+          <div className="card">
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th className="col-left">Scrip</th>
+                    <th className="col-left">Symbol</th>
+                    <th>Date of occurrence</th>
+                    {showRemarks && <th className="col-left">Remarks</th>}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {matches.map((m, i) => (
+                    <tr key={`${m.symbol}-${m.date}-${i}`}>
+                      <td className="col-left">{m.name}</td>
+                      <td className="col-left">{m.symbol}</td>
+                      <td>{formatDDMMYYYY(m.date)}</td>
+                      {showRemarks && <td className="col-left">{primeTrendRemark(m)}</td>}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {!loading && lastScanned && matches.length === 0 && (
-        <p className="muted">No occurrences of {event} found for this segment and year.</p>
+        <p className="muted">No occurrences of {resultEvent || event} found for this segment and year.</p>
       )}
     </main>
   );

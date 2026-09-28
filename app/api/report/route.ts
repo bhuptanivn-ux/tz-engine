@@ -195,16 +195,43 @@ export async function GET(req: NextRequest) {
       // daily, always -- see PRIME_TREND_RULEBOOK.md) rather than a single
       // event token on a user-selected timeframe, so it runs its own engine
       // (computePrimeTrend) regardless of the Time frame dropdown. Each
-      // returned row is one confirmed DTF TZ BUY ENTRY (Stage 2) occurrence
-      // -- exactly what "PRIME TREND happened here" means.
+      // returned row is one confirmed DTF TZ BUY ENTRY (Stage 2) entry/exit
+      // cycle -- exactly what "PRIME TREND happened here" means. A single
+      // still-alive WTF anchor (same family+letter+formation date) can
+      // produce SEVERAL of these rows in a row: DTF entry, its own SL, then
+      // a fresh DTF re-entry while the WTF anchor itself is still active --
+      // each cycle is grouped here so its own SL date and (if any) the
+      // following re-entry date can be surfaced alongside it, not just the
+      // bare entry date.
       if (event === "PRIME TREND") {
         const rows = await fetchHistory(entry.symbol, ENGINE_HISTORY_FLOOR, end, "1d");
         const days = toDays(rows);
         if (days.length < 2) return;
         const wtfRows = resampleWeekly(days);
-        for (const r of computePrimeTrend(wtfRows, days)) {
-          if (r.entryDate.startsWith(year)) {
-            matches.push({ symbol: entry.symbol, name: entry.name, date: r.entryDate });
+        const results = computePrimeTrend(wtfRows, days);
+
+        const byInstance = new Map<string, typeof results>();
+        for (const r of results) {
+          const key = `${r.family}|${r.letter}|${r.wtfFormationDate}`;
+          const group = byInstance.get(key);
+          if (group) group.push(r);
+          else byInstance.set(key, [r]);
+        }
+
+        for (const group of byInstance.values()) {
+          group.sort((a, b) => a.entryDate.localeCompare(b.entryDate));
+          for (let i = 0; i < group.length; i++) {
+            const r = group[i];
+            if (!r.entryDate.startsWith(year)) continue;
+            matches.push({
+              symbol: entry.symbol,
+              name: entry.name,
+              date: r.entryDate,
+              family: r.family,
+              exitType: r.exitType,
+              exitDate: r.exitDate,
+              reentryDate: i + 1 < group.length ? group[i + 1].entryDate : null,
+            });
           }
         }
         return;
