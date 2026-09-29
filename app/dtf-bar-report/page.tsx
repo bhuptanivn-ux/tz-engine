@@ -217,8 +217,13 @@ export default function DtfBarReport() {
         )}
       </div>
 
-      {lastScanned && matches.length > 0 && (
+      {lastScanned && matches.length > 0 && (() => {
+        const filteredCount = new Set(matches.map((m) => m.symbol)).size;
+        return (
         <div className="card">
+          <p className="muted" style={{ marginTop: 0 }}>
+            {filteredCount} out of {scanned}
+          </p>
           <div className="table-wrap">
             <table>
               <thead>
@@ -240,7 +245,8 @@ export default function DtfBarReport() {
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {!loading && lastScanned && matches.length === 0 && (
         <p className="muted">No occurrences of {event} found for this segment and year.</p>

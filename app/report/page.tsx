@@ -306,8 +306,12 @@ export default function Report() {
 
       {lastScanned && matches.length > 0 && (() => {
         const showRemarks = resultEvent === "PRIME TREND" || resultEvent === "PRIME TREND 1.1";
+        const filteredCount = new Set(matches.map((m) => m.symbol)).size;
         return (
           <div className="card">
+            <p className="muted" style={{ marginTop: 0 }}>
+              {filteredCount} out of {scanned}
+            </p>
             <div className="table-wrap">
               <table>
                 <thead>
