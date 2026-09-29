@@ -1,66 +1,85 @@
 // PRIME TREND 1.3 -- an experimental variant of PRIME TREND
 // (lib/primeTrend.ts), NOT part of the shipped theory. Purely a DTF-side
 // escalation ladder run inside a WTF TZ BUY 2 / REAR 2 / REAR RE-ENTER 2
-// window -- unlike PRIME TREND 1.2, there is no separate WTF-side ladder
-// here; the WTF anchor only defines the instance's own window.
+// window -- the WTF anchor only defines the instance's own window; "WTF
+// TZ BUY 2 is as good as DTF TZ BUY" (all analysis shifts to DTF once the
+// anchor forms).
 //
-// DTF side, within the anchor's own window:
-//   - Mandatory RED1 -> RED2 cascade (identical shape/logic to
-//     dtf_bar.py's own pre-TZ-BUY gate, including the quiet-climb/
-//     quiet-drop updates to RED1's own reference before RED2 confirms).
-//     This gate fires ONCE per window -- no later generation below needs
-//     a fresh RED1/RED2.
-//   - Once RED2 confirms, BAR1 forms via the plain day-over-day breakout
-//     (unrestricted -- not gated on any reference). BAR1 escalates to
-//     BAR ENTRY the same way BAR1 escalates to BAR2 everywhere else in
-//     this codebase: clear BAR1's own reference high by >=0.20 with the
-//     full breakout shape.
-//   - Case B (BAR1's own SL, i.e. BAR1 failing BEFORE ever escalating to
-//     BAR ENTRY): a fresh BAR(N+1) can reform anywhere via the SAME plain
-//     breakout -- deliberately NOT gated on clearing the dead lineage's
-//     own reference high (explicitly stated: "it will not use reference
-//     high"). Unlimited generations.
-//   - Case A (BAR ENTRY's own SL -- the harder failure, since it already
-//     escalated past BAR1; reported as "PRIME TREND SL"): opens REAR1,
-//     which forms the moment price clears the running top reference
-//     (the highest reference any BAR1/BAR ENTRY in this window ever
-//     reached) via the same breakout shape. REAR1 then escalates to REAR
-//     ENTRY exactly the way BAR1 escalates to BAR ENTRY (clear REAR1's
-//     own reference high by the full breakout shape).
-//   - REAR ENTRY's own SL falls back to Case B: a fresh BAR(N+1) can
-//     reform via the plain, unrestricted breakout (confirmed: the same
-//     rule repeats indefinitely, not just once).
-//   - A later generation's own BAR ENTRY(N+1) hitting its own (harder)
-//     SL repeats Case A again: REAR(N+1)-REAR ENTRY(N+1) forms above the
-//     new running top reference (confirmed: this also repeats, not just
-//     once).
+// REVISION NOTE: this replaces an earlier draft of PRIME TREND 1.3 (a
+// simpler two-case A/B ladder). This version was confirmed correct after
+// a clarifying round -- see the "confirmed" mechanics below.
 //
-// A stock is reported as "PRIME TREND" (live) whenever ANY tier-2-
-// equivalent is currently active -- BAR ENTRY or REAR ENTRY, at any
-// generation (confirmed). A tier-1-only state (BAR1 or REAR1, not yet
-// escalated) does NOT count as PRIME TREND on its own.
+// One repeating "level" structure (level 0 = the outer ladder; level 1 =
+// REAR; level 2+ = REAR RE-ENTER, reactivating in place -- INFERRED, see
+// note below), each with the SAME two-phase shape:
+//
+//   Phase 1 -- this level's own first (and only) escalation:
+//     - Level 0 starts immediately (no entry condition). Level >=1 first
+//       requires clearing the running top reference (the highest
+//       reference ANY level or nested lineage so far has ever reached --
+//       "whichever is higher" between the earlier BAR ENTRY's own
+//       reference and any nested BAR's own reference, confirmed).
+//     - Once entered, a flexible gate applies: EITHER a single RED1 OR a
+//       full RED1->RED2 cascade unlocks watching for this level's own
+//       BAR1 (confirmed: "either RED1 or RED1-RED2"). RED2, if it
+//       happens, is incidental -- not a separate requirement.
+//     - BAR1 forms via the plain, unrestricted day-over-day breakout,
+//       then escalates to this level's own tier-2 (named "BAR ENTRY" for
+//       level 0, "REAR ENTRY" for level 1, "REAR RE-ENTER" for level 2+)
+//       by clearing BAR1's own reference high. This escalation happens
+//       only once per level ("BAR1-BAR ENTRY is only for the first
+//       time").
+//     - If this own BAR1 hits its own SL BEFORE ever escalating: no row
+//       has opened yet -- go back to watching for a fresh RED1 (the same
+//       flexible gate, not yet "opened" for unlimited reform).
+//
+//   Phase 2 -- nested BAR1/BAR2 sub-lineages, once this level's own
+//   tier-2 has formed (a result row opens here and stays open through
+//   the whole of Phase 2):
+//     - A FRESH, MANDATORY RED1->RED2 cascade (post-tier-2 pullback,
+//       identical shape/logic to dtf_bar.py's own RED gate) must confirm
+//       ONCE to open the door to nested reformation ("AFTER BAR ENTRY
+//       ANOTHER BAR1-BAR2 CAN OCCUR ONLY AFTER RED1-RED2").
+//     - Once open, nested BAR1 forms via the plain breakout and can
+//       regenerate an UNLIMITED number of times on its own SL --
+//       confirmed explicitly: no further RED gate and no reference-high
+//       gate are needed for these reforms ("a normal BAR1 will occur
+//       when any further-date BAR1 satisfies with respect to previous
+//       day high" -- the mandatory RED1-RED2 only ever needs to fire
+//       once to open this level's own door).
+//     - Nested BAR1 escalates to nested BAR2 the same way BAR1 escalates
+//       to BAR ENTRY. When nested BAR2 hits its OWN (harder) SL --
+//       reported as "PRIME TREND SL" -- the row closes and the ladder
+//       PROMOTES to the next level, above the running top reference.
+//
+// A stock is reported as "PRIME TREND" (live) from the moment ANY
+// level's own tier-2 (BAR ENTRY / REAR ENTRY / REAR RE-ENTER) forms,
+// continuously through the whole of that level's Phase 2 (nested BAR1
+// being tier-1-only doesn't end it -- this level's own tier-2 never
+// fails on its own; only a nested BAR2's harder SL ends this level's
+// row, promoting straight into the next level's own Phase 1).
 //
 // Reuses lib/primeTrend.ts's own WTF-trace/instance machinery (`prepare`)
-// to detect each anchor instance's own formation/end -- unchanged from
-// the shipped theory, same as PRIME TREND 1.1/1.2. Does NOT modify
+// unchanged, same as every other PRIME TREND variant. Does NOT modify
 // computePrimeTrend, computePrimeTrendLive, or any other shipped
 // behavior.
 //
-// SCOPE OF THIS FIRST PASS (NOT yet verified against real data):
+// SCOPE OF THIS PASS (NOT yet verified against real data):
 //   - Single ladder per anchor window -- no concurrent/racing lineages.
 //   - Anchored on all three WTF families (TZ BUY 2, REAR 2, REAR
-//     RE-ENTER 2), same as shipped PRIME TREND and PRIME TREND 1.2
-//     (confirmed).
+//     RE-ENTER 2), same as shipped PRIME TREND (unchanged from the
+//     earlier draft, not re-confirmed this round but no indication it
+//     should change).
 //
-// INFERRED (not explicitly specified, flagged for review): REAR1's own
-// SL -- i.e. REAR1 failing BEFORE it ever escalates to REAR ENTRY -- is
-// treated the same way REAR ENTRY's own SL is treated: it falls back to
-// Case B, a fresh BAR(N+1) via the plain, unrestricted breakout. The
-// rules as stated only ever named "BAR SL" (pre-escalation) and "BAR
-// ENTRY SL" / "DTF BAR SL2" (post-escalation) explicitly, and only
-// confirmed the post-REAR-ENTRY-SL fallback; REAR1's own pre-escalation
-// SL was never named on its own, so this mirrors BAR1's own pre-
-// escalation SL by the closest available symmetry.
+// INFERRED (not explicitly specified, flagged for review): once REAR
+// RE-ENTER (level 2) is reached, a further promotion (its own nested
+// BAR2 later hitting its own harder SL) is modeled as REAR RE-ENTER
+// reactivating IN PLACE above the new running top reference -- not a
+// "REAR RE-ENTER 2", "3", etc. This mirrors dtf_bar.py's own explicit,
+// already-confirmed precedent ("REAR RE-ENTER, once formed, reactivates
+// in place... after each subsequent SL"), and matches "further same as
+// REAR" read as an indefinitely-repeating pattern rather than a
+// one-time-only extension.
 
 import { THRESH, EPS, type Day } from "./tzEngineWtf";
 import { prepare, type OhlcRow, type PrimeTrendFamily, type WtfInstance } from "./primeTrend";
@@ -81,10 +100,11 @@ function isRed1Shape(prev: Day, cur: Day): boolean {
   return cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l;
 }
 
-/** RED1 -> RED2, identical logic to dtf_bar.py/dtfBar.ts's own evalRed
- * (quiet-climb of the reference high, quiet-drop of the reference low,
- * until either RED2 confirms or the pullback is invalidated by a fresh
- * breakout above the reference high). */
+/** The mandatory, once-per-level nested RED1->RED2 gate -- identical
+ * logic to dtf_bar.py/dtfBar.ts's own evalRed (quiet-climb of the
+ * reference high, quiet-drop of the reference low, until either RED2
+ * confirms or the pullback is invalidated by a fresh breakout above the
+ * reference high). */
 class RedGate {
   active = true;
   constructor(public refHigh: number, public refLow: number) {}
@@ -108,37 +128,54 @@ function stepRed(red: RedGate, prev: Day, cur: Day): "confirmed" | "invalid" | "
 }
 
 type Mode =
-  | "SEEK_RED1"
-  | "SEEK_RED2"
-  | "SEEK_BAR1" // searching for the next BAR1 (any generation) -- plain breakout, no reference gate
-  | "BAR1_ACTIVE" // tier1 active, watching escalation to BAR ENTRY or its own (Case B) SL
-  | "BAR_ENTRY_ACTIVE" // tier2 active, watching its own (harder, Case A) SL
-  | "SEEK_REAR1" // searching for REAR1 -- gated on the running top reference
-  | "REAR1_ACTIVE"
-  | "REAR_ENTRY_ACTIVE";
+  | "LEVEL_SEEK_ENTRY" // level >=1 only: watching for this level's own entry (breaksRef against the running top reference)
+  | "OWN_SEEK_RED" // watching for RED1 (flexible gate: RED1 alone suffices) to unlock this level's own BAR1
+  | "OWN_SEEK_BAR1" // RED1 seen; watching for this level's own BAR1 (plain breakout)
+  | "OWN_BAR1_ACTIVE" // own BAR1 (tier1) active; escalation opens this level's own tier2 (row opens); own SL -> back to OWN_SEEK_RED (fresh gate)
+  | "NESTED_SEEK_RED1" // this level's own tier2 has formed; watching for the mandatory nested RED1
+  | "NESTED_SEEK_RED2" // nested RED1 seen; watching for RED2 to confirm (mandatory cascade, once per level)
+  | "NESTED_SEEK_BAR1" // nested gate opened; watching for nested BAR1 (plain breakout -- unlimited reforms from here, no gate, no reference)
+  | "NESTED_BAR1_ACTIVE" // nested BAR1 (tier1) active; escalation -> NESTED_BAR2_ACTIVE; own SL -> back to NESTED_SEEK_BAR1 (no gate)
+  | "NESTED_BAR2_ACTIVE"; // nested BAR2 (tier2) active; its own harder SL -> row closes ("PRIME TREND SL"), promote to next level
 
-class LadderState {
-  mode: Mode = "SEEK_RED1";
-  red: RedGate | null = null;
-  gen = 0; // current BAR generation number
-  topRef = 0; // running highest reference any BAR1/BAR ENTRY in this window ever reached
-  refHigh = 0;
-  refLow = 0;
-  since: string | null = null;
-  entryPrice: number | null = null;
-  hh = 0;
-  hhDate: string | null = null;
+function sideForLevel(level: number): "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" {
+  if (level === 0) return "BAR ENTRY";
+  if (level === 1) return "REAR ENTRY";
+  return "REAR RE-ENTER";
+}
+
+class LevelState {
+  level = 0;
+  mode: Mode = "OWN_SEEK_RED";
+  topRef = 0;
+  nestedRed: RedGate | null = null;
+  ownRefHigh = 0;
+  ownRefLow = 0;
+  nestedRefHigh = 0;
+  nestedRefLow = 0;
+  rowOpen = false;
+  rowSide: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" = "BAR ENTRY";
+  rowEntryDate: string | null = null;
+  rowEntryPrice: number | null = null;
+  rowHH = 0;
+  rowHHDate: string | null = null;
+}
+
+function trackHH(state: LevelState, cur: Day): void {
+  if (cur.h > state.rowHH) {
+    state.rowHH = cur.h;
+    state.rowHHDate = cur.date;
+  }
 }
 
 export interface PrimeTrend13LiveStatus {
   family: PrimeTrendFamily;
   letter: string;
   primeTrendActive: boolean;
-  side: "BAR ENTRY" | "REAR ENTRY" | null;
-  generation: number | null;
+  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | null;
+  level: number | null;
   since: string | null;
   activationPrice: number | null;
-  stopLoss: number | null;
   highestHigh: number | null;
   highestHighDate: string | null;
 }
@@ -146,8 +183,8 @@ export interface PrimeTrend13LiveStatus {
 export interface PrimeTrend13Result {
   family: PrimeTrendFamily;
   letter: string;
-  side: "BAR ENTRY" | "REAR ENTRY";
-  generation: number;
+  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER";
+  level: number;
   wtfFormationDate: string;
   entryDate: string;
   entryPrice: number;
@@ -158,160 +195,134 @@ export interface PrimeTrend13Result {
   highestHighDate: string | null;
 }
 
-/** Advances the ladder by one candle. Emits `opened` when a tier-2-
- * equivalent (BAR ENTRY or REAR ENTRY) first forms, and `closed` when
- * the currently-active tier-2-equivalent hits its own SL -- tier-1-only
- * transitions (BAR1/REAR1 forming, escalating, or their own pre-
- * escalation SL) are silent, since they aren't "PRIME TREND active" on
- * their own (per the confirmed live-flag scope). */
-function stepLadder(
-  state: LadderState,
+/** Advances the ladder by one candle. Emits `opened` when a level's own
+ * tier2 (BAR ENTRY / REAR ENTRY / REAR RE-ENTER) first forms -- opening
+ * a result row -- and `closed` when a nested BAR2 within that level's
+ * scope hits its own harder SL, closing the row and promoting to the
+ * next level. */
+function stepLevel(
+  state: LevelState,
   prev: Day,
   cur: Day
-): { opened: { side: "BAR ENTRY" | "REAR ENTRY"; generation: number; price: number } | null; closed: { exitType: string; exitPrice: number } | null } {
-  let opened: { side: "BAR ENTRY" | "REAR ENTRY"; generation: number; price: number } | null = null;
+): { opened: { side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER"; price: number } | null; closed: { exitType: string; exitPrice: number } | null } {
+  let opened: { side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER"; price: number } | null = null;
   let closed: { exitType: string; exitPrice: number } | null = null;
 
   switch (state.mode) {
-    case "SEEK_RED1": {
-      if (isRed1Shape(prev, cur)) {
-        state.red = new RedGate(cur.h, cur.l);
-        state.mode = "SEEK_RED2";
-      }
-      break;
-    }
-
-    case "SEEK_RED2": {
-      const result = stepRed(state.red as RedGate, prev, cur);
-      if (result === "confirmed") {
-        state.red = null;
-        state.mode = "SEEK_BAR1";
-      } else if (result === "invalid") {
-        // Same reset as dtf_bar.py's own INVALID RED1 fix: a cancelled
-        // RED1 must not be mistaken for a confirmed RED2 -- go back to
-        // watching for a genuinely fresh RED1.
-        state.red = null;
-        state.mode = "SEEK_RED1";
-      }
-      break;
-    }
-
-    case "SEEK_BAR1": {
-      if (bar1Shape(prev, cur)) {
-        state.gen += 1;
-        state.refHigh = cur.h;
-        state.refLow = cur.l;
-        state.since = cur.date;
-        state.entryPrice = cur.h;
-        state.hh = cur.h;
-        state.hhDate = cur.date;
-        state.mode = "BAR1_ACTIVE";
-      }
-      break;
-    }
-
-    case "BAR1_ACTIVE": {
-      if (cur.h > state.hh) {
-        state.hh = cur.h;
-        state.hhDate = cur.date;
-      }
-      // Escalation checked before quiet climb (same ordering fix used
-      // throughout this codebase's BAR1->BAR2-style escalations).
-      if (breaksRef(prev, cur, state.refHigh)) {
-        state.topRef = Math.max(state.topRef, cur.h);
-        state.refHigh = cur.h;
-        state.refLow = cur.l;
-        state.since = cur.date;
-        state.entryPrice = cur.h;
-        state.hh = cur.h;
-        state.hhDate = cur.date;
-        state.mode = "BAR_ENTRY_ACTIVE";
-        opened = { side: "BAR ENTRY", generation: state.gen, price: cur.h };
-        break;
-      }
-      const slNow = isSl(cur, state.refLow);
-      if (!slNow && cur.h > state.refHigh) state.refHigh = cur.h;
-      if (!slNow && cur.l < state.refLow) state.refLow = cur.l;
-      if (slNow) {
-        // Case B: BAR1's own SL, before ever escalating. A fresh BAR(N+1)
-        // can reform anywhere via the plain breakout -- no reference gate.
-        state.mode = "SEEK_BAR1";
-      }
-      break;
-    }
-
-    case "BAR_ENTRY_ACTIVE": {
-      if (cur.h > state.hh) {
-        state.hh = cur.h;
-        state.hhDate = cur.date;
-      }
-      const slNow = isSl(cur, state.refLow);
-      if (!slNow && cur.h > state.refHigh) state.refHigh = cur.h;
-      if (!slNow && cur.l < state.refLow) state.refLow = cur.l;
-      if (slNow) {
-        // Case A: BAR ENTRY's own (harder) SL -- reported as PRIME TREND
-        // SL. Opens REAR1 above the running top reference.
-        state.topRef = Math.max(state.topRef, state.refHigh);
-        closed = { exitType: "PRIME TREND SL", exitPrice: cur.l };
-        state.mode = "SEEK_REAR1";
-      }
-      break;
-    }
-
-    case "SEEK_REAR1": {
+    case "LEVEL_SEEK_ENTRY": {
       if (breaksRef(prev, cur, state.topRef)) {
-        state.refHigh = cur.h;
-        state.refLow = cur.l;
-        state.since = cur.date;
-        state.entryPrice = cur.h;
-        state.hh = cur.h;
-        state.hhDate = cur.date;
-        state.mode = "REAR1_ACTIVE";
+        state.topRef = Math.max(state.topRef, cur.h);
+        state.mode = "OWN_SEEK_RED";
       }
       break;
     }
 
-    case "REAR1_ACTIVE": {
-      if (cur.h > state.hh) {
-        state.hh = cur.h;
-        state.hhDate = cur.date;
+    case "OWN_SEEK_RED": {
+      if (isRed1Shape(prev, cur)) {
+        state.mode = "OWN_SEEK_BAR1";
       }
-      if (breaksRef(prev, cur, state.refHigh)) {
+      break;
+    }
+
+    case "OWN_SEEK_BAR1": {
+      if (bar1Shape(prev, cur)) {
+        state.ownRefHigh = cur.h;
+        state.ownRefLow = cur.l;
+        state.rowHH = cur.h;
+        state.rowHHDate = cur.date;
+        state.mode = "OWN_BAR1_ACTIVE";
+      }
+      break;
+    }
+
+    case "OWN_BAR1_ACTIVE": {
+      trackHH(state, cur);
+      // Escalation checked before quiet climb (same ordering fix used
+      // throughout this codebase's tier1->tier2 escalations).
+      if (breaksRef(prev, cur, state.ownRefHigh)) {
         state.topRef = Math.max(state.topRef, cur.h);
-        state.refHigh = cur.h;
-        state.refLow = cur.l;
-        state.since = cur.date;
-        state.entryPrice = cur.h;
-        state.hh = cur.h;
-        state.hhDate = cur.date;
-        state.mode = "REAR_ENTRY_ACTIVE";
-        opened = { side: "REAR ENTRY", generation: state.gen, price: cur.h };
+        state.rowOpen = true;
+        state.rowSide = sideForLevel(state.level);
+        state.rowEntryDate = cur.date;
+        state.rowEntryPrice = cur.h;
+        opened = { side: state.rowSide, price: cur.h };
+        state.mode = "NESTED_SEEK_RED1";
         break;
       }
-      const slNow = isSl(cur, state.refLow);
-      if (!slNow && cur.h > state.refHigh) state.refHigh = cur.h;
-      if (!slNow && cur.l < state.refLow) state.refLow = cur.l;
+      const slNow = isSl(cur, state.ownRefLow);
+      if (!slNow && cur.h > state.ownRefHigh) state.ownRefHigh = cur.h;
+      if (!slNow && cur.l < state.ownRefLow) state.ownRefLow = cur.l;
       if (slNow) {
-        // INFERRED (see module docstring): REAR1's own pre-escalation SL
-        // mirrors BAR1's own -- falls back to Case B, a fresh BAR(N+1).
-        state.mode = "SEEK_BAR1";
+        // No row ever opened -- back to the flexible first gate.
+        state.mode = "OWN_SEEK_RED";
       }
       break;
     }
 
-    case "REAR_ENTRY_ACTIVE": {
-      if (cur.h > state.hh) {
-        state.hh = cur.h;
-        state.hhDate = cur.date;
+    case "NESTED_SEEK_RED1": {
+      trackHH(state, cur);
+      if (isRed1Shape(prev, cur)) {
+        state.nestedRed = new RedGate(cur.h, cur.l);
+        state.mode = "NESTED_SEEK_RED2";
       }
-      const slNow = isSl(cur, state.refLow);
-      if (!slNow && cur.h > state.refHigh) state.refHigh = cur.h;
-      if (!slNow && cur.l < state.refLow) state.refLow = cur.l;
+      break;
+    }
+
+    case "NESTED_SEEK_RED2": {
+      trackHH(state, cur);
+      const result = stepRed(state.nestedRed as RedGate, prev, cur);
+      if (result === "confirmed") {
+        state.nestedRed = null;
+        state.mode = "NESTED_SEEK_BAR1";
+      } else if (result === "invalid") {
+        // Same reset as dtf_bar.py's own INVALID RED1 fix.
+        state.nestedRed = null;
+        state.mode = "NESTED_SEEK_RED1";
+      }
+      break;
+    }
+
+    case "NESTED_SEEK_BAR1": {
+      trackHH(state, cur);
+      if (bar1Shape(prev, cur)) {
+        state.nestedRefHigh = cur.h;
+        state.nestedRefLow = cur.l;
+        state.mode = "NESTED_BAR1_ACTIVE";
+      }
+      break;
+    }
+
+    case "NESTED_BAR1_ACTIVE": {
+      trackHH(state, cur);
+      if (breaksRef(prev, cur, state.nestedRefHigh)) {
+        state.topRef = Math.max(state.topRef, cur.h);
+        state.nestedRefHigh = cur.h;
+        state.nestedRefLow = cur.l;
+        state.mode = "NESTED_BAR2_ACTIVE";
+        break;
+      }
+      const slNow = isSl(cur, state.nestedRefLow);
+      if (!slNow && cur.h > state.nestedRefHigh) state.nestedRefHigh = cur.h;
+      if (!slNow && cur.l < state.nestedRefLow) state.nestedRefLow = cur.l;
       if (slNow) {
-        // Confirmed: falls back to Case B again -- a fresh BAR(N+1) via
-        // the plain, unrestricted breakout.
-        closed = { exitType: "REAR ENTRY SL", exitPrice: cur.l };
-        state.mode = "SEEK_BAR1";
+        // Confirmed: unlimited reform, no gate, no reference-high needed.
+        state.mode = "NESTED_SEEK_BAR1";
+      }
+      break;
+    }
+
+    case "NESTED_BAR2_ACTIVE": {
+      trackHH(state, cur);
+      const slNow = isSl(cur, state.nestedRefLow);
+      if (!slNow && cur.h > state.nestedRefHigh) state.nestedRefHigh = cur.h;
+      if (!slNow && cur.l < state.nestedRefLow) state.nestedRefLow = cur.l;
+      if (slNow) {
+        state.topRef = Math.max(state.topRef, state.nestedRefHigh);
+        state.rowOpen = false;
+        closed = { exitType: "PRIME TREND SL", exitPrice: cur.l };
+        state.level += 1;
+        state.nestedRed = null;
+        state.mode = "LEVEL_SEEK_ENTRY";
       }
       break;
     }
@@ -322,7 +333,7 @@ function stepLadder(
 
 function simulateWindow(dtfDays: Day[], inst: WtfInstance): { rows: PrimeTrend13Result[]; live: PrimeTrend13LiveStatus | null } {
   const rows: PrimeTrend13Result[] = [];
-  const state = new LadderState();
+  const state = new LevelState();
 
   let startIdx: number | null = null;
   for (let i = 0; i < dtfDays.length; i++) {
@@ -332,66 +343,59 @@ function simulateWindow(dtfDays: Day[], inst: WtfInstance): { rows: PrimeTrend13
     }
   }
 
-  let curEntry: { side: "BAR ENTRY" | "REAR ENTRY"; generation: number; date: string; price: number } | null = null;
   if (startIdx !== null) {
     for (let i = startIdx; i < dtfDays.length && dtfDays[i].date <= inst.endDate; i++) {
       const prev = dtfDays[i - 1];
       const cur = dtfDays[i];
-      const { opened, closed } = stepLadder(state, prev, cur);
-      if (opened) {
-        curEntry = { side: opened.side, generation: opened.generation, date: cur.date, price: opened.price };
-      }
-      if (closed && curEntry !== null) {
+      const { closed } = stepLevel(state, prev, cur);
+      if (closed) {
         rows.push({
           family: inst.family,
           letter: inst.letter,
-          side: curEntry.side,
-          generation: curEntry.generation,
+          side: state.rowSide,
+          level: state.level - 1, // stepLevel already incremented on close
           wtfFormationDate: inst.formationDate,
-          entryDate: curEntry.date,
-          entryPrice: curEntry.price,
+          entryDate: state.rowEntryDate as string,
+          entryPrice: state.rowEntryPrice as number,
           exitType: closed.exitType,
           exitDate: cur.date,
           exitPrice: closed.exitPrice,
-          highestHigh: state.hhDate ? state.hh : null,
-          highestHighDate: state.hhDate,
+          highestHigh: state.rowHHDate ? state.rowHH : null,
+          highestHighDate: state.rowHHDate,
         });
-        curEntry = null;
       }
     }
   }
 
-  if (curEntry !== null) {
+  if (state.rowOpen) {
     rows.push({
       family: inst.family,
       letter: inst.letter,
-      side: curEntry.side,
-      generation: curEntry.generation,
+      side: state.rowSide,
+      level: state.level,
       wtfFormationDate: inst.formationDate,
-      entryDate: curEntry.date,
-      entryPrice: curEntry.price,
+      entryDate: state.rowEntryDate as string,
+      entryPrice: state.rowEntryPrice as number,
       exitType: inst.endEvent !== null ? inst.endEvent : "still open",
       exitDate: inst.endDate,
       exitPrice: inst.endPrice,
-      highestHigh: state.hhDate ? state.hh : null,
-      highestHighDate: state.hhDate,
+      highestHigh: state.rowHHDate ? state.rowHH : null,
+      highestHighDate: state.rowHHDate,
     });
   }
 
   if (inst.endEvent !== null) return { rows, live: null };
 
-  const primeTrendActive = state.mode === "BAR_ENTRY_ACTIVE" || state.mode === "REAR_ENTRY_ACTIVE";
   const live: PrimeTrend13LiveStatus = {
     family: inst.family,
     letter: inst.letter,
-    primeTrendActive,
-    side: primeTrendActive ? (state.mode === "BAR_ENTRY_ACTIVE" ? "BAR ENTRY" : "REAR ENTRY") : null,
-    generation: primeTrendActive ? state.gen : null,
-    since: primeTrendActive ? state.since : null,
-    activationPrice: primeTrendActive ? state.entryPrice : null,
-    stopLoss: primeTrendActive ? state.refLow : null,
-    highestHigh: primeTrendActive ? (state.hhDate ? state.hh : null) : null,
-    highestHighDate: primeTrendActive ? state.hhDate : null,
+    primeTrendActive: state.rowOpen,
+    side: state.rowOpen ? state.rowSide : null,
+    level: state.rowOpen ? state.level : null,
+    since: state.rowOpen ? state.rowEntryDate : null,
+    activationPrice: state.rowOpen ? state.rowEntryPrice : null,
+    highestHigh: state.rowOpen ? (state.rowHHDate ? state.rowHH : null) : null,
+    highestHighDate: state.rowOpen ? state.rowHHDate : null,
   };
   return { rows, live };
 }
