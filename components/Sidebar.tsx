@@ -41,8 +41,17 @@ export default function Sidebar() {
         <Link href="/bar-theory" className={pathname === "/bar-theory" ? "sidebar-link active" : "sidebar-link"}>
           BAR Theory
         </Link>
+        <Link href="/dtf-bar" className={pathname === "/dtf-bar" ? "sidebar-link active" : "sidebar-link"}>
+          DTF BAR
+        </Link>
         <Link href="/report" className={pathname === "/report" ? "sidebar-link active" : "sidebar-link"}>
           Report
+        </Link>
+        <Link
+          href="/dtf-bar-report"
+          className={pathname === "/dtf-bar-report" ? "sidebar-link active" : "sidebar-link"}
+        >
+          DTF BAR REPORT
         </Link>
       </nav>
     </div>
