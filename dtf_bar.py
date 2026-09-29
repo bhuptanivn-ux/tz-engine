@@ -264,7 +264,18 @@ class DtfBarEngine:
                     cyc.red = Red(ref_high=cur.h, ref_low=cur.l)
                     ev.append("RED1")
             elif cyc.red.active:
-                ev += self._eval_red(cyc.red, prev, cur, "RED1", "RED2", "RED1 HH")
+                red_ev = self._eval_red(cyc.red, prev, cur, "RED1", "RED2", "RED1 HH")
+                ev += red_ev
+                if any(e.startswith("INVALID") for e in red_ev):
+                    # A cancelled RED1 must NOT be treated as "RED2
+                    # confirmed, ready for TZ BUY" -- both leave
+                    # red.active False, and the elif chain below can't
+                    # tell them apart without this reset. Real-data bug
+                    # (CAPTRUST.NS): TZ BUY wrongly confirmed 06/01/2026
+                    # off an INVALID RED1 from 05/01, with no RED2 ever
+                    # firing -- the correct RED2 only comes 09/01, after a
+                    # genuinely fresh RED1 forms 08/01.
+                    cyc.red = None
             elif _bar1_shape(prev, cur):
                 cyc.buy = TzBuy(ref_high=cur.h, ref_low=cur.l)
                 ev.append("TZ BUY")
@@ -367,6 +378,12 @@ class DtfBarEngine:
             ev += red_ev
             if "RED2" in red_ev:
                 buy.bar_pending = True
+            elif any(e.startswith("INVALID") for e in red_ev):
+                # Same reset as the pre-TZ-BUY gate: without this, an
+                # invalidated post-TZ-BUY RED1 is left permanently dead
+                # (buy.red not None, not active), silently blocking any
+                # fresh RED1 from ever forming again on this TZ BUY.
+                buy.red = None
 
         ev += self._eval_bar_lineages(buy, prev, cur)
         return ev
@@ -562,6 +579,9 @@ class DtfBarEngine:
             ev += red_ev
             if "RED2" in red_ev:
                 rear.bar_pending = True
+            elif any(e.startswith("INVALID") for e in red_ev):
+                # Same reset as the other two RED1/RED2 gates.
+                rear.red = None
 
         ev += self._eval_bar_lineages(rear, prev, cur)
         return ev

@@ -223,7 +223,18 @@ export class DtfBarEngine {
           ev.push("RED1");
         }
       } else if (cyc.red.active) {
-        ev.push(...this.evalRed(cyc.red, prev, cur, "RED1", "RED2", "RED1 HH"));
+        const redEv = this.evalRed(cyc.red, prev, cur, "RED1", "RED2", "RED1 HH");
+        ev.push(...redEv);
+        if (redEv.some((e) => e.startsWith("INVALID"))) {
+          // A cancelled RED1 must NOT be treated as "RED2 confirmed,
+          // ready for TZ BUY" -- both leave red.active false, and the
+          // else-if chain here can't tell them apart without this reset.
+          // Real-data bug (CAPTRUST.NS): TZ BUY wrongly confirmed
+          // 06/01/2026 off an INVALID RED1 from 05/01, with no RED2 ever
+          // firing -- the correct RED2 only comes 09/01, after a
+          // genuinely fresh RED1 forms 08/01.
+          cyc.red = null;
+        }
       } else if (bar1Shape(prev, cur)) {
         cyc.buy = new TzBuy(cur.h, cur.l);
         ev.push("TZ BUY");
@@ -340,7 +351,15 @@ export class DtfBarEngine {
     } else if (buy.red.active) {
       const redEv = this.evalRed(buy.red, prev, cur, "RED1", "RED2", "RED1 HH");
       ev.push(...redEv);
-      if (redEv.includes("RED2")) buy.barPending = true;
+      if (redEv.includes("RED2")) {
+        buy.barPending = true;
+      } else if (redEv.some((e) => e.startsWith("INVALID"))) {
+        // Same reset as the pre-TZ-BUY gate: without this, an invalidated
+        // post-TZ-BUY RED1 is left permanently dead (buy.red not null,
+        // not active), silently blocking any fresh RED1 from ever
+        // forming again on this TZ BUY.
+        buy.red = null;
+      }
     }
 
     ev.push(...this.evalBarLineages(buy, prev, cur));
@@ -553,7 +572,12 @@ export class DtfBarEngine {
     } else if (rear.red.active) {
       const redEv = this.evalRed(rear.red, prev, cur, "RED1", "RED2", "RED1 HH");
       ev.push(...redEv);
-      if (redEv.includes("RED2")) rear.barPending = true;
+      if (redEv.includes("RED2")) {
+        rear.barPending = true;
+      } else if (redEv.some((e) => e.startsWith("INVALID"))) {
+        // Same reset as the other two RED1/RED2 gates.
+        rear.red = null;
+      }
     }
 
     ev.push(...this.evalBarLineages(rear, prev, cur));
