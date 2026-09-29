@@ -1,4 +1,4 @@
-# DTF-only theories (specification only, NOT implemented)
+# DTF-only theories
 
 This file holds theories that are defined **only for DTF (Daily Time Frame)
 data** and are NOT the same theory as TZ BUY (`tz_engine_wtf.py` /
@@ -13,12 +13,21 @@ own file, not a section buried in another theory's book. Building any of
 these does not change TZ BUY, PRIME TREND, or the TAR/TBAR /
 BAR ENTRY/BAR 2 spec in `WTF_RULEBOOK.md` in any way.
 
-Every theory in this file is specification only until explicitly built —
-each section says so, and none should be treated as shipped or as
-affecting `tz_engine_wtf.py` / `prime_trend.py` unless a later note here
-says otherwise.
+Each entry says its own implementation status — do not assume a theory
+here is shipped or spec-only without checking its own heading. None of
+this affects `tz_engine_wtf.py` / `prime_trend.py` in any way regardless
+of status.
 
-## DTF BAR (specification only, NOT implemented)
+## DTF BAR (implemented — first-pass, not yet verified against real data)
+
+Reference implementation: `dtf_bar.py`. Ported line-for-line to
+TypeScript as `lib/dtfBar.ts`, which is what the live `/dtf-bar` and
+`/dtf-bar-report` pages actually run. Both carry the same scope caveats
+in their own module docstrings: single lineage only (no concurrent
+sibling TZ GREEN cycles/branch racing), BAR generations unlimited but
+sequential only (no concurrent racing lineages), and — same standing as
+PRIME TREND 1.1 — **not yet verified against real market data**. Treat
+findings from real data as expected until that verification pass happens.
 
 A restructured version of the TZ BUY skeleton, DTF-only: no TZ BUY 2 tier,
 a mandatory RED1→RED2 cascade in place of the base engine's single RED
