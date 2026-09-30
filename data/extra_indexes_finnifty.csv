@@ -1,0 +1,5 @@
+category,filename,tv_symbol,name
+indexes,FINNIFTY,NSE:CNXFINANCE,Nifty Financial Services (FINNIFTY)
+indexes,MIDCPNIFTY,NSE:NIFTY_MID_SELECT,Nifty Midcap Select (MIDCPNIFTY)
+indexes,NIFTYNXT50,NSE:NIFTYJR,Nifty Next 50 (NIFTYNXT50)
+indexes,NIFTYFPI,NSE:NIFTY_FPI_150,Nifty India FPI 150 (NIFTYFPI)
