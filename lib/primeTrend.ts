@@ -148,7 +148,7 @@ export interface WtfTraceEntry {
  * snapshot here is keyed by pid (stable for one branch's whole life),
  * never by letter alone -- letter is only resolved from pid at the point
  * of use. */
-function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
+export function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
   const engine = new TZEngine();
   const trace: WtfTraceEntry[] = [];
   for (let i = 1; i < wtfDays.length; i++) {
