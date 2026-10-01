@@ -152,7 +152,14 @@ export interface TarTbarResult {
   wtfLabel: string;
   wtfFormationDate: string;
   level: number; // 0 = TBAR itself, 1 = REAR ENTRY, 2+ = REAR RE-ENTER (collapsed)
-  side: "TBAR" | "REAR ENTRY" | "REAR RE-ENTER";
+  // "BAR2" rows are the nested BAR1->BAR2 cycle's own row (confirmed:
+  // visible, same as PRIME TREND 1.3's own nested-tier rows) -- they
+  // OVERLAP the enclosing TBAR/REAR-ENTRY/REAR-RE-ENTER row rather than
+  // replacing it, since nested BAR2's own harder SL doesn't end the
+  // outer row at all (it reforms unrestricted, same level, per the
+  // confirmed TAR/TBAR rules) -- unlike PRIME TREND 1.3, where a nested
+  // tier2's own SL always promotes and closes the outer row.
+  side: "TBAR" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2";
   entryDate: string;
   entryPrice: number;
   exitType: string;
@@ -208,6 +215,10 @@ class LevelState {
   nestedMode: "NONE" | "SEEK_BAR1" | "BAR1_ACTIVE" | "BAR2_ACTIVE" = "NONE";
   nestedRefHigh = 0;
   nestedRefLow = 0;
+  nestedEntryDate: string | null = null;
+  nestedEntryPrice: number | null = null;
+  nestedHH = 0;
+  nestedHHDate: string | null = null;
 
   constructor(level: number, topRefFloor: number | null) {
     this.level = level;
@@ -224,15 +235,25 @@ function trackHH(s: LevelState, cur: Day) {
 }
 
 /** Advances one level by one candle. Returns `opened`/`closed` for the
- * result-row lifecycle, and `promoted` when TAR SL2 (RED1-RED2 first
- * formation) requires escalating to the next level. */
+ * outer (TBAR/REAR-ENTRY/REAR-RE-ENTER) row lifecycle, `nestedClosed`
+ * for the nested BAR1->BAR2 cycle's own row (confirmed: visible, same
+ * as PRIME TREND 1.3 -- but overlapping the outer row, not replacing
+ * it, since it reforms unrestricted rather than promoting), and
+ * `promoted` when TAR SL2 (RED1-RED2 first formation) requires
+ * escalating to the next level. */
 function stepLevel(
   s: LevelState,
   prev: Day,
   cur: Day
-): { opened: { price: number } | null; closed: { exitType: string; exitPrice: number } | null; promoted: boolean } {
+): {
+  opened: { price: number } | null;
+  closed: { exitType: string; exitPrice: number } | null;
+  nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null;
+  promoted: boolean;
+} {
   let opened: { price: number } | null = null;
   let closed: { exitType: string; exitPrice: number } | null = null;
+  let nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null = null;
   let promoted = false;
 
   if (s.mode === "SEEK_LEVEL_ENTRY") {
@@ -240,7 +261,7 @@ function stepLevel(
       s.topRef = Math.max(s.topRef, cur.h);
       s.mode = "SEEK_TAR";
     }
-    return { opened, closed, promoted };
+    return { opened, closed, nestedClosed, promoted };
   }
 
   // --- the one continuous RED1->RED2 tracker, independent of TAR/TBAR state ---
@@ -355,6 +376,10 @@ function stepLevel(
         if (breaksRef(prev, cur, s.nestedRefHigh)) {
           s.nestedRefHigh = cur.h;
           s.nestedRefLow = cur.l;
+          s.nestedEntryDate = cur.date;
+          s.nestedEntryPrice = cur.h;
+          s.nestedHH = cur.h;
+          s.nestedHHDate = cur.date;
           s.nestedMode = "BAR2_ACTIVE";
         } else {
           const nSlNow = isSl(cur, s.nestedRefLow);
@@ -363,10 +388,27 @@ function stepLevel(
           if (nSlNow) s.nestedMode = "SEEK_BAR1";
         }
       } else if (s.nestedMode === "BAR2_ACTIVE") {
+        if (cur.h > s.nestedHH) {
+          s.nestedHH = cur.h;
+          s.nestedHHDate = cur.date;
+        }
         const nSlNow = isSl(cur, s.nestedRefLow);
         if (!nSlNow && cur.h > s.nestedRefHigh) s.nestedRefHigh = cur.h;
         if (!nSlNow && cur.l < s.nestedRefLow) s.nestedRefLow = cur.l;
-        if (nSlNow) s.nestedMode = "SEEK_BAR1"; // "PRIME TREND SL" -- door already open, unrestricted
+        if (nSlNow) {
+          // "PRIME TREND SL" -- door already open, unrestricted reform at
+          // the SAME level (confirmed: does not promote, unlike PRIME
+          // TREND 1.3's own nested tier2 SL). Gets its own visible row,
+          // overlapping the still-open outer TBAR/REAR-ENTRY row.
+          nestedClosed = {
+            entryDate: s.nestedEntryDate as string,
+            entryPrice: s.nestedEntryPrice as number,
+            exitPrice: cur.l,
+            hh: s.nestedHH,
+            hhDate: s.nestedHHDate as string,
+          };
+          s.nestedMode = "SEEK_BAR1";
+        }
       }
       break;
     }
@@ -391,7 +433,7 @@ function stepLevel(
     }
   }
 
-  return { opened, closed, promoted };
+  return { opened, closed, nestedClosed, promoted };
 }
 
 function simulateWindow(dtfDays: Day[], startIdx: number, endIdxExclusive: number, wtfLabel: string, wtfFormationDate: string, rows: TarTbarResult[]): TarTbarLiveStatus[] {
@@ -408,7 +450,7 @@ function simulateWindow(dtfDays: Day[], startIdx: number, endIdxExclusive: numbe
     for (; i < endIdxExclusive; i++) {
       const prev = dtfDays[i - 1];
       const cur = dtfDays[i];
-      const { opened, closed, promoted } = stepLevel(s, prev, cur);
+      const { opened, closed, nestedClosed, promoted } = stepLevel(s, prev, cur);
       if (opened) {
         s.rowEntryDate = cur.date;
         s.rowEntryPrice = opened.price;
@@ -426,6 +468,25 @@ function simulateWindow(dtfDays: Day[], startIdx: number, endIdxExclusive: numbe
           exitPrice: closed.exitPrice,
           highestHigh: s.rowHHDate ? s.rowHH : null,
           highestHighDate: s.rowHHDate,
+        });
+      }
+      if (nestedClosed) {
+        // Own visible row for the nested BAR1->BAR2 cycle, overlapping
+        // the still-open outer row (confirmed: same as PRIME TREND 1.3's
+        // nested-tier rows, but overlapping rather than replacing, since
+        // this reforms at the same level rather than promoting).
+        rows.push({
+          wtfLabel,
+          wtfFormationDate,
+          level: s.level,
+          side: "BAR2",
+          entryDate: nestedClosed.entryDate,
+          entryPrice: nestedClosed.entryPrice,
+          exitType: "PRIME TREND SL",
+          exitDate: cur.date,
+          exitPrice: nestedClosed.exitPrice,
+          highestHigh: nestedClosed.hh,
+          highestHighDate: nestedClosed.hhDate,
         });
       }
       if (promoted) {
