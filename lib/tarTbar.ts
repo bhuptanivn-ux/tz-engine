@@ -202,6 +202,7 @@ class LevelState {
 
   tarRefHigh = 0;
   tarRefLow = 0;
+  tarActivationPrice: number | null = null; // fixed snapshot at TAR's own formation (matches Stage1's s1ActivationPrice)
   tbarRefHigh = 0;
   tbarRefLow = 0;
   tbarActive = false; // only meaningful once mode === TBAR_ACTIVE
@@ -286,6 +287,7 @@ function stepLevel(
       if (bar1Shape(prev, cur)) {
         s.tarRefHigh = cur.h;
         s.tarRefLow = cur.l;
+        s.tarActivationPrice = cur.h; // fixed at formation; tarRefHigh keeps climbing afterward
         if (s.firstFormationGate === null) s.firstFormationGate = s.doorOpen ? "RED1-RED2" : "RED1";
         s.mode = "TAR_ACTIVE";
       }
@@ -294,17 +296,22 @@ function stepLevel(
     case "TAR_ACTIVE": {
       // Escalation checked before quiet climb (standard ordering fix).
       if (breaksRef(prev, cur, s.tarRefHigh)) {
+        // Entry price is the ladder threshold itself (ref + THRESH), not
+        // the candle's own actual High -- same convention shipped PRIME
+        // TREND's own Stage 2 uses (`ref2 + THRESH`), confirmed against
+        // real KALYANKJIL.NS numbers: TAR's ref climbed to 523.95 by
+        // 15/04/2025 (the day before escalation), so TBAR's entry price
+        // is 523.95 + 0.20 = 524.15 -- not 16/04's own High of 529.
+        const entryPrice = s.tarRefHigh + THRESH;
         s.topRef = Math.max(s.topRef, cur.h);
         s.tbarRefHigh = cur.h;
         s.tbarRefLow = cur.l;
         s.tbarActive = true;
-        s.rowEntryDate = cur.date;
-        s.rowEntryPrice = cur.h;
         s.rowHH = cur.h;
         s.rowHHDate = cur.date;
         s.mode = "TBAR_ACTIVE";
         s.nestedMode = s.doorOpen ? "SEEK_BAR1" : "NONE";
-        opened = { price: cur.h };
+        opened = { price: entryPrice };
         break;
       }
       const slNow = isSl(cur, s.tarRefLow);
@@ -327,8 +334,10 @@ function stepLevel(
 
       if (tarSlNow && tbarSlNow) {
         // Combined same-candle breach: always unrestricted, regardless of door.
+        // TAR is decisive in a combined breach, same as the standalone case --
+        // exit price is TAR's own tracked reference low, not the raw candle low.
         s.topRef = Math.max(s.topRef, s.tarRefHigh, s.tbarRefHigh);
-        closed = { exitType: "TAR SL + TBAR SL", exitPrice: cur.l };
+        closed = { exitType: "TAR SL + TBAR SL", exitPrice: s.tarRefLow };
         s.mode = "SEEK_TAR";
         s.nestedMode = "NONE";
         s.tarParentFailedOnce = false;
@@ -336,8 +345,9 @@ function stepLevel(
       }
       if (tarSlNow) {
         // Decisive: TAR's own SL wipes TBAR regardless of TBAR's own state.
+        // Exit price is TAR's own tracked reference low, not the raw candle low.
         s.topRef = Math.max(s.topRef, s.tarRefHigh, s.tbarRefHigh);
-        closed = { exitType: s.tarParentFailedOnce ? "TAR SL2" : "TAR SL", exitPrice: cur.l };
+        closed = { exitType: s.tarParentFailedOnce ? "TAR SL2" : "TAR SL", exitPrice: s.tarRefLow };
         if (s.tarParentFailedOnce) {
           if (s.firstFormationGate === "RED1") {
             s.mode = "SEEK_TAR";
@@ -357,8 +367,9 @@ function stepLevel(
         break;
       }
       if (tbarSlNow) {
+        // Exit price is TBAR's own tracked reference low, not the raw candle low.
         s.topRef = Math.max(s.topRef, s.tbarRefHigh);
-        closed = { exitType: "TBAR SL", exitPrice: cur.l };
+        closed = { exitType: "TBAR SL", exitPrice: s.tbarRefLow };
         s.mode = s.doorOpen ? "SEEK_TAR" : "SEEK_REACTIVATION";
         s.nestedMode = "NONE";
         break;
@@ -374,10 +385,13 @@ function stepLevel(
         }
       } else if (s.nestedMode === "BAR1_ACTIVE") {
         if (breaksRef(prev, cur, s.nestedRefHigh)) {
+          // Ladder entry price: the ref as it stood before this candle, + THRESH --
+          // not the escalation candle's own actual High (same convention as TAR->TBAR).
+          const nestedEntryPrice = s.nestedRefHigh + THRESH;
           s.nestedRefHigh = cur.h;
           s.nestedRefLow = cur.l;
           s.nestedEntryDate = cur.date;
-          s.nestedEntryPrice = cur.h;
+          s.nestedEntryPrice = nestedEntryPrice;
           s.nestedHH = cur.h;
           s.nestedHHDate = cur.date;
           s.nestedMode = "BAR2_ACTIVE";
@@ -403,7 +417,7 @@ function stepLevel(
           nestedClosed = {
             entryDate: s.nestedEntryDate as string,
             entryPrice: s.nestedEntryPrice as number,
-            exitPrice: cur.l,
+            exitPrice: s.nestedRefLow,
             hh: s.nestedHH,
             hhDate: s.nestedHHDate as string,
           };
@@ -414,18 +428,18 @@ function stepLevel(
     }
     case "SEEK_REACTIVATION": {
       if (breaksRef(prev, cur, s.topRef)) {
+        // Ladder entry price: topRef as it stood before this candle, + THRESH.
+        const entryPrice = s.topRef + THRESH;
         s.topRef = Math.max(s.topRef, cur.h);
         s.tbarRefHigh = cur.h;
         s.tbarRefLow = cur.l;
         s.tarRefHigh = cur.h;
         s.tarRefLow = cur.l;
-        s.rowEntryDate = cur.date;
-        s.rowEntryPrice = cur.h;
         s.rowHH = cur.h;
         s.rowHHDate = cur.date;
         s.mode = "TBAR_ACTIVE";
         s.nestedMode = s.doorOpen ? "SEEK_BAR1" : "NONE";
-        opened = { price: cur.h };
+        opened = { price: entryPrice };
       } else if (cur.h > s.topRef) {
         s.topRef = cur.h;
       }
@@ -522,7 +536,7 @@ function simulateWindow(dtfDays: Day[], startIdx: number, endIdxExclusive: numbe
         level: s.level,
         side: s.level === 0 ? "TAR" : s.level === 1 ? "REAR" : "REAR RE-ENTER",
         since: s.rowEntryDate ?? wtfFormationDate,
-        activationPrice: s.tarRefHigh,
+        activationPrice: s.tarActivationPrice as number,
         highestHigh: null,
         highestHighDate: null,
       });
