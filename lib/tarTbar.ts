@@ -89,8 +89,7 @@
 //     above the running top reference, REAR must stay active, and the
 //     exact same rules recurse beneath it (REAR plays TAR's role, one
 //     level up, exactly like WTF TZ BUY 2 does for the outer window --
-//     collapsing level 2+ into "REAR RE-ENTER", mirroring PRIME TREND
-//     1.3's own confirmed recursion precedent).
+//     collapsing level 2+ into "REAR RE-ENTER").
 //
 // NESTED BAR1/BAR2 "routine" phase: once doorOpen is true, a nested
 // BAR1/BAR2 cascade becomes available underneath TBAR -- BAR1 forms via
@@ -153,12 +152,10 @@ export interface TarTbarResult {
   wtfFormationDate: string;
   level: number; // 0 = TBAR itself, 1 = REAR ENTRY, 2+ = REAR RE-ENTER (collapsed)
   // "BAR2" rows are the nested BAR1->BAR2 cycle's own row (confirmed:
-  // visible, same as PRIME TREND 1.3's own nested-tier rows) -- they
-  // OVERLAP the enclosing TBAR/REAR-ENTRY/REAR-RE-ENTER row rather than
-  // replacing it, since nested BAR2's own harder SL doesn't end the
-  // outer row at all (it reforms unrestricted, same level, per the
-  // confirmed TAR/TBAR rules) -- unlike PRIME TREND 1.3, where a nested
-  // tier2's own SL always promotes and closes the outer row.
+  // gets its own visible row) -- they OVERLAP the enclosing
+  // TBAR/REAR-ENTRY/REAR-RE-ENTER row rather than replacing it, since
+  // nested BAR2's own harder SL doesn't end the outer row at all (it
+  // reforms unrestricted, same level, per the confirmed TAR/TBAR rules).
   side: "TBAR" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2";
   entryDate: string;
   entryPrice: number;
@@ -237,11 +234,11 @@ function trackHH(s: LevelState, cur: Day) {
 
 /** Advances one level by one candle. Returns `opened`/`closed` for the
  * outer (TBAR/REAR-ENTRY/REAR-RE-ENTER) row lifecycle, `nestedClosed`
- * for the nested BAR1->BAR2 cycle's own row (confirmed: visible, same
- * as PRIME TREND 1.3 -- but overlapping the outer row, not replacing
- * it, since it reforms unrestricted rather than promoting), and
- * `promoted` when TAR SL2 (RED1-RED2 first formation) requires
- * escalating to the next level. */
+ * for the nested BAR1->BAR2 cycle's own row (confirmed: gets its own
+ * visible row, overlapping the outer row rather than replacing it,
+ * since it reforms unrestricted rather than promoting), and `promoted`
+ * when TAR SL2 (RED1-RED2 first formation) requires escalating to the
+ * next level. */
 function stepLevel(
   s: LevelState,
   prev: Day,
@@ -411,9 +408,8 @@ function stepLevel(
         if (!nSlNow && cur.l < s.nestedRefLow) s.nestedRefLow = cur.l;
         if (nSlNow) {
           // "PRIME TREND SL" -- door already open, unrestricted reform at
-          // the SAME level (confirmed: does not promote, unlike PRIME
-          // TREND 1.3's own nested tier2 SL). Gets its own visible row,
-          // overlapping the still-open outer TBAR/REAR-ENTRY row.
+          // the SAME level (confirmed: does not promote). Gets its own
+          // visible row, overlapping the still-open outer TBAR/REAR-ENTRY row.
           nestedClosed = {
             entryDate: s.nestedEntryDate as string,
             entryPrice: s.nestedEntryPrice as number,
@@ -486,8 +482,7 @@ function simulateWindow(dtfDays: Day[], startIdx: number, endIdxExclusive: numbe
       }
       if (nestedClosed) {
         // Own visible row for the nested BAR1->BAR2 cycle, overlapping
-        // the still-open outer row (confirmed: same as PRIME TREND 1.3's
-        // nested-tier rows, but overlapping rather than replacing, since
+        // the still-open outer row rather than replacing it (confirmed:
         // this reforms at the same level rather than promoting).
         rows.push({
           wtfLabel,
