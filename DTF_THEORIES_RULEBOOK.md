@@ -25,9 +25,9 @@ TypeScript as `lib/dtfBar.ts`, which is what the live `/dtf-bar` and
 `/dtf-bar-report` pages actually run. Both carry the same scope caveats
 in their own module docstrings: single lineage only (no concurrent
 sibling TZ GREEN cycles/branch racing), BAR generations unlimited but
-sequential only (no concurrent racing lineages), and — same standing as
-PRIME TREND 1.1 — **not yet verified against real market data**. Treat
-findings from real data as expected until that verification pass happens.
+sequential only (no concurrent racing lineages), and **not yet verified
+against real market data**. Treat findings from real data as expected
+until that verification pass happens.
 
 A restructured version of the TZ BUY skeleton, DTF-only: no TZ BUY 2 tier,
 a mandatory RED1→RED2 cascade in place of the base engine's single RED

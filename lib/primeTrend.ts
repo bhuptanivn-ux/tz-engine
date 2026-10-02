@@ -71,13 +71,7 @@ export interface PrimeTrendLiveStatus {
 // Stage 1 / Stage 2 state (mirrors Buy/Bar2's own ref_high/ref_low shape)
 // --------------------------------------------------------------------
 
-// Exported (visibility only, no behavior change) so a separate, DTF-only
-// experimental variant (lib/primeTrend11.ts, "PRIME TREND 1.1" -- adds a
-// third DTF stage, TZ BUY 3, above DTF TZ BUY ENTRY) can reuse the exact
-// same WTF-trace/instance machinery and Stage 1/Stage 2 primitives without
-// forking or reimplementing them. Nothing about computePrimeTrend or
-// computePrimeTrendLive's own behavior changes.
-export class Stage {
+class Stage {
   active = true;
   frozenRef: number | null = null;
   entryRatchet: number; // tracks the NEXT tier's own escalation ladder (Stage 1 -> Stage 2's ladder, Stage 2 -> Stage 3's, etc.)
