@@ -68,10 +68,13 @@
 // same-candle combined breach) forks on the three-condition rule:
 //   - doorOpen already true at that point -> unrestricted reform (a
 //     fresh TAR can reform anywhere via the plain breakout).
-//   - doorOpen still false -> reactivate above the running top
+//   - doorOpen still false -> TAR alone reforms above the running top
 //     reference (whichever is higher between TAR's own and TBAR's own)
 //     -- same "whichever is higher" principle used everywhere else in
-//     this codebase.
+//     this codebase. TBAR only escalates from that fresh TAR later, on
+//     a later candle, via the ordinary TAR->TBAR path -- TAR and TBAR
+//     can never form on the same candle (only an SL/exit can be a
+//     combined event).
 //
 // COMBINED SAME-CANDLE BREACH (TAR's threshold AND TBAR's threshold
 // both breached on the exact same candle): always reforms unrestricted,
@@ -182,7 +185,7 @@ type Mode =
   | "SEEK_TAR" // watching for TAR's own plain breakout
   | "TAR_ACTIVE" // TAR alone (tier1), tracking its own ref, watching escalation or its own pre-escalation SL
   | "TBAR_ACTIVE" // TBAR active; TAR continues tracking its own ref in parallel (parent/child dependency)
-  | "SEEK_REACTIVATION"; // door-not-open reactivation: watch breaksRef(topRef) to reform TBAR directly
+  | "SEEK_REACTIVATION"; // door-not-open reactivation: watch breaksRef(topRef) to reform TAR alone; TBAR escalates later, on a later candle
 
 function sideForLevel(level: number): "TBAR" | "REAR ENTRY" | "REAR RE-ENTER" {
   return level === 0 ? "TBAR" : level === 1 ? "REAR ENTRY" : "REAR RE-ENTER";
@@ -423,19 +426,19 @@ function stepLevel(
       break;
     }
     case "SEEK_REACTIVATION": {
+      // Reactivation reforms TAR alone -- TAR and TBAR can never form on
+      // the same candle (only an SL/exit can be a combined event). This
+      // just clears the running top reference and drops back into the
+      // ordinary TAR_ACTIVE state; TBAR only escalates later, on a later
+      // candle, via TAR_ACTIVE's own already-correct escalation path --
+      // same two-step shape as every other BAR->BAR ENTRY /
+      // TAR->TBAR / BAR->BAR 2 formation in this codebase.
       if (breaksRef(prev, cur, s.topRef)) {
-        // Ladder entry price: topRef as it stood before this candle, + THRESH.
-        const entryPrice = s.topRef + THRESH;
         s.topRef = Math.max(s.topRef, cur.h);
-        s.tbarRefHigh = cur.h;
-        s.tbarRefLow = cur.l;
         s.tarRefHigh = cur.h;
         s.tarRefLow = cur.l;
-        s.rowHH = cur.h;
-        s.rowHHDate = cur.date;
-        s.mode = "TBAR_ACTIVE";
-        s.nestedMode = s.doorOpen ? "SEEK_BAR1" : "NONE";
-        opened = { price: entryPrice };
+        s.tarActivationPrice = cur.h;
+        s.mode = "TAR_ACTIVE";
       } else if (cur.h > s.topRef) {
         s.topRef = cur.h;
       }
