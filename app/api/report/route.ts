@@ -4,7 +4,6 @@ import { SCREENER_UNIVERSE } from "@/lib/screenerUniverse";
 import { OTHER_MARKETS } from "@/lib/otherMarkets";
 import { TZEngine, type Day, type HistoryRowLike } from "@/lib/tzEngineWtf";
 import { computePrimeTrend } from "@/lib/primeTrend";
-import { computePrimeTrend11 } from "@/lib/primeTrend11";
 import { readReportCache, writeReportCache, type ReportMatch } from "@/lib/reportCache";
 
 // Same reasoning as /api/screener: a full-segment scan (NSE Equity is
@@ -24,7 +23,7 @@ const EVENT_PREFIXES: Record<string, string> = {
   "BAR 2": "BAR 2(",
 };
 
-const VALID_EVENTS = new Set([...Object.keys(EVENT_PREFIXES), "PRIME TREND", "PRIME TREND 1.1"]);
+const VALID_EVENTS = new Set([...Object.keys(EVENT_PREFIXES), "PRIME TREND"]);
 
 const TIMEFRAMES = new Set(["daily", "weekly", "monthly", "yearly"]);
 
@@ -204,16 +203,12 @@ export async function GET(req: NextRequest) {
       // each cycle is grouped here so its own SL date and (if any) the
       // following re-entry date can be surfaced alongside it, not just the
       // bare entry date.
-      // PRIME TREND 1.1 is the same dual-timeframe machinery, run through
-      // the experimental 3-stage variant (lib/primeTrend11.ts) instead --
-      // each row here is one confirmed TZ BUY 3 (Stage 3) entry/exit
-      // cycle, the Stage-3 analogue of PRIME TREND's own Stage 2 rows.
-      if (event === "PRIME TREND" || event === "PRIME TREND 1.1") {
+      if (event === "PRIME TREND") {
         const rows = await fetchHistory(entry.symbol, ENGINE_HISTORY_FLOOR, end, "1d");
         const days = toDays(rows);
         if (days.length < 2) return;
         const wtfRows = resampleWeekly(days);
-        const results = event === "PRIME TREND" ? computePrimeTrend(wtfRows, days) : computePrimeTrend11(wtfRows, days);
+        const results = computePrimeTrend(wtfRows, days);
 
         const byInstance = new Map<string, typeof results>();
         for (const r of results) {
