@@ -13,10 +13,27 @@
 // throughout (same decisive own-SL, same "whichever is higher" self-
 // recovery, same BAR-family attachment).
 //
-// Direct, faithful port of prime_trend.py (Python dev branch
+// Originally a direct, faithful port of prime_trend.py (Python dev branch
 // claude/epic-darwin-pxs5s3), verified against real ADANIENT.NS and
 // ICICIBANK.NS WTF+DTF data (see test_prime_trend_smoke.py in the Python
-// source tree).
+// source tree) -- that was Stage 1 (DTF TZ BUY) escalating directly to
+// Stage 2 (a plain-breakout "DTF TZ BUY ENTRY") via no RED gate at all.
+//
+// REVISED: "DTF TZ BUY ENTRY" is no longer applicable. Stage 1 (DTF TZ
+// BUY) is unchanged -- still the mandatory, unconditional breakout above
+// WTF's own anchor reference -- but it no longer escalates directly.
+// Instead, once Stage 1 is active, it needs its own retracement (RED1,
+// or RED1-RED2) before a DTF BAR can form; BAR then escalates to BAR
+// ENTRY by clearing its own reference high, and BAR ENTRY (not TZ BUY
+// ENTRY) is now what "PRIME TREND confirmed" means. This is structurally
+// the exact same grammar as lib/tarTbar.ts's TAR/TBAR (continuous
+// RED1->RED2 tracker, parent/child dependency, REAR recursion for the
+// two-strike SL2 case, nested BAR1/BAR2 routine phase) -- see the BAR/
+// BAR ENTRY section below, and PRIME_TREND_RULEBOOK.md for the full
+// derivation. TZ BUY's own SL still wipes the whole BAR/BAR ENTRY
+// structure outright ("active TZ BUY is mandatory"), and TZ BUY's own
+// reactivation (above its own earlier reference high, unchanged) starts
+// a brand new BAR/BAR ENTRY window from scratch every time.
 
 import { ANY, branchLabel, Day, EPS, THRESH, TZEngine, ParentCycle } from "./tzEngineWtf";
 
@@ -26,6 +43,13 @@ export interface PrimeTrendResult {
   family: PrimeTrendFamily;
   letter: string;
   wtfFormationDate: string;
+  // level 0 = BAR ENTRY itself, 1 = REAR ENTRY, 2+ = REAR RE-ENTER
+  // (collapsed); "side" names which of those this row is, or "BAR2" for
+  // the nested BAR1->BAR2 cycle's own row (see the BAR/BAR ENTRY section
+  // below) -- a BAR2 row OVERLAPS its enclosing level's own row rather
+  // than replacing it.
+  level: number;
+  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2";
   entryDate: string;
   entryPrice: number;
   exitType: string;
@@ -86,6 +110,295 @@ export function breakoutShape(prev: Day, cur: Day, ref: number): boolean {
 
 export function slShape(cur: Day, refLow: number): boolean {
   return cur.l < refLow && refLow - cur.l >= THRESH - EPS && cur.c <= refLow + EPS;
+}
+
+// --------------------------------------------------------------------
+// BAR / BAR ENTRY -- DTF TZ BUY's own continuation ladder, replacing the
+// old plain-breakout "DTF TZ BUY ENTRY" (Stage 2). Mirrors
+// lib/tarTbar.ts's TAR/TBAR mechanics almost exactly (same continuous
+// RED1->RED2 tracker, same parent/child dependency, same REAR recursion
+// for the two-strike SL2 case, same nested BAR1/BAR2 "routine" phase) --
+// just anchored on DTF TZ BUY itself instead of a WTF BAR milestone, and
+// freshly (re)created every time Stage 1 (TZ BUY) itself (re)forms:
+// "active TZ BUY is mandatory" -- TZ BUY's own SL wipes this whole
+// structure outright, requiring TZ BUY's own mandatory reactivation
+// (above its own earlier reference high, unchanged Stage 1 behavior)
+// before a brand new BAR/BAR ENTRY window can start. See
+// PRIME_TREND_RULEBOOK.md for the full derivation.
+//
+// PRIME TREND now only confirms once BAR ENTRY (or REAR ENTRY / REAR
+// RE-ENTER) is active -- a bare BAR (tier 1, pre-escalation) alone is
+// never reported as a PRIME TREND entry, same filter rule as before, now
+// applied one tier later.
+class BarRedGate {
+  constructor(public refHigh: number, public refLow: number) {}
+}
+function stepBarRed(red: BarRedGate, prev: Day, cur: Day): "confirmed" | "invalid" | "continuing" {
+  if (cur.h > red.refHigh && cur.h - red.refHigh >= THRESH - EPS && cur.c >= red.refHigh) return "invalid";
+  if (cur.h > red.refHigh) red.refHigh = cur.h;
+  if (cur.l < red.refLow) {
+    const red2Holds = cur.h <= prev.h && red.refLow - cur.l >= THRESH - EPS && cur.c <= red.refLow + EPS;
+    if (red2Holds) return "confirmed";
+    red.refLow = cur.l;
+  }
+  return "continuing";
+}
+function isBarRed1Shape(prev: Day, cur: Day): boolean {
+  return cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l;
+}
+
+type BarMode = "SEEK_LEVEL_ENTRY" | "SEEK_BAR" | "BAR_ACTIVE" | "BAR_ENTRY_ACTIVE" | "SEEK_REACTIVATION";
+
+function sideForBarLevel(level: number): "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" {
+  return level === 0 ? "BAR ENTRY" : level === 1 ? "REAR ENTRY" : "REAR RE-ENTER";
+}
+
+class BarLevelState {
+  mode: BarMode;
+  level: number;
+  doorOpen = false;
+  red: BarRedGate | null = null;
+  everSawRed1 = false; // persists even after `red` resolves -- unlocks BAR-seeking permanently
+  firstFormationGate: "RED1" | "RED1-RED2" | null = null;
+  topRef: number;
+
+  barRefHigh = 0;
+  barRefLow = 0;
+  barActivationPrice: number | null = null; // fixed snapshot at BAR's own formation
+  barEntryRefHigh = 0;
+  barEntryRefLow = 0;
+  barParentFailedOnce = false; // BAR-SL -> BAR-SL2 two-strike tracker (post-escalation only)
+
+  rowEntryDate: string | null = null;
+  rowEntryPrice: number | null = null;
+  rowHH = 0;
+  rowHHDate: string | null = null;
+
+  nestedMode: "NONE" | "SEEK_BAR1" | "BAR1_ACTIVE" | "BAR2_ACTIVE" = "NONE";
+  nestedRefHigh = 0;
+  nestedRefLow = 0;
+  nestedEntryDate: string | null = null;
+  nestedEntryPrice: number | null = null;
+  nestedHH = 0;
+  nestedHHDate: string | null = null;
+
+  constructor(level: number, topRefFloor: number | null) {
+    this.level = level;
+    this.topRef = topRefFloor ?? 0;
+    this.mode = topRefFloor === null ? "SEEK_BAR" : "SEEK_LEVEL_ENTRY";
+  }
+}
+
+/** Advances one BAR/BAR ENTRY level by one candle -- see lib/tarTbar.ts's
+ * `stepLevel` for the mechanics this mirrors (that file's own module
+ * docstring documents the full derivation). `opened`/`closed` are this
+ * level's own BAR ENTRY/REAR ENTRY/REAR RE-ENTER row lifecycle,
+ * `nestedClosed` is the nested BAR1->BAR2 cycle's own row (gets its own
+ * visible row, overlapping this level's own row), and `promoted` means
+ * BAR SL2 (RED1-RED2 first formation) requires escalating to REAR. */
+function stepBarLevel(
+  s: BarLevelState,
+  prev: Day,
+  cur: Day
+): {
+  opened: { price: number } | null;
+  closed: { exitType: string; exitPrice: number } | null;
+  nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null;
+  promoted: boolean;
+} {
+  let opened: { price: number } | null = null;
+  let closed: { exitType: string; exitPrice: number } | null = null;
+  let nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null = null;
+  let promoted = false;
+
+  if (s.mode === "SEEK_LEVEL_ENTRY") {
+    if (breakoutShape(prev, cur, s.topRef)) {
+      s.topRef = Math.max(s.topRef, cur.h);
+      s.mode = "SEEK_BAR";
+    }
+    return { opened, closed, nestedClosed, promoted };
+  }
+
+  // --- the one continuous RED1->RED2 tracker, independent of BAR/BAR ENTRY state ---
+  if (s.red === null) {
+    if (isBarRed1Shape(prev, cur)) {
+      s.red = new BarRedGate(cur.h, cur.l);
+      s.everSawRed1 = true;
+    }
+  } else {
+    const result = stepBarRed(s.red, prev, cur);
+    if (result === "confirmed") {
+      s.red = null;
+      s.doorOpen = true;
+    } else if (result === "invalid") {
+      s.red = null;
+    }
+  }
+
+  switch (s.mode) {
+    case "SEEK_BAR": {
+      if (!s.everSawRed1) break;
+      if (breakoutShape(prev, cur, prev.h)) {
+        s.barRefHigh = cur.h;
+        s.barRefLow = cur.l;
+        s.barActivationPrice = cur.h;
+        if (s.firstFormationGate === null) s.firstFormationGate = s.doorOpen ? "RED1-RED2" : "RED1";
+        s.mode = "BAR_ACTIVE";
+      }
+      break;
+    }
+    case "BAR_ACTIVE": {
+      if (breakoutShape(prev, cur, s.barRefHigh)) {
+        // Ladder entry price: barRefHigh as it stood before this candle, +
+        // THRESH -- same convention as every other tier1->tier2 formation.
+        const entryPrice = s.barRefHigh + THRESH;
+        s.topRef = Math.max(s.topRef, cur.h);
+        s.barEntryRefHigh = cur.h;
+        s.barEntryRefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "BAR_ENTRY_ACTIVE";
+        s.nestedMode = s.doorOpen ? "SEEK_BAR1" : "NONE";
+        opened = { price: entryPrice };
+        break;
+      }
+      const slNow = slShape(cur, s.barRefLow);
+      if (!slNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) s.barRefHigh = cur.h;
+      if (!slNow && cur.l < s.barRefLow) s.barRefLow = cur.l;
+      if (slNow) {
+        s.topRef = Math.max(s.topRef, s.barRefHigh);
+        s.mode = "SEEK_BAR"; // pre-escalation SL: always unrestricted, no gate needed again
+      }
+      break;
+    }
+    case "BAR_ENTRY_ACTIVE": {
+      if (cur.h > s.rowHH) {
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+      }
+      const barSlNow = slShape(cur, s.barRefLow);
+      const entrySlNow = slShape(cur, s.barEntryRefLow);
+      if (!barSlNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) s.barRefHigh = cur.h;
+      if (!barSlNow && cur.l < s.barRefLow) s.barRefLow = cur.l;
+      if (!entrySlNow && cur.h > s.barEntryRefHigh && cur.h - s.barEntryRefHigh >= ANY) s.barEntryRefHigh = cur.h;
+      if (!entrySlNow && cur.l < s.barEntryRefLow) s.barEntryRefLow = cur.l;
+
+      if (barSlNow && entrySlNow) {
+        // Combined same-candle breach: always unrestricted, regardless of
+        // door. BAR is decisive -- exit price is BAR's own tracked ref low.
+        s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
+        closed = { exitType: "DTF BAR SL + DTF BAR ENTRY SL", exitPrice: s.barRefLow };
+        s.mode = "SEEK_BAR";
+        s.nestedMode = "NONE";
+        s.barParentFailedOnce = false;
+        break;
+      }
+      if (barSlNow) {
+        // Decisive: BAR's own SL wipes BAR ENTRY regardless of BAR ENTRY's
+        // own state. BAR reforms first, on its own -- BAR ENTRY only
+        // escalates later, on a later candle (TAR and TBAR, and BAR and
+        // BAR ENTRY, can never form on the same candle).
+        s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
+        closed = {
+          exitType: s.barParentFailedOnce ? "DTF BAR SL2 (wipes ENTRY)" : "DTF BAR SL (wipes ENTRY)",
+          exitPrice: s.barRefLow,
+        };
+        if (s.barParentFailedOnce) {
+          if (s.firstFormationGate === "RED1") {
+            s.mode = "SEEK_BAR";
+            s.barParentFailedOnce = false;
+          } else {
+            s.mode = "SEEK_BAR"; // caller promotes to next level
+            promoted = true;
+          }
+        } else if (s.doorOpen) {
+          s.mode = "SEEK_BAR";
+          s.barParentFailedOnce = true;
+        } else {
+          s.mode = "SEEK_REACTIVATION";
+          s.barParentFailedOnce = true;
+        }
+        s.nestedMode = "NONE";
+        break;
+      }
+      if (entrySlNow) {
+        // Exit price is BAR ENTRY's own tracked reference low.
+        s.topRef = Math.max(s.topRef, s.barEntryRefHigh);
+        closed = { exitType: "DTF BAR ENTRY SL", exitPrice: s.barEntryRefLow };
+        s.mode = s.doorOpen ? "SEEK_BAR" : "SEEK_REACTIVATION";
+        s.nestedMode = "NONE";
+        break;
+      }
+
+      // --- nested BAR1/BAR2 "routine" phase, once the door is open ---
+      if (s.doorOpen && s.nestedMode === "NONE") s.nestedMode = "SEEK_BAR1";
+      if (s.nestedMode === "SEEK_BAR1") {
+        if (breakoutShape(prev, cur, prev.h)) {
+          s.nestedRefHigh = cur.h;
+          s.nestedRefLow = cur.l;
+          s.nestedMode = "BAR1_ACTIVE";
+        }
+      } else if (s.nestedMode === "BAR1_ACTIVE") {
+        if (breakoutShape(prev, cur, s.nestedRefHigh)) {
+          const nestedEntryPrice = s.nestedRefHigh + THRESH;
+          s.nestedRefHigh = cur.h;
+          s.nestedRefLow = cur.l;
+          s.nestedEntryDate = cur.date;
+          s.nestedEntryPrice = nestedEntryPrice;
+          s.nestedHH = cur.h;
+          s.nestedHHDate = cur.date;
+          s.nestedMode = "BAR2_ACTIVE";
+        } else {
+          const nSlNow = slShape(cur, s.nestedRefLow);
+          if (!nSlNow && cur.h > s.nestedRefHigh && cur.h - s.nestedRefHigh >= ANY) s.nestedRefHigh = cur.h;
+          if (!nSlNow && cur.l < s.nestedRefLow) s.nestedRefLow = cur.l;
+          if (nSlNow) s.nestedMode = "SEEK_BAR1";
+        }
+      } else if (s.nestedMode === "BAR2_ACTIVE") {
+        if (cur.h > s.nestedHH) {
+          s.nestedHH = cur.h;
+          s.nestedHHDate = cur.date;
+        }
+        const nSlNow = slShape(cur, s.nestedRefLow);
+        if (!nSlNow && cur.h > s.nestedRefHigh && cur.h - s.nestedRefHigh >= ANY) s.nestedRefHigh = cur.h;
+        if (!nSlNow && cur.l < s.nestedRefLow) s.nestedRefLow = cur.l;
+        if (nSlNow) {
+          // Door already open, unrestricted reform at the SAME level
+          // (does not promote). Gets its own visible row, overlapping the
+          // still-open outer BAR ENTRY/REAR ENTRY row.
+          nestedClosed = {
+            entryDate: s.nestedEntryDate as string,
+            entryPrice: s.nestedEntryPrice as number,
+            exitPrice: s.nestedRefLow,
+            hh: s.nestedHH,
+            hhDate: s.nestedHHDate as string,
+          };
+          s.nestedMode = "SEEK_BAR1";
+        }
+      }
+      break;
+    }
+    case "SEEK_REACTIVATION": {
+      // Reactivation reforms BAR alone -- BAR and BAR ENTRY can never
+      // form on the same candle (only an SL/exit can be a combined
+      // event). This just clears the running top reference and drops
+      // back into the ordinary BAR_ACTIVE state; BAR ENTRY only
+      // escalates later, on a later candle, via BAR_ACTIVE's own
+      // already-correct escalation path above.
+      if (breakoutShape(prev, cur, s.topRef)) {
+        s.topRef = Math.max(s.topRef, cur.h);
+        s.barRefHigh = cur.h;
+        s.barRefLow = cur.l;
+        s.barActivationPrice = cur.h;
+        s.mode = "BAR_ACTIVE";
+      } else if (cur.h > s.topRef) {
+        s.topRef = cur.h;
+      }
+      break;
+    }
+  }
+
+  return { opened, closed, nestedClosed, promoted };
 }
 
 // --------------------------------------------------------------------
@@ -361,7 +674,13 @@ export function containingWeekStart(wtfDates: string[], d: string): string | nul
 // more row.
 // --------------------------------------------------------------------
 
-export const DTF_SL_EXIT_TYPES = new Set(["DTF TZ BUY ENTRY SL", "DTF TZ BUY SL (wipes ENTRY)"]);
+export const DTF_SL_EXIT_TYPES = new Set([
+  "DTF TZ BUY SL (wipes ENTRY)",
+  "DTF BAR ENTRY SL",
+  "DTF BAR SL (wipes ENTRY)",
+  "DTF BAR SL2 (wipes ENTRY)",
+  "DTF BAR SL + DTF BAR ENTRY SL",
+]);
 
 /** Short label for an instance's own terminal WTF-side event, for the
  * merged "DTF SL - <WTF SL>" exit-type annotation -- null if the instance
@@ -401,16 +720,17 @@ function simulateDtfAll(
   if (startIdx === null) return [[], null];
 
   let s1: Stage | null = null;
-  let s2: Stage | null = null;
-  let curEntry: [string, number] | null = null;
-  let hh = 0;
-  let hhDate: string | null = null;
+  // The BAR/BAR ENTRY ladder running under the current Stage 1 (TZ BUY)
+  // episode -- null whenever Stage 1 isn't active. Freshly recreated
+  // every time Stage 1 (re)forms (see "active TZ BUY is mandatory"
+  // above), discarded outright on Stage 1's own SL.
+  let barState: BarLevelState | null = null;
   const rows: PrimeTrendResult[] = [];
 
-  // Stage 1's own "since it last (re)formed" tracking -- mirrors
-  // curEntry/hh/hhDate one tier up, purely for PrimeTrendLiveStatus
-  // (computePrimeTrend's own historical trade log has no use for this,
-  // per the Filter rule: a Stage-1-only window is never a reported trade).
+  // Stage 1's own "since it last (re)formed" tracking, purely for
+  // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
+  // has no use for this, per the Filter rule: a Stage-1-only window is
+  // never a reported trade).
   let s1Since: string | null = null;
   let s1ActivationPrice: number | null = null;
   let hh1 = 0;
@@ -431,24 +751,31 @@ function simulateDtfAll(
   // genuine breakout on 21/09.)
   let preS1Ref: number | null = checkpoints.length > 0 ? checkpoints[0][1] : null;
 
-  const closePair = (exitType: string, exitDate: string, exitPrice: number) => {
-    if (curEntry !== null) {
-      rows.push({
-        family: inst.family,
-        letter: inst.letter,
-        wtfFormationDate: inst.formationDate,
-        entryDate: curEntry[0],
-        entryPrice: curEntry[1],
-        exitType,
-        exitDate,
-        exitPrice,
-        highestHigh: hhDate ? hh : null,
-        highestHighDate: hhDate,
-      });
-    }
-    curEntry = null;
-    hh = 0;
-    hhDate = null;
+  const pushRow = (
+    level: number,
+    side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2",
+    entryDate: string,
+    entryPrice: number,
+    exitType: string,
+    exitDate: string,
+    exitPrice: number,
+    hh: number,
+    hhDate: string | null
+  ) => {
+    rows.push({
+      family: inst.family,
+      letter: inst.letter,
+      wtfFormationDate: inst.formationDate,
+      level,
+      side,
+      entryDate,
+      entryPrice,
+      exitType,
+      exitDate,
+      exitPrice,
+      highestHigh: hhDate ? hh : null,
+      highestHighDate: hhDate,
+    });
   };
 
   let i = startIdx;
@@ -456,16 +783,13 @@ function simulateDtfAll(
     const prev = dtfDays[i - 1];
     const cur = dtfDays[i];
 
-    if (curEntry !== null && cur.h > hh) {
-      hh = cur.h;
-      hhDate = cur.date;
-    }
     if (s1 !== null && s1.active && cur.h > hh1) {
       hh1 = cur.h;
       hh1Date = cur.date;
     }
 
-    // --- Stage 1: DTF TZ BUY ---
+    // --- Stage 1: DTF TZ BUY (unchanged) ---
+    const wasS1Active = s1 !== null && s1.active;
     if (s1 === null) {
       if (preS1Ref !== null && containingWeekStart(wtfDates, cur.date) !== inst.formationDate) {
         if (breakoutShape(prev, cur, preS1Ref)) {
@@ -485,10 +809,6 @@ function simulateDtfAll(
       if (slShape(cur, s1.refLow)) {
         s1.frozenRef = s1.refHigh;
         s1.active = false;
-        if (s2 !== null) {
-          closePair("DTF TZ BUY SL (wipes ENTRY)", cur.date, s1.refLow);
-          s2 = null;
-        }
       } else {
         if (cur.l < s1.refLow) s1.refLow = cur.l;
         if (cur.h > s1.refHigh && cur.h - s1.refHigh >= ANY) s1.refHigh = cur.h;
@@ -505,85 +825,111 @@ function simulateDtfAll(
         s1.frozenRef = cur.h;
       }
     }
+    const isS1Active = s1 !== null && s1.active;
 
-    // --- Stage 2: DTF TZ BUY ENTRY (only while Stage 1 is active) ---
-    if (s1 !== null && s1.active) {
-      if (s2 === null) {
-        const ref2 = s1.entryRatchet;
-        if (breakoutShape(prev, cur, ref2)) {
-          const entryPrice = ref2 + THRESH;
-          s2 = new Stage(cur.h, cur.l);
-          curEntry = [cur.date, entryPrice];
-          // Entry price is a computed ladder level (ref + THRESH), not
-          // necessarily this candle's own High -- e.g. price can break out
-          // and run well past entry intraday. Seed Highest High with that
-          // real High rather than resetting to 0 and only picking up from
-          // the next day, so a strong entry-day breakout isn't discarded.
-          hh = cur.h;
-          hhDate = cur.date;
-        } else if (cur.h > ref2 && cur.h - ref2 >= ANY) {
-          s1.entryRatchet = cur.h;
-        }
-      } else if (s2.active) {
-        if (slShape(cur, s2.refLow)) {
-          s2.frozenRef = s2.refHigh;
-          s2.active = false;
-          closePair("DTF TZ BUY ENTRY SL", cur.date, s2.refLow);
-        } else {
-          if (cur.l < s2.refLow) s2.refLow = cur.l;
-          if (cur.h > s2.refHigh && cur.h - s2.refHigh >= ANY) s2.refHigh = cur.h;
-        }
-      } else {
-        const frozenRef2 = s2.frozenRef as number;
-        if (breakoutShape(prev, cur, frozenRef2)) {
-          const entryPrice = frozenRef2 + THRESH;
-          s2 = new Stage(cur.h, cur.l);
-          curEntry = [cur.date, entryPrice];
-          hh = cur.h;
-          hhDate = cur.date;
-        } else if (cur.h > frozenRef2 && cur.h - frozenRef2 >= ANY) {
-          s2.frozenRef = cur.h;
-        }
+    // --- TZ BUY's own SL wipes the whole BAR/BAR ENTRY structure outright ---
+    if (wasS1Active && !isS1Active) {
+      if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
+        pushRow(
+          barState.level,
+          sideForBarLevel(barState.level),
+          barState.rowEntryDate,
+          barState.rowEntryPrice as number,
+          "DTF TZ BUY SL (wipes ENTRY)",
+          cur.date,
+          (s1 as Stage).refLow,
+          barState.rowHH,
+          barState.rowHHDate
+        );
+      }
+      barState = null;
+    }
+    // --- TZ BUY's own (re)formation starts a brand new BAR/BAR ENTRY window ---
+    if (!wasS1Active && isS1Active) {
+      barState = new BarLevelState(0, null);
+    }
+
+    // --- BAR / BAR ENTRY ladder, only while TZ BUY is active ---
+    if (isS1Active && barState !== null) {
+      const { opened, closed, nestedClosed, promoted } = stepBarLevel(barState, prev, cur);
+      if (opened) {
+        barState.rowEntryDate = cur.date;
+        barState.rowEntryPrice = opened.price;
+      }
+      if (closed) {
+        pushRow(
+          barState.level,
+          sideForBarLevel(barState.level),
+          barState.rowEntryDate as string,
+          barState.rowEntryPrice as number,
+          closed.exitType,
+          cur.date,
+          closed.exitPrice,
+          barState.rowHH,
+          barState.rowHHDate
+        );
+      }
+      if (nestedClosed) {
+        pushRow(
+          barState.level,
+          "BAR2",
+          nestedClosed.entryDate,
+          nestedClosed.entryPrice,
+          "DTF BAR 2 SL",
+          cur.date,
+          nestedClosed.exitPrice,
+          nestedClosed.hh,
+          nestedClosed.hhDate
+        );
+      }
+      if (promoted) {
+        barState = new BarLevelState(barState.level + 1, barState.topRef);
       }
     }
+
     i += 1;
   }
 
-  if (curEntry !== null) {
-    // Stage 2 was still open when the window ended -- the exit is
-    // whatever ended this WTF instance (already resolved on inst).
+  // Window ended with an open BAR-ENTRY-level row -- the exit is whatever
+  // ended this WTF instance (already resolved on inst), same as the old
+  // Stage 2 "still open" handling.
+  if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
     const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
-    const entry = curEntry as [string, number];
-    rows.push({
-      family: inst.family,
-      letter: inst.letter,
-      wtfFormationDate: inst.formationDate,
-      entryDate: entry[0],
-      entryPrice: entry[1],
+    pushRow(
+      barState.level,
+      sideForBarLevel(barState.level),
+      barState.rowEntryDate,
+      barState.rowEntryPrice as number,
       exitType,
-      exitDate: inst.endDate,
-      exitPrice: inst.endPrice,
-      highestHigh: hhDate ? hh : null,
-      highestHighDate: hhDate,
-    });
+      inst.endDate,
+      inst.endPrice as number,
+      barState.rowHH,
+      barState.rowHHDate
+    );
   }
 
-  // Merge the FINAL row's exit type with the instance's own later WTF-side
-  // failure, when the final cycle closed on a DTF-side SL and the WTF
-  // anchor itself independently failed afterward with no further DTF
-  // reactivation in between. Earlier rows are never touched -- each is
-  // already followed by a captured reactivation, so the WTF side hadn't
-  // actually failed yet at that point.
-  if (rows.length > 0 && DTF_SL_EXIT_TYPES.has(rows[rows.length - 1].exitType)) {
-    const label = wtfSlLabel(inst.endEvent);
-    if (label !== null) {
-      const last = rows[rows.length - 1];
-      rows[rows.length - 1] = { ...last, exitType: `DTF SL - ${label}` };
+  // Merge the last OUTER (non-nested) row's exit type with the instance's
+  // own later WTF-side failure, when that cycle closed on a DTF-side SL
+  // and the WTF anchor itself independently failed afterward with no
+  // further DTF reactivation in between. Nested BAR2 rows are skipped --
+  // they never end the outer row, so they're never the merge target.
+  // Earlier rows are never touched -- each is already followed by a
+  // captured reactivation, so the WTF side hadn't actually failed yet at
+  // that point.
+  for (let r = rows.length - 1; r >= 0; r--) {
+    if (rows[r].side === "BAR2") continue;
+    if (DTF_SL_EXIT_TYPES.has(rows[r].exitType)) {
+      const label = wtfSlLabel(inst.endEvent);
+      if (label !== null) rows[r] = { ...rows[r], exitType: `DTF SL - ${label}` };
     }
+    break;
   }
 
   const stage1Active = s1 !== null && s1.active;
-  const stage2Active = s2 !== null && s2.active;
+  // "Stage 2" now means "BAR ENTRY (or REAR ENTRY / REAR RE-ENTER) is
+  // currently active" -- a bare BAR alone (pre-escalation) is never
+  // surfaced here, same filter rule as the historical trade log.
+  const stage2Active = barState !== null && barState.mode === "BAR_ENTRY_ACTIVE";
   const live: PrimeTrendLiveStatus = {
     family: inst.family,
     letter: inst.letter,
@@ -594,11 +940,11 @@ function simulateDtfAll(
     stage1HighestHigh: stage1Active ? (hh1Date ? hh1 : null) : null,
     stage1HighestHighDate: stage1Active ? hh1Date : null,
     stage2Active,
-    stage2Since: stage2Active && curEntry ? (curEntry as [string, number])[0] : null,
-    stage2ActivationPrice: stage2Active && curEntry ? (curEntry as [string, number])[1] : null,
-    stage2StopLoss: stage2Active && s2 ? s2.refLow : null,
-    stage2HighestHigh: stage2Active ? (hhDate ? hh : null) : null,
-    stage2HighestHighDate: stage2Active ? hhDate : null,
+    stage2Since: stage2Active ? (barState as BarLevelState).rowEntryDate : null,
+    stage2ActivationPrice: stage2Active ? (barState as BarLevelState).rowEntryPrice : null,
+    stage2StopLoss: stage2Active ? (barState as BarLevelState).barEntryRefLow : null,
+    stage2HighestHigh: stage2Active ? ((barState as BarLevelState).rowHHDate ? (barState as BarLevelState).rowHH : null) : null,
+    stage2HighestHighDate: stage2Active ? (barState as BarLevelState).rowHHDate : null,
   };
 
   return [rows, live];
