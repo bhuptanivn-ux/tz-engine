@@ -177,6 +177,14 @@ class BarLevelState {
   mode: BarMode;
   level: number;
   doorOpen = false;
+  // Separate from `doorOpen`: whether a FRESH RED1->RED2 has confirmed
+  // specifically while THIS BAR ENTRY instance was already active -- the
+  // nested BAR1/BAR2 cascade needs its own dedicated post-formation
+  // RED1-RED2, not just reliance on `doorOpen` possibly having gone true
+  // earlier (even before BAR itself formed). Same shape as the WTF
+  // engine's own TZ BUY2 -> RED1-RED2 -> BAR1 cascade. Reset to false
+  // every time a fresh BAR ENTRY forms.
+  nestedDoorOpen = false;
   red: BarRedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves -- unlocks BAR-seeking permanently
   // This specific BAR instance's own formation gate -- re-evaluated fresh
@@ -256,6 +264,7 @@ function stepBarLevel(
     if (result === "confirmed") {
       s.red = null;
       s.doorOpen = true;
+      if (s.mode === "BAR_ENTRY_ACTIVE") s.nestedDoorOpen = true;
     } else if (result === "invalid") {
       s.red = null;
     }
@@ -286,7 +295,11 @@ function stepBarLevel(
         s.rowHH = cur.h;
         s.rowHHDate = cur.date;
         s.mode = "BAR_ENTRY_ACTIVE";
-        s.nestedMode = s.doorOpen ? "SEEK_BAR1" : "NONE";
+        // Fresh BAR ENTRY instance -- the nested cascade needs its own
+        // dedicated post-formation RED1-RED2, not a stale doorOpen from
+        // possibly before BAR itself even formed.
+        s.nestedDoorOpen = false;
+        s.nestedMode = "NONE";
         opened = { price: entryPrice };
         break;
       }
@@ -342,8 +355,10 @@ function stepBarLevel(
         break;
       }
 
-      // --- nested BAR1/BAR2 "routine" phase, once the door is open ---
-      if (s.doorOpen && s.nestedMode === "NONE") s.nestedMode = "SEEK_BAR1";
+      // --- nested BAR1/BAR2 "routine" phase, once THIS BAR ENTRY's own
+      // fresh post-formation RED1-RED2 has confirmed (not just doorOpen,
+      // which may have gone true earlier, even before BAR formed) ---
+      if (s.nestedDoorOpen && s.nestedMode === "NONE") s.nestedMode = "SEEK_BAR1";
       if (s.nestedMode === "SEEK_BAR1") {
         if (breakoutShape(prev, cur, prev.h)) {
           s.nestedRefHigh = cur.h;
