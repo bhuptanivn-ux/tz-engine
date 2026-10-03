@@ -94,13 +94,19 @@
 //     level up, exactly like WTF TZ BUY 2 does for the outer window --
 //     collapsing level 2+ into "REAR RE-ENTER").
 //
-// NESTED BAR1/BAR2 "routine" phase: once doorOpen is true, a nested
-// BAR1/BAR2 cascade becomes available underneath TBAR -- BAR1 forms via
-// the plain breakout, escalates to BAR2 by clearing its own reference,
-// BAR1's own pre-escalation SL reforms unrestricted (unlimited
-// generations), and BAR2's own (harder) SL reports as "PRIME TREND SL"
-// and keeps the structure open (door already open, no further gating
-// needed -- confirmed via 6+ real consecutive cycles in KALYANKJIL.NS).
+// NESTED BAR1/BAR2 "routine" phase: gated by its OWN fresh, dedicated
+// RED1->RED2 confirming specifically while THIS TBAR instance is already
+// active (`nestedDoorOpen`) -- not the general `doorOpen` flag, which can
+// go true from a RED1-RED2 that confirmed well before TBAR (or even TAR)
+// ever formed. Same shape as the WTF engine's own TZ BUY2 -> RED1-RED2
+// -> BAR1 cascade. Once that fresh gate opens, a nested BAR1/BAR2 cascade
+// becomes available underneath TBAR -- BAR1 forms via the plain
+// breakout, escalates to BAR2 by clearing its own reference, BAR1's own
+// pre-escalation SL reforms unrestricted (unlimited generations), and
+// BAR2's own (harder) SL reports as "PRIME TREND SL" and keeps the
+// structure open (confirmed via 6+ real consecutive cycles in
+// KALYANKJIL.NS -- that verification predates the nestedDoorOpen fix,
+// so worth re-checking that those specific cycles still read the same).
 //
 // SCOPE OF THIS PASS: verified against real KALYANKJIL.NS data for the
 // mechanics that data actually exercised -- TAR formation (flexible
@@ -195,6 +201,14 @@ class LevelState {
   mode: Mode;
   level: number;
   doorOpen = false;
+  // Separate from `doorOpen`: whether a FRESH RED1->RED2 has confirmed
+  // specifically while THIS TBAR instance was already active -- the
+  // nested BAR1/BAR2 cascade needs its own dedicated post-formation
+  // RED1-RED2, not just reliance on `doorOpen` possibly having gone true
+  // earlier (even before TAR itself formed). Same shape as the WTF
+  // engine's own TZ BUY2 -> RED1-RED2 -> BAR1 cascade. Reset to false
+  // every time a fresh TBAR forms.
+  nestedDoorOpen = false;
   red: RedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves (confirmed/invalid) -- unlocks TAR-seeking permanently
   firstFormationGate: "RED1" | "RED1-RED2" | null = null;
@@ -276,6 +290,7 @@ function stepLevel(
     if (result === "confirmed") {
       s.red = null;
       s.doorOpen = true;
+      if (s.mode === "TBAR_ACTIVE") s.nestedDoorOpen = true;
     } else if (result === "invalid") {
       s.red = null;
     }
@@ -310,7 +325,11 @@ function stepLevel(
         s.rowHH = cur.h;
         s.rowHHDate = cur.date;
         s.mode = "TBAR_ACTIVE";
-        s.nestedMode = s.doorOpen ? "SEEK_BAR1" : "NONE";
+        // Fresh TBAR instance -- the nested cascade needs its own
+        // dedicated post-formation RED1-RED2, not a stale doorOpen from
+        // possibly before TAR itself even formed.
+        s.nestedDoorOpen = false;
+        s.nestedMode = "NONE";
         opened = { price: entryPrice };
         break;
       }
@@ -375,8 +394,10 @@ function stepLevel(
         break;
       }
 
-      // --- nested BAR1/BAR2 "routine" phase, once the door is open ---
-      if (s.doorOpen && s.nestedMode === "NONE") s.nestedMode = "SEEK_BAR1";
+      // --- nested BAR1/BAR2 "routine" phase, once THIS TBAR's own fresh
+      // post-formation RED1-RED2 has confirmed (not just doorOpen, which
+      // may have gone true earlier, even before TAR formed) ---
+      if (s.nestedDoorOpen && s.nestedMode === "NONE") s.nestedMode = "SEEK_BAR1";
       if (s.nestedMode === "SEEK_BAR1") {
         if (bar1Shape(prev, cur)) {
           s.nestedRefHigh = cur.h;
