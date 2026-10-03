@@ -549,7 +549,7 @@ export default function Home() {
         throw new Error(data.error || "Failed to fetch history");
       }
       const fetchedRows: HistoryRow[] = data.rows || [];
-      setEvents(computeWtfEvents(fetchedRows));
+      setEvents(computeWtfEvents(fetchedRows, interval === "1wk"));
       // When the start date is still the auto-populated default (the
       // symbol's own listing date), show everything Yahoo actually
       // returned rather than re-filtering by that exact date string —

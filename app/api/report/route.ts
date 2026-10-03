@@ -125,8 +125,8 @@ function resampleWeekly(days: Day[]): Day[] {
     });
 }
 
-function eventsFromDays(days: Day[]): Map<string, string> {
-  const engine = new TZEngine();
+function eventsFromDays(days: Day[], isWeekly: boolean): Map<string, string> {
+  const engine = new TZEngine(isWeekly);
   const map = new Map<string, string>();
   for (let i = 1; i < days.length; i++) {
     const events = engine.process(days[i - 1], days[i]);
@@ -240,7 +240,7 @@ export async function GET(req: NextRequest) {
       if (!eventPrefix) return; // unreachable given VALID_EVENTS, but keeps TS happy
       const days = await seriesForTimeframe(entry.symbol, timeframe, end);
       if (days.length < 2) return;
-      const eventsByDate = eventsFromDays(days);
+      const eventsByDate = eventsFromDays(days, timeframe === "weekly");
       for (const [date, eventsStr] of eventsByDate) {
         if (!date.startsWith(year)) continue;
         const fired = eventsStr.split(", ").some((e) => e.startsWith(eventPrefix));

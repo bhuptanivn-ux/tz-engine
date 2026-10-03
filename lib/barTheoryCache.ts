@@ -32,7 +32,7 @@ function blobUrlFor(pathname: string): string {
 // Bump whenever scanBarTheory's own computation changes in a way that would
 // change a previously-cached result -- see screenerCache.ts's own
 // CACHE_VERSION comment for the exact failure mode this guards against.
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 
 function cachePathFor(segment: string, timeframe: string, dateISO: string, batchKey: string): string {
   return `bar-theory-cache/${CACHE_VERSION}/${segment}/${timeframe}/${dateISO}/${batchKey}.json`;

@@ -129,11 +129,16 @@ interface LabelInfo {
   lastRefHighDate: string;
 }
 
-export function scanBarTheory(symbol: string, name: string, rows: HistoryRowLike[]): BarTheoryScan {
+export function scanBarTheory(
+  symbol: string,
+  name: string,
+  rows: HistoryRowLike[],
+  isWeekly: boolean = false
+): BarTheoryScan {
   const days = toDays(rows);
   if (days.length < 2) return { bar: null, barEntry: null };
 
-  const engine = new TZEngine();
+  const engine = new TZEngine(isWeekly);
   const labelInfo = new Map<string, LabelInfo>();
   const redKilled = new Set<string>();
 

@@ -169,7 +169,7 @@ export async function GET(req: NextRequest) {
         low: d.l,
         close: d.c,
       }));
-      const result = scanBarTheory(entry.symbol, entry.name, rows);
+      const result = scanBarTheory(entry.symbol, entry.name, rows, timeframe === "weekly");
       if (result.bar) bar.push(result.bar);
       if (result.barEntry) barEntry.push(result.barEntry);
     } catch (err) {
