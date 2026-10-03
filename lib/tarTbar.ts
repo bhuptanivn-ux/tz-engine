@@ -41,14 +41,14 @@
 // closes again, and every later SL -- of any kind -- reforms
 // unrestricted (no reference gate, no further RED gating).
 //
-// Confirmed bug found and fixed during verification: the "first
-// formation gate" classification (single-RED1 vs RED1-RED2) that
-// decides TAR SL2's eventual effect is locked in at the moment TAR
-// ITSELF forms (not TBAR's later escalation) -- real KALYANKJIL.NS data
-// showed RED2 confirming (10/02/2025) before TAR even formed
-// (13/02/2025), which must count as "formed via RED1-RED2", not
-// "single RED1", even though RED1 alone would have been sufficient to
-// unlock TAR-seeking.
+// Confirmed bug found and fixed during verification: each TAR instance's
+// own formation gate classification (single-RED1 vs RED1-RED2, which
+// decides what a later decisive TAR SL does -- see below) is locked in
+// at the moment THAT TAR ITSELF forms (not TBAR's later escalation) --
+// real KALYANKJIL.NS data showed RED2 confirming (10/02/2025) before TAR
+// even formed (13/02/2025), which must count as "formed via RED1-RED2",
+// not "single RED1", even though RED1 alone would have been sufficient
+// to unlock TAR-seeking.
 //
 // TAR (tier1): forms via the plain, unrestricted day-over-day breakout
 // once seeking is unlocked. TAR's own pre-escalation SL (TBAR never
@@ -81,18 +81,28 @@
 // regardless of door status -- treated like a routine BAR1-style deep
 // failure, confirmed via a real worked example.
 //
-// TAR SL2 (TAR's own SL, with TBAR already having formed under it at
-// some point, failing a SECOND time after a reactivation attempt --
-// same two-strike shape as dtf_bar.py's real TZ BUY SL/SL2): the effect
-// depends on how THIS window's very first TAR ever formed --
-//   - first formation via single RED1 -> direct fresh reform remains
-//     possible, as long as RED1-RED2 has confirmed anywhere in the
-//     window's life (before OR after the SL2).
-//   - first formation via RED1-RED2 -> requires escalation: REAR forms
-//     above the running top reference, REAR must stay active, and the
-//     exact same rules recurse beneath it (REAR plays TAR's role, one
+// DECISIVE TAR SL -> REAR (corrected, simpler rule -- NOT a two-strike
+// SL/SL2 shape): whenever TAR's own level fails while TBAR is (or was)
+// escalated under it -- TBAR cannot outlive TAR, since it's an
+// escalation of TAR; "TAR SL" always means TBAR is gone too, whether
+// both breach the same candle (combined) or TBAR's own (tighter) stop
+// breached first and TAR's own (looser) stop gives way later -- the
+// outcome depends on THIS SPECIFIC TAR INSTANCE's own formation gate,
+// evaluated fresh at the moment THIS TAR formed (not a permanent,
+// window-wide value -- each new TAR instance, however it came to form,
+// gets its own fresh gate reading):
+//   - this TAR formed under a complete RED1-RED2 gate -> no new cycle at
+//     all, ever (not even once) -- straight to REAR, forming above the
+//     highest high reached under this structure (TBAR's own, or a
+//     nested BAR1's own, whichever is higher). REAR plays TAR's role one
 //     level up, exactly like WTF TZ BUY 2 does for the outer window --
-//     collapsing level 2+ into "REAR RE-ENTER").
+//     collapsing level 2+ into "REAR RE-ENTER".
+//   - this TAR formed under bare RED1 only -> direct reform remains
+//     possible, a fresh TAR -> TBAR cycle (same shape as any other
+//     reform). That fresh cycle's own gate is then evaluated fresh at
+//     ITS OWN formation, same rule recursing.
+// (Clean TBAR SL -- TAR independently still valid, not decisive -- is a
+// separate case above, forking on door status instead.)
 //
 // NESTED BAR1/BAR2 "routine" phase: gated by its OWN fresh, dedicated
 // RED1->RED2 confirming specifically while THIS TBAR instance is already
@@ -112,12 +122,14 @@
 // mechanics that data actually exercised -- TAR formation (flexible
 // gate), TAR's pre-escalation SL/unrestricted reform, TAR->TBAR
 // escalation (with the reference-reset fix), TBAR's clean SL under both
-// door states, and the nested BAR1/BAR2 routine phase repeating many
-// times. NOT yet exercised by any real data found so far: TAR's own SL
-// while TBAR was independently still healthy (the decisive
-// parent-wipes-child case), the same-candle combined breach, TAR SL2
-// itself, and REAR formation -- all implemented per the derived spec,
-// but unverified against real price action.
+// door states, the nested BAR1/BAR2 routine phase repeating many times
+// (gated correctly by its own fresh post-formation RED1-RED2), and the
+// decisive TAR SL -> REAR rule (confirmed: a TAR instance that formed
+// under a complete RED1-RED2 gate escalates straight to REAR on its
+// first decisive failure, no intermediate unrestricted cycles). NOT yet
+// exercised by any real data found so far: REAR actually forming and
+// escalating through its own full recursive structure -- implemented
+// per the derived spec, but unverified against real price action.
 
 import { THRESH, EPS, type Day } from "./tzEngineWtf";
 import { runWtfTrace, type OhlcRow } from "./primeTrend";
@@ -211,7 +223,12 @@ class LevelState {
   nestedDoorOpen = false;
   red: RedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves (confirmed/invalid) -- unlocks TAR-seeking permanently
-  firstFormationGate: "RED1" | "RED1-RED2" | null = null;
+  // This specific TAR instance's own formation gate -- re-evaluated fresh
+  // every time a new TAR forms (not a permanent, once-set window value).
+  // Decides what a later decisive TAR SL does: straight to REAR if this
+  // TAR formed under RED1-RED2, direct reform if it formed under bare
+  // RED1. Null only before any TAR has formed yet at this level.
+  thisBarGate: "RED1" | "RED1-RED2" | null = null;
   topRef: number;
 
   tarRefHigh = 0;
@@ -220,7 +237,6 @@ class LevelState {
   tbarRefHigh = 0;
   tbarRefLow = 0;
   tbarActive = false; // only meaningful once mode === TBAR_ACTIVE
-  tarParentFailedOnce = false; // TAR-SL -> TAR-SL2 two-strike tracker (post-escalation only)
 
   rowEntryDate: string | null = null;
   rowEntryPrice: number | null = null;
@@ -254,8 +270,8 @@ function trackHH(s: LevelState, cur: Day) {
  * for the nested BAR1->BAR2 cycle's own row (confirmed: gets its own
  * visible row, overlapping the outer row rather than replacing it,
  * since it reforms unrestricted rather than promoting), and `promoted`
- * when TAR SL2 (RED1-RED2 first formation) requires escalating to the
- * next level. */
+ * when a decisive TAR SL on a TAR instance that formed under RED1-RED2
+ * requires escalating to the next level. */
 function stepLevel(
   s: LevelState,
   prev: Day,
@@ -303,7 +319,9 @@ function stepLevel(
         s.tarRefHigh = cur.h;
         s.tarRefLow = cur.l;
         s.tarActivationPrice = cur.h; // fixed at formation; tarRefHigh keeps climbing afterward
-        if (s.firstFormationGate === null) s.firstFormationGate = s.doorOpen ? "RED1-RED2" : "RED1";
+        // This TAR's own gate, read fresh at its own formation moment --
+        // not a permanent window-wide value.
+        s.thisBarGate = s.doorOpen ? "RED1-RED2" : "RED1";
         s.mode = "TAR_ACTIVE";
       }
       break;
@@ -351,36 +369,24 @@ function stepLevel(
       if (!tbarSlNow && cur.h > s.tbarRefHigh) s.tbarRefHigh = cur.h;
       if (!tbarSlNow && cur.l < s.tbarRefLow) s.tbarRefLow = cur.l;
 
-      if (tarSlNow && tbarSlNow) {
-        // Combined same-candle breach: always unrestricted, regardless of door.
-        // TAR is decisive in a combined breach, same as the standalone case --
-        // exit price is TAR's own tracked reference low, not the raw candle low.
-        s.topRef = Math.max(s.topRef, s.tarRefHigh, s.tbarRefHigh);
-        closed = { exitType: "TAR SL + TBAR SL", exitPrice: s.tarRefLow };
-        s.mode = "SEEK_TAR";
-        s.nestedMode = "NONE";
-        s.tarParentFailedOnce = false;
-        break;
-      }
       if (tarSlNow) {
-        // Decisive: TAR's own SL wipes TBAR regardless of TBAR's own state.
-        // Exit price is TAR's own tracked reference low, not the raw candle low.
+        // Decisive: TAR's own SL always means TBAR is gone too -- TBAR is
+        // an escalation of TAR, it cannot outlive it -- whether both
+        // breach the same candle (combined) or TBAR's own tighter stop
+        // already breached first and TAR's own looser stop gives way
+        // later (sequential). Either way, the outcome depends only on
+        // THIS TAR instance's own formation gate (read fresh at its own
+        // formation, not a permanent window value): RED1-RED2 -> no new
+        // cycle at all, straight to REAR; bare RED1 -> direct reform
+        // remains possible. Exit price is TAR's own tracked reference
+        // low either way.
         s.topRef = Math.max(s.topRef, s.tarRefHigh, s.tbarRefHigh);
-        closed = { exitType: s.tarParentFailedOnce ? "TAR SL2" : "TAR SL", exitPrice: s.tarRefLow };
-        if (s.tarParentFailedOnce) {
-          if (s.firstFormationGate === "RED1") {
-            s.mode = "SEEK_TAR";
-            s.tarParentFailedOnce = false;
-          } else {
-            s.mode = "SEEK_TAR"; // caller promotes to next level
-            promoted = true;
-          }
-        } else if (s.doorOpen) {
-          s.mode = "SEEK_TAR";
-          s.tarParentFailedOnce = true;
+        const exitType = tbarSlNow ? "TAR SL + TBAR SL" : "TAR SL";
+        closed = { exitType, exitPrice: s.tarRefLow };
+        if (s.thisBarGate === "RED1-RED2") {
+          promoted = true; // caller replaces this level's state entirely
         } else {
-          s.mode = "SEEK_REACTIVATION";
-          s.tarParentFailedOnce = true;
+          s.mode = "SEEK_TAR";
         }
         s.nestedMode = "NONE";
         break;
@@ -459,6 +465,8 @@ function stepLevel(
         s.tarRefHigh = cur.h;
         s.tarRefLow = cur.l;
         s.tarActivationPrice = cur.h;
+        // This TAR's own gate, read fresh at its own formation moment.
+        s.thisBarGate = s.doorOpen ? "RED1-RED2" : "RED1";
         s.mode = "TAR_ACTIVE";
       } else if (cur.h > s.topRef) {
         s.topRef = cur.h;
