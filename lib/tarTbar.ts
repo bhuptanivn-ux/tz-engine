@@ -130,6 +130,38 @@
 // exercised by any real data found so far: REAR actually forming and
 // escalating through its own full recursive structure -- implemented
 // per the derived spec, but unverified against real price action.
+//
+// RE-ENTRY THROUGH BAR, ONCE A WTF-NATIVE "WTF BAR" ITSELF SL's (i.e. the
+// base engine's own top-level BAR(label) milestone this module anchors
+// on -- NOT this module's own TAR/TBAR tiers):
+//
+//   1) CONFIRMED, already how the base engine works (no change here) --
+//      once that lineage reaches "BAR SL2" (its OWN nested BAR 2 also
+//      failing, not just the plain tier-1 "BAR SL"), the base engine's
+//      own REAR mechanism takes over: REAR forms above that BAR's own
+//      running reference high (see WTF_RULEBOOK.md's "REAR / REAR 2"
+//      section -- "REAR forms off a BAR's own SL2"). A plain tier-1
+//      "BAR SL" with no BAR 2 ever having formed for that lineage is a
+//      genuine dead end for THAT lineage and reforms directly instead
+//      (confirmed in real KALYANKJIL.NS data: BAR(A.1) SL'd 24/02/25 with
+//      no BAR 2 yet formed, and reformed directly as the SAME lineage
+//      number on 17/03/25 -- no REAR, no RED1/RED2 required again).
+//      Either way, this module's own `findWindows` already treats any
+//      fresh "BAR(" formation line as ending the prior window and
+//      starting the next -- it doesn't need to distinguish which of the
+//      two produced it, since both eventually surface as a "BAR(" event.
+//
+//   2) PROVISIONAL, NOT confirmed, NOT implemented here -- a narrower
+//      claim that when NO BAR SL2 has occurred yet for this top-level
+//      instance, a specific chain (WTF BAR -> RED1 + BAR SL -> BAR -> BAR
+//      SL -> BAR -> RED1-RED2 -> BAR -> TAR-TBAR) governs which specific
+//      bare BAR reform should actually count as "the" trigger for DTF
+//      TAR-TBAR seeking -- i.e. not every bare post-SL BAR reform
+//      qualifies, only one that itself formed under a fresh, complete
+//      RED1-RED2 (against TZ BUY 2) rather than a bare reform. Recorded
+//      here as an open question for later real-data verification, not
+//      adopted -- `findWindows` still treats every "BAR(" line as a
+//      valid trigger, unchanged.
 
 import { THRESH, EPS, type Day } from "./tzEngineWtf";
 import { runWtfTrace, type OhlcRow } from "./primeTrend";
