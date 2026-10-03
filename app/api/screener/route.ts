@@ -90,28 +90,36 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ...cached, total, offset, limit, cached: true });
   }
 
-  const tzBuy: ScreenerRow[] = [];
-  const tzBuyEntry: ScreenerRow[] = [];
+  const bar: ScreenerRow[] = [];
+  const barEntry: ScreenerRow[] = [];
+  const pbar: ScreenerRow[] = [];
+  const pbarEntry: ScreenerRow[] = [];
   const errors: string[] = [];
 
   await mapWithConcurrency(batchInstruments, 24, async (entry) => {
     try {
       const rows = await fetchHistory(entry.symbol, ENGINE_HISTORY_FLOOR, end, "1d");
       const result = scanStock(entry.symbol, entry.name, rows);
-      if (result.tzBuy) tzBuy.push(result.tzBuy);
-      if (result.tzBuyEntry) tzBuyEntry.push(result.tzBuyEntry);
+      if (result.bar) bar.push(result.bar);
+      if (result.barEntry) barEntry.push(result.barEntry);
+      if (result.pbar) pbar.push(result.pbar);
+      if (result.pbarEntry) pbarEntry.push(result.pbarEntry);
     } catch (err) {
       errors.push(`${entry.symbol}: ${err instanceof Error ? err.message : "scan failed"}`);
     }
   });
 
-  tzBuy.sort((a, b) => a.symbol.localeCompare(b.symbol));
-  tzBuyEntry.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  bar.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  barEntry.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  pbar.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  pbarEntry.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
   const payload = {
     scanned: batchInstruments.length,
-    tzBuy,
-    tzBuyEntry,
+    bar,
+    barEntry,
+    pbar,
+    pbarEntry,
     errors,
     cachedAt: new Date().toISOString(),
   };

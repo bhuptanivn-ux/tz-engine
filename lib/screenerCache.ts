@@ -27,8 +27,10 @@ import type { ScreenerRow } from "./dtfWtfScreener";
 
 export interface ScreenerCachePayload {
   scanned: number;
-  tzBuy: ScreenerRow[];
-  tzBuyEntry: ScreenerRow[];
+  bar: ScreenerRow[];
+  barEntry: ScreenerRow[];
+  pbar: ScreenerRow[];
+  pbarEntry: ScreenerRow[];
   errors: string[];
   cachedAt: string;
 }
@@ -51,7 +53,7 @@ function blobUrlFor(pathname: string): string {
 // version bump, any segment already scanned (and cached) earlier the same
 // day the fix deployed would have kept serving the pre-fix result to
 // every subsequent visitor until midnight UTC.
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 
 function cachePathFor(segment: string, dateISO: string, batchKey: string): string {
   return `screener-cache/${CACHE_VERSION}/${segment}/${dateISO}/${batchKey}.json`;
