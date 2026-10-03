@@ -1279,17 +1279,27 @@ export class TZEngine {
         // REVISION (weekly only, see this.weeklyBarSlRear): never
         // escalated past BAR 1 -- the bare BAR SL itself is now enough
         // for REAR eligibility, no SL2-equivalent confirmation to wait
-        // for (there's no deeper tier here to confirm against).
-        // lin.refHigh is frozen as of BAR 1's own SL -- nothing updates
-        // it for an already-SL'd lineage -- so, unlike the BAR-2-having
-        // case below, no "preToday" snapshot is needed. On every other
-        // timeframe this lineage stays a parked dead end here, unchanged.
+        // for (there's no deeper tier here to confirm against). Universal
+        // ideology, same as everywhere else in this codebase: the
+        // reference high keeps quietly climbing even after the SL --
+        // lin.refHigh is read here BEFORE today's own quiet-climb update
+        // below (so it's naturally "as it stood before today", no
+        // separate snapshot map needed the way the BAR-2-having case
+        // requires -- nothing else touches lin.refHigh once lin.sl is
+        // set). On every other timeframe this lineage stays a parked
+        // dead end here, unchanged, and its refHigh stays untouched too.
         if (this.weeklyBarSlRear && !this.rearAncestorTerminated(buy)) {
           const rearRef = lin.refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
           if (isRear && !this.milestoneBlocked(pc)) {
             rearWinner = [lin, cur.h, cur.l];
             break;
+          }
+          if (cur.h > lin.refHigh && cur.h - lin.refHigh >= ANY) {
+            lin.refHigh = cur.h;
+            // Same event name the BAR-2-having case already uses for its
+            // own post-SL quiet climb (sl.refHigh) -- same concept here.
+            linEv.push(`BAR SL HH(${lin.label})`);
           }
         }
         continue;
