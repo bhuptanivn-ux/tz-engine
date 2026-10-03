@@ -553,7 +553,11 @@ export interface WtfTraceEntry {
  * never by letter alone -- letter is only resolved from pid at the point
  * of use. */
 export function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
-  const engine = new TZEngine();
+  // `true`: this always runs on WEEKLY candles (PRIME TREND's fixed
+  // WTF=weekly rule; lib/tarTbar.ts's own findWindows, this function's
+  // other caller, is weekly-only too) -- enables the weekly-only bare-
+  // BAR-SL-opens-REAR revision (see TZEngine's own constructor comment).
+  const engine = new TZEngine(true);
   const trace: WtfTraceEntry[] = [];
   for (let i = 1; i < wtfDays.length; i++) {
     const prev = wtfDays[i - 1];

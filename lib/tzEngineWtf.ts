@@ -166,6 +166,21 @@ export class TZEngine {
   private seqCounter = 0;
   private preTodayLiveBuy = new Map<number, boolean>();
 
+  // REVISION, weekly timeframe only: a BAR lineage that never escalated
+  // past BAR 1 (bar2 === null) opens REAR eligibility on its own bare BAR
+  // SL, instead of the lineage just reforming unrestricted -- see
+  // deepFailureReached/evalBarLineagesProgress/newestIsDead below. Scoped
+  // to this flag because TZEngine itself is also run directly on daily,
+  // monthly, and yearly data (the Trading Zone page's own Interval
+  // selector, the Report page's and BAR Theory page's Time frame
+  // selectors, each via a fresh TZEngine instance) -- the revision is
+  // specifically a weekly-timeframe theory rule, not a change to the
+  // engine's general-purpose behavior on other timeframes. Only
+  // lib/primeTrend.ts's runWtfTrace (always weekly, per PRIME TREND's
+  // fixed WTF=weekly rule) passes `true` here; every other caller keeps
+  // the original, timeframe-agnostic behavior by leaving this false.
+  constructor(private weeklyBarSlRear: boolean = false) {}
+
   private nextSeq(): number {
     this.seqCounter += 1;
     return this.seqCounter;
@@ -180,12 +195,16 @@ export class TZEngine {
   private deepFailureReached(buy: Buy): boolean {
     if (buy.rear !== null && buy.rear.sl !== null) return true;
     if (buy.rearReenter !== null && buy.rearReenter.sl !== null) return true;
-    // REVISION: a lineage that never escalated past BAR 1 has no deeper
-    // tier to confirm SL2 on -- for it, the bare BAR SL itself is now the
-    // deep-failure signal (previously only BAR SL2 counted at all, for
-    // every lineage regardless of whether BAR 2 ever formed). A lineage
-    // that DID reach BAR 2 still needs its own SL2 confirmation, unchanged.
-    return buy.barLineages.some((lin) => lin.sl !== null && (lin.bar2 === null || lin.sl.sl2));
+    // REVISION (weekly only, see this.weeklyBarSlRear): a lineage that
+    // never escalated past BAR 1 has no deeper tier to confirm SL2 on --
+    // for it, the bare BAR SL itself is now the deep-failure signal
+    // (previously, and still on every other timeframe, only BAR SL2
+    // counted at all, for every lineage regardless of whether BAR 2 ever
+    // formed). A lineage that DID reach BAR 2 still needs its own SL2
+    // confirmation, unchanged, on every timeframe.
+    return buy.barLineages.some(
+      (lin) => lin.sl !== null && ((this.weeklyBarSlRear && lin.bar2 === null) || lin.sl.sl2)
+    );
   }
 
   private barLineagesRacing(buy: Buy): boolean {
@@ -1257,13 +1276,15 @@ export class TZEngine {
       const sl = lin.sl;
 
       if (lin.bar2 === null) {
-        // REVISION: never escalated past BAR 1 -- the bare BAR SL itself
-        // is now enough for REAR eligibility, no SL2-equivalent
-        // confirmation to wait for (there's no deeper tier here to
-        // confirm against). lin.refHigh is frozen as of BAR 1's own SL --
-        // nothing updates it for an already-SL'd lineage -- so, unlike
-        // the BAR-2-having case below, no "preToday" snapshot is needed.
-        if (!this.rearAncestorTerminated(buy)) {
+        // REVISION (weekly only, see this.weeklyBarSlRear): never
+        // escalated past BAR 1 -- the bare BAR SL itself is now enough
+        // for REAR eligibility, no SL2-equivalent confirmation to wait
+        // for (there's no deeper tier here to confirm against).
+        // lin.refHigh is frozen as of BAR 1's own SL -- nothing updates
+        // it for an already-SL'd lineage -- so, unlike the BAR-2-having
+        // case below, no "preToday" snapshot is needed. On every other
+        // timeframe this lineage stays a parked dead end here, unchanged.
+        if (this.weeklyBarSlRear && !this.rearAncestorTerminated(buy)) {
           const rearRef = lin.refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
           if (isRear && !this.milestoneBlocked(pc)) {
@@ -1356,11 +1377,14 @@ export class TZEngine {
     }
 
     const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    // REVISION: a bar2-less lineage's own bare SL is now deep failure in
-    // its own right (see deepFailureReached above) -- it no longer leaves
-    // the door open for an ungated fresh reform here; only a lineage that
-    // escalated to BAR 2 but hasn't yet reached SL2 still does.
-    const newestIsDead = newest === null || (newest.sl !== null && newest.bar2 !== null && !newest.sl.sl2);
+    // REVISION (weekly only, see this.weeklyBarSlRear): a bar2-less
+    // lineage's own bare SL is now deep failure in its own right (see
+    // deepFailureReached above) -- it no longer leaves the door open for
+    // an ungated fresh reform here; only a lineage that escalated to BAR
+    // 2 but hasn't yet reached SL2 still does. On every other timeframe
+    // a bar2-less SL'd lineage is still "dead enough to reform", unchanged.
+    const newestIsDead =
+      newest === null || (newest.sl !== null && (!this.weeklyBarSlRear || newest.bar2 !== null) && !newest.sl.sl2);
     const freshBarReady = newestIsDead || buy.barPending;
     if (!pc.dormant && !reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
       const surviving: BarLineage[] = [];
@@ -1576,9 +1600,9 @@ function toDays(rows: HistoryRowLike[]): Day[] {
  * tz_engine_wtf.py's own run_series(). Rows with any null OHLC field are
  * dropped first. The first row never gets an event (no "prev" to compare
  * against). */
-export function computeWtfEvents(rows: HistoryRowLike[]): Map<string, string> {
+export function computeWtfEvents(rows: HistoryRowLike[], isWeekly: boolean = false): Map<string, string> {
   const days = toDays(rows);
-  const engine = new TZEngine();
+  const engine = new TZEngine(isWeekly);
   const map = new Map<string, string>();
   for (let i = 1; i < days.length; i++) {
     const events = engine.process(days[i - 1], days[i]);

@@ -45,7 +45,7 @@ function blobUrlFor(pathname: string): string {
 // Bump whenever the report scan's own computation changes in a way that
 // would change a previously-cached result -- see screenerCache.ts's
 // CACHE_VERSION comment for the exact failure mode this guards against.
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 
 function cachePathFor(
   segment: string,
