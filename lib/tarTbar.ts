@@ -130,6 +130,43 @@
 // exercised by any real data found so far: REAR actually forming and
 // escalating through its own full recursive structure -- implemented
 // per the derived spec, but unverified against real price action.
+//
+// RE-ENTRY THROUGH BAR, ONCE A WTF-NATIVE "WTF BAR" ITSELF SL's (i.e. the
+// base engine's own top-level BAR(label) milestone this module anchors
+// on -- NOT this module's own TAR/TBAR tiers):
+//
+//   1) CONFIRMED, REVISED in the base engine (lib/tzEngineWtf.ts) -- a
+//      lineage's own bare BAR SL is now ENOUGH on its own, whether or not
+//      BAR 2 ever formed for it: the base engine's own REAR mechanism
+//      takes over, REAR forming above that lineage's own reference high
+//      (frozen the moment its BAR SL fired) -- see WTF_RULEBOOK.md's
+//      "REAR / REAR 2" section. PREVIOUSLY (superseded): only "BAR SL2"
+//      (BAR 1 escalating to BAR 2, then BAR 2 also failing) opened REAR;
+//      a bare tier-1-only "BAR SL" used to just reform the SAME lineage
+//      directly, unrestricted. Confirmed in real KALYANKJIL.NS data:
+//      BAR(A.1) SL'd 24/02/25 with no BAR 2 ever formed -- under the OLD
+//      rule this reformed directly as BAR(A.1) again on 17/03/25; under
+//      the REVISED rule it instead waits, and REAR(A) forms 21/07/25
+//      (above A.1's own frozen reference high), with REAR SL(A) following
+//      28/07/25 -- the first real-data exercise of REAR actually forming.
+//      This module's own `findWindows` already treats any fresh "BAR("
+//      formation line as ending the prior window and starting the next,
+//      unchanged -- it doesn't need to distinguish how that BAR formed,
+//      only that REAR itself never emits its own "BAR(" line (so a
+//      window that ends in REAR now has no successor window until/unless
+//      a fresh BAR cascade forms again later under that REAR).
+//
+//   2) PROVISIONAL, NOT confirmed, NOT implemented here -- a narrower
+//      claim that when NO BAR SL2 has occurred yet for this top-level
+//      instance, a specific chain (WTF BAR -> RED1 + BAR SL -> BAR -> BAR
+//      SL -> BAR -> RED1-RED2 -> BAR -> TAR-TBAR) governs which specific
+//      bare BAR reform should actually count as "the" trigger for DTF
+//      TAR-TBAR seeking -- i.e. not every bare post-SL BAR reform
+//      qualifies, only one that itself formed under a fresh, complete
+//      RED1-RED2 (against TZ BUY 2) rather than a bare reform. Largely
+//      moot now that (1) above means a bare BAR SL no longer produces an
+//      unrestricted reform at all -- recorded here as a historical note,
+//      not adopted, not implemented.
 
 import { THRESH, EPS, type Day } from "./tzEngineWtf";
 import { runWtfTrace, type OhlcRow } from "./primeTrend";
