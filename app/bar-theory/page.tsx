@@ -315,7 +315,9 @@ export default function BarTheory() {
       <p className="subtitle">
         Single-timeframe BAR / BAR 2 screener, powered by the same TZ engine as the Trading Zone
         page — Part A: stocks currently trading with BAR. Part B: stocks currently trading with
-        BAR ENTRY (BAR 2).
+        BAR ENTRY (BAR 2). This is the single-timeframe cascade; the cross-timeframe,
+        WTF-BAR-anchored version of this theory (TAR/TBAR, and PRIME TREND&apos;s own PBAR/PBAR
+        ENTRY racing track) lives on the Prime Trend page instead.
       </p>
 
       <div className="card">

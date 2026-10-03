@@ -127,6 +127,18 @@ export interface PrimeTrendLiveStatus {
   stage1StopLoss: number | null;
   stage1HighestHigh: number | null;
   stage1HighestHighDate: string | null;
+  // BAR (tier 1 of the DTF-TZ-BUY-anchored ladder) currently active --
+  // i.e. BarLevelState.mode === "BAR_ACTIVE" on the main ("BAR") track.
+  // Distinct from stage2Active (BAR ENTRY, tier 2): a stock can be here
+  // without ever having reached BAR ENTRY yet.
+  barActive: boolean;
+  barSince: string | null;
+  barActivationPrice: number | null;
+  barStopLoss: number | null;
+  barHighestHigh: number | null;
+  barHighestHighDate: string | null;
+  // "Stage 2" = BAR ENTRY (or REAR ENTRY / REAR RE-ENTER, same tier one
+  // level up) currently active.
   stage2Active: boolean;
   stage2Since: string | null;
   stage2ActivationPrice: number | null;
@@ -137,6 +149,14 @@ export interface PrimeTrendLiveStatus {
   // types of bar theory" -- see the PBAR section below). Independent of
   // Stage 1/Stage 2: can be active even if Stage 1 has since SL'd, since
   // it's anchored on the WTF side, not on DTF TZ BUY.
+  // PBAR itself (tier 1 of that track) currently active.
+  pbarTier1Active: boolean;
+  pbarTier1Since: string | null;
+  pbarTier1ActivationPrice: number | null;
+  pbarTier1StopLoss: number | null;
+  pbarTier1HighestHigh: number | null;
+  pbarTier1HighestHighDate: string | null;
+  // PBAR ENTRY (tier 2 of that track) currently active.
   pbarActive: boolean;
   pbarSince: string | null;
   pbarActivationPrice: number | null;
@@ -265,6 +285,14 @@ class BarLevelState {
   barRefHigh = 0;
   barRefLow = 0;
   barActivationPrice: number | null = null; // fixed snapshot at BAR's own formation
+  // The date BAR (tier 1) most recently (re)formed -- for the live
+  // screener's own "BAR"/"PBAR" tab (distinct from rowEntryDate, which is
+  // tier 2's own formation date). barRefHighDate tracks when barRefHigh
+  // was last set, whether at formation or a later quiet climb -- so it
+  // always equals "the date of the running Highest High since formation",
+  // same convention as rowHH/rowHHDate for tier 2.
+  barFormationDate: string | null = null;
+  barRefHighDate: string | null = null;
   barEntryRefHigh = 0;
   barEntryRefLow = 0;
 
@@ -345,6 +373,8 @@ function stepBarLevel(
         s.barRefHigh = cur.h;
         s.barRefLow = cur.l;
         s.barActivationPrice = cur.h;
+        s.barFormationDate = cur.date;
+        s.barRefHighDate = cur.date;
         // This BAR's own gate, read fresh at its own formation moment --
         // not a permanent window-wide value.
         s.thisBarGate = s.doorOpen ? "RED1-RED2" : "RED1";
@@ -372,7 +402,10 @@ function stepBarLevel(
         break;
       }
       const slNow = slShape(cur, s.barRefLow);
-      if (!slNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) s.barRefHigh = cur.h;
+      if (!slNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) {
+        s.barRefHigh = cur.h;
+        s.barRefHighDate = cur.date;
+      }
       if (!slNow && cur.l < s.barRefLow) s.barRefLow = cur.l;
       if (slNow) {
         s.topRef = Math.max(s.topRef, s.barRefHigh);
@@ -387,7 +420,10 @@ function stepBarLevel(
       }
       const barSlNow = slShape(cur, s.barRefLow);
       const entrySlNow = slShape(cur, s.barEntryRefLow);
-      if (!barSlNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) s.barRefHigh = cur.h;
+      if (!barSlNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) {
+        s.barRefHigh = cur.h;
+        s.barRefHighDate = cur.date;
+      }
       if (!barSlNow && cur.l < s.barRefLow) s.barRefLow = cur.l;
       if (!entrySlNow && cur.h > s.barEntryRefHigh && cur.h - s.barEntryRefHigh >= ANY) s.barEntryRefHigh = cur.h;
       if (!entrySlNow && cur.l < s.barEntryRefLow) s.barEntryRefLow = cur.l;
@@ -485,6 +521,8 @@ function stepBarLevel(
         s.barRefHigh = cur.h;
         s.barRefLow = cur.l;
         s.barActivationPrice = cur.h;
+        s.barFormationDate = cur.date;
+        s.barRefHighDate = cur.date;
         // This BAR's own gate, read fresh at its own formation moment.
         s.thisBarGate = s.doorOpen ? "RED1-RED2" : "RED1";
         s.mode = "BAR_ACTIVE";
@@ -1160,10 +1198,15 @@ function simulateDtfAll(
   mergeTrailingWtfSl(rows, "PBAR", wtfLabel);
 
   const stage1Active = s1 !== null && s1.active;
+  // BAR (tier 1) currently active -- the main ladder's own pre-escalation
+  // state, distinct from stage2Active below.
+  const barActive = barState !== null && barState.mode === "BAR_ACTIVE";
   // "Stage 2" now means "BAR ENTRY (or REAR ENTRY / REAR RE-ENTER) is
   // currently active" -- a bare BAR alone (pre-escalation) is never
   // surfaced here, same filter rule as the historical trade log.
   const stage2Active = barState !== null && barState.mode === "BAR_ENTRY_ACTIVE";
+  // PBAR's own tier-1 equivalent of barActive.
+  const pbarTier1Active = pbarState !== null && pbarState.mode === "BAR_ACTIVE";
   // PBAR's own equivalent -- "PBAR ENTRY (or PBAR REAR ENTRY / PBAR REAR
   // RE-ENTER) is currently active". Independent of stage1Active/
   // stage2Active -- the PBAR track doesn't depend on Stage 1 at all.
@@ -1177,12 +1220,24 @@ function simulateDtfAll(
     stage1StopLoss: stage1Active && s1 ? s1.refLow : null,
     stage1HighestHigh: stage1Active ? (hh1Date ? hh1 : null) : null,
     stage1HighestHighDate: stage1Active ? hh1Date : null,
+    barActive,
+    barSince: barActive ? (barState as BarLevelState).barFormationDate : null,
+    barActivationPrice: barActive ? (barState as BarLevelState).barActivationPrice : null,
+    barStopLoss: barActive ? (barState as BarLevelState).barRefLow : null,
+    barHighestHigh: barActive ? (barState as BarLevelState).barRefHigh : null,
+    barHighestHighDate: barActive ? (barState as BarLevelState).barRefHighDate : null,
     stage2Active,
     stage2Since: stage2Active ? (barState as BarLevelState).rowEntryDate : null,
     stage2ActivationPrice: stage2Active ? (barState as BarLevelState).rowEntryPrice : null,
     stage2StopLoss: stage2Active ? (barState as BarLevelState).barEntryRefLow : null,
     stage2HighestHigh: stage2Active ? ((barState as BarLevelState).rowHHDate ? (barState as BarLevelState).rowHH : null) : null,
     stage2HighestHighDate: stage2Active ? (barState as BarLevelState).rowHHDate : null,
+    pbarTier1Active,
+    pbarTier1Since: pbarTier1Active ? (pbarState as BarLevelState).barFormationDate : null,
+    pbarTier1ActivationPrice: pbarTier1Active ? (pbarState as BarLevelState).barActivationPrice : null,
+    pbarTier1StopLoss: pbarTier1Active ? (pbarState as BarLevelState).barRefLow : null,
+    pbarTier1HighestHigh: pbarTier1Active ? (pbarState as BarLevelState).barRefHigh : null,
+    pbarTier1HighestHighDate: pbarTier1Active ? (pbarState as BarLevelState).barRefHighDate : null,
     pbarActive,
     pbarSince: pbarActive ? (pbarState as BarLevelState).rowEntryDate : null,
     pbarActivationPrice: pbarActive ? (pbarState as BarLevelState).rowEntryPrice : null,
@@ -1256,7 +1311,7 @@ export function computePrimeTrendLive(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): P
   for (const inst of instances) {
     if (inst.endEvent !== null) continue; // this instance already failed on the WTF side -- not "right now"
     const [, live] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
-    if (live !== null && (live.stage1Active || live.stage2Active || live.pbarActive)) {
+    if (live !== null && (live.stage1Active || live.stage2Active || live.pbarTier1Active || live.pbarActive)) {
       liveStatuses.push(live);
     }
   }

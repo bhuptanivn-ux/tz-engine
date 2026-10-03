@@ -10,20 +10,36 @@
 // governed by the exact same rules -- and the exact same real-data
 // verification -- as everything else PRIME TREND touches.
 //
-// Dropdown A-1 "DTF TRADING WITH TZ BUY": PRIME TREND's own Stage 1 (DTF TZ
-// BUY), currently active.
-// Dropdown A-2 "DTF - TZ BUY ENTRY ABOVE TZ BUY": PRIME TREND's own Stage 2
-// (DTF TZ BUY ENTRY), currently active.
+// Four tabs, each a currently-active snapshot from computePrimeTrendLive:
+//   BAR: the main (DTF-TZ-BUY-anchored) ladder's own tier 1 (BAR) active
+//     right now -- scrips that had a BAR form after TZ BUY, not yet
+//     escalated to BAR ENTRY and not yet SL'd.
+//   BAR ENTRY: that same ladder's tier 2 (BAR ENTRY, or REAR ENTRY / REAR
+//     RE-ENTER one level up) active right now -- scrips that had BAR
+//     ENTRY form after BAR.
+//   PBAR: the WTF-BAR-triggered racing track's own tier 1 (PBAR) active
+//     right now -- see lib/primeTrend.ts's PBAR section (Type 1 of the
+//     "3 types of bar theory"): triggers when this ladder hasn't reached
+//     BAR ENTRY yet by the time this instance's own WTF BAR forms.
+//   PBAR ENTRY: that track's tier 2 (PBAR ENTRY) active right now.
 //
-// A stock only appears in a list while that stage is CURRENTLY still
-// active (per computePrimeTrendLive) -- once its own SL fires it drops
-// off, same "remove once it trades with SL" rule as before.
+// BAR/BAR ENTRY and PBAR/PBAR ENTRY are independent, parallel tracks (see
+// lib/primeTrend.ts's "racing paths" design) -- a scrip can appear on
+// BOTH a BAR-track tab and a PBAR-track tab at once, since neither
+// cancels the other, and PBAR can stay live even after Stage 1 (DTF TZ
+// BUY) itself has SL'd (it's anchored on the WTF side, not on DTF TZ
+// BUY).
 //
-// Activation Price is a ONE-TIME snapshot: PRIME TREND's own Stage 1/Stage
-// 2 formation price (see PRIME_TREND_RULEBOOK.md -- Stage 1's own
-// breakout High for A-1, Stage 2's own ladder+0.20 entry price for A-2),
-// captured at the moment that stage most recently (re)formed, never
-// re-read afterward.
+// A stock only appears in a list while that exact tier is CURRENTLY
+// still active (per computePrimeTrendLive) -- once its own SL fires, or
+// it escalates to the next tier, it drops off that tab (an escalated
+// stock moves from BAR to BAR ENTRY, from PBAR to PBAR ENTRY).
+//
+// Activation Price is a ONE-TIME snapshot: that tier's own formation
+// price (see PRIME_TREND_RULEBOOK.md -- a plain breakout High for
+// BAR/PBAR, the ladder's own ref+0.20 entry price for BAR ENTRY/PBAR
+// ENTRY), captured at the moment that tier most recently (re)formed,
+// never re-read afterward.
 //
 // Highest High is PRIME TREND's own running max daily High since that
 // stage's own (re)formation -- see PRIME_TREND_RULEBOOK.md's "Highest
@@ -157,8 +173,10 @@ export function resampleWeekly(days: Day[]): Day[] {
 }
 
 export interface ScanResult {
-  tzBuy: ScreenerRow | null;
-  tzBuyEntry: ScreenerRow | null;
+  bar: ScreenerRow | null;
+  barEntry: ScreenerRow | null;
+  pbar: ScreenerRow | null;
+  pbarEntry: ScreenerRow | null;
 }
 
 export function toOhlcRow(d: Day): OhlcRow {
@@ -166,16 +184,16 @@ export function toOhlcRow(d: Day): OhlcRow {
 }
 
 /**
- * Scan one stock's daily history for its current PRIME TREND Stage 1 /
- * Stage 2 state. `rows` must be ascending by date and should cover the
- * stock's full history (PRIME TREND's own WTF trace is stateful/
- * sequential and needs full history to be correct). The WTF (weekly) side
- * is derived from these same daily rows via resampleWeekly, exactly as
- * before.
+ * Scan one stock's daily history for its current PRIME TREND BAR / BAR
+ * ENTRY / PBAR / PBAR ENTRY state. `rows` must be ascending by date and
+ * should cover the stock's full history (PRIME TREND's own WTF trace is
+ * stateful/sequential and needs full history to be correct). The WTF
+ * (weekly) side is derived from these same daily rows via resampleWeekly,
+ * exactly as before.
  */
 export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]): ScanResult {
   const days = toDays(rows);
-  if (days.length < 2) return { tzBuy: null, tzBuyEntry: null };
+  if (days.length < 2) return { bar: null, barEntry: null, pbar: null, pbarEntry: null };
 
   const weekly = resampleWeekly(days);
   const wtfRows = weekly.map(toOhlcRow);
@@ -184,43 +202,45 @@ export function scanStock(symbol: string, name: string, rows: HistoryRowLike[]):
   const currentClose = days[days.length - 1].c;
   const liveStatuses = computePrimeTrendLive(wtfRows, dtfRows);
 
+  function buildRow(since: string | null, activationPrice: number | null, stopLoss: number | null, hh: number | null): ScreenerRow | null {
+    if (since === null || activationPrice === null) return null;
+    const highestHigh = hh ?? activationPrice;
+    return {
+      symbol,
+      name,
+      activeAsOn: since,
+      activationPrice,
+      stopLoss,
+      lowestLowPostEntry: lowestLowPostEntry(days, since),
+      highestHigh,
+      percentReturn: ((highestHigh - activationPrice) / activationPrice) * 100,
+      currentClose,
+    };
+  }
+
   // In practice at most one WTF TZ BUY 2 instance is ever open for a given
   // stock at once; if more than one somehow is (a rare multi-branch edge
   // case), the first one found governs each list.
-  let tzBuy: ScreenerRow | null = null;
-  let tzBuyEntry: ScreenerRow | null = null;
+  let bar: ScreenerRow | null = null;
+  let barEntry: ScreenerRow | null = null;
+  let pbar: ScreenerRow | null = null;
+  let pbarEntry: ScreenerRow | null = null;
   for (const live of liveStatuses) {
-    if (!tzBuy && live.stage1Active && live.stage1Since !== null && live.stage1ActivationPrice !== null) {
-      const highestHigh = live.stage1HighestHigh ?? live.stage1ActivationPrice;
-      tzBuy = {
-        symbol,
-        name,
-        activeAsOn: live.stage1Since,
-        activationPrice: live.stage1ActivationPrice,
-        stopLoss: live.stage1StopLoss,
-        lowestLowPostEntry: lowestLowPostEntry(days, live.stage1Since),
-        highestHigh,
-        percentReturn: ((highestHigh - live.stage1ActivationPrice) / live.stage1ActivationPrice) * 100,
-        currentClose,
-      };
+    if (!bar && live.barActive) {
+      bar = buildRow(live.barSince, live.barActivationPrice, live.barStopLoss, live.barHighestHigh);
     }
-    if (!tzBuyEntry && live.stage2Active && live.stage2Since !== null && live.stage2ActivationPrice !== null) {
-      const highestHigh = live.stage2HighestHigh ?? live.stage2ActivationPrice;
-      tzBuyEntry = {
-        symbol,
-        name,
-        activeAsOn: live.stage2Since,
-        activationPrice: live.stage2ActivationPrice,
-        stopLoss: live.stage2StopLoss,
-        lowestLowPostEntry: lowestLowPostEntry(days, live.stage2Since),
-        highestHigh,
-        percentReturn: ((highestHigh - live.stage2ActivationPrice) / live.stage2ActivationPrice) * 100,
-        currentClose,
-      };
+    if (!barEntry && live.stage2Active) {
+      barEntry = buildRow(live.stage2Since, live.stage2ActivationPrice, live.stage2StopLoss, live.stage2HighestHigh);
+    }
+    if (!pbar && live.pbarTier1Active) {
+      pbar = buildRow(live.pbarTier1Since, live.pbarTier1ActivationPrice, live.pbarTier1StopLoss, live.pbarTier1HighestHigh);
+    }
+    if (!pbarEntry && live.pbarActive) {
+      pbarEntry = buildRow(live.pbarSince, live.pbarActivationPrice, live.pbarStopLoss, live.pbarHighestHigh);
     }
   }
 
-  return { tzBuy, tzBuyEntry };
+  return { bar, barEntry, pbar, pbarEntry };
 }
 
 // Re-exported so callers (e.g. the /api/screener route) don't need a
