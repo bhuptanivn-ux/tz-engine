@@ -180,7 +180,12 @@ export class TZEngine {
   private deepFailureReached(buy: Buy): boolean {
     if (buy.rear !== null && buy.rear.sl !== null) return true;
     if (buy.rearReenter !== null && buy.rearReenter.sl !== null) return true;
-    return buy.barLineages.some((lin) => lin.sl !== null && lin.sl.sl2);
+    // REVISION: a lineage that never escalated past BAR 1 has no deeper
+    // tier to confirm SL2 on -- for it, the bare BAR SL itself is now the
+    // deep-failure signal (previously only BAR SL2 counted at all, for
+    // every lineage regardless of whether BAR 2 ever formed). A lineage
+    // that DID reach BAR 2 still needs its own SL2 confirmation, unchanged.
+    return buy.barLineages.some((lin) => lin.sl !== null && (lin.bar2 === null || lin.sl.sl2));
   }
 
   private barLineagesRacing(buy: Buy): boolean {
@@ -1252,6 +1257,20 @@ export class TZEngine {
       const sl = lin.sl;
 
       if (lin.bar2 === null) {
+        // REVISION: never escalated past BAR 1 -- the bare BAR SL itself
+        // is now enough for REAR eligibility, no SL2-equivalent
+        // confirmation to wait for (there's no deeper tier here to
+        // confirm against). lin.refHigh is frozen as of BAR 1's own SL --
+        // nothing updates it for an already-SL'd lineage -- so, unlike
+        // the BAR-2-having case below, no "preToday" snapshot is needed.
+        if (!this.rearAncestorTerminated(buy)) {
+          const rearRef = lin.refHigh;
+          const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
+          if (isRear && !this.milestoneBlocked(pc)) {
+            rearWinner = [lin, cur.h, cur.l];
+            break;
+          }
+        }
         continue;
       }
 
@@ -1337,7 +1356,11 @@ export class TZEngine {
     }
 
     const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    const newestIsDead = newest === null || (newest.sl !== null && !newest.sl.sl2);
+    // REVISION: a bar2-less lineage's own bare SL is now deep failure in
+    // its own right (see deepFailureReached above) -- it no longer leaves
+    // the door open for an ungated fresh reform here; only a lineage that
+    // escalated to BAR 2 but hasn't yet reached SL2 still does.
+    const newestIsDead = newest === null || (newest.sl !== null && newest.bar2 !== null && !newest.sl.sl2);
     const freshBarReady = newestIsDead || buy.barPending;
     if (!pc.dormant && !reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
       const surviving: BarLineage[] = [];
