@@ -5,7 +5,7 @@ import type { ScreenerRow } from "@/lib/dtfWtfScreener";
 import { SCREENER_SEGMENTS } from "@/lib/screenerSegments";
 import { formatDDMMYYYY, formatTimestampDDMMYYYY } from "@/lib/dateFormat";
 
-type ListChoice = "tzBuy" | "tzBuyEntry";
+type ListChoice = "bar" | "barEntry" | "pbar" | "pbarEntry";
 type ReturnSort = "desc" | "asc" | null;
 
 interface ScripMatch {
@@ -49,8 +49,10 @@ function sleep(ms: number): Promise<void> {
 interface ScreenerBatchResponse {
   total?: number;
   scanned?: number;
-  tzBuy?: ScreenerRow[];
-  tzBuyEntry?: ScreenerRow[];
+  bar?: ScreenerRow[];
+  barEntry?: ScreenerRow[];
+  pbar?: ScreenerRow[];
+  pbarEntry?: ScreenerRow[];
   errors?: string[];
   cached?: boolean;
   error?: string;
@@ -90,10 +92,12 @@ function retraced(lowestLow: number | null, activationPrice: number): "YES" | "N
 }
 
 export default function EntryZone() {
-  const [choice, setChoice] = useState<ListChoice>("tzBuyEntry");
+  const [choice, setChoice] = useState<ListChoice>("barEntry");
   const [segment, setSegment] = useState("");
-  const [tzBuy, setTzBuy] = useState<ScreenerRow[]>([]);
-  const [tzBuyEntry, setTzBuyEntry] = useState<ScreenerRow[]>([]);
+  const [bar, setBar] = useState<ScreenerRow[]>([]);
+  const [barEntry, setBarEntry] = useState<ScreenerRow[]>([]);
+  const [pbar, setPbar] = useState<ScreenerRow[]>([]);
+  const [pbarEntry, setPbarEntry] = useState<ScreenerRow[]>([]);
   const [scanned, setScanned] = useState(0);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -131,14 +135,14 @@ export default function EntryZone() {
   const theadRow1Ref = useRef<HTMLTableRowElement>(null);
   const [row1Height, setRow1Height] = useState(0);
 
-  // Switching tabs is a pure view change -- one scan already computes BOTH
-  // tzBuy and tzBuyEntry together (every batch response carries both, see
-  // runScan below), so there is no need to re-scan, and no reason to
-  // throw away either tab's results just because the other tab was
-  // clicked. Only the per-tab view filters reset (a Year/search/sort that
-  // made sense for one tab's results may not for the other's); the scan
-  // itself (segment, tzBuy, tzBuyEntry, lastScanned) is left completely
-  // alone.
+  // Switching tabs is a pure view change -- one scan already computes all
+  // four lists (bar, barEntry, pbar, pbarEntry) together (every batch
+  // response carries all four, see runScan below), so there is no need to
+  // re-scan, and no reason to throw away any tab's results just because a
+  // different tab was clicked. Only the per-tab view filters reset (a
+  // Year/search/sort that made sense for one tab's results may not for
+  // another's); the scan itself (segment, the four lists, lastScanned) is
+  // left completely alone.
   function onChoiceChange(next: ListChoice) {
     setChoice(next);
     clearScripSearch();
@@ -148,8 +152,10 @@ export default function EntryZone() {
 
   function onSegmentChange(next: string) {
     setSegment(next);
-    setTzBuy([]);
-    setTzBuyEntry([]);
+    setBar([]);
+    setBarEntry([]);
+    setPbar([]);
+    setPbarEntry([]);
     setLastScanned("");
     setError("");
     clearScripSearch();
@@ -210,8 +216,10 @@ export default function EntryZone() {
     setScanProgress("");
     try {
       const first = await fetchScanBatch(0, BATCH_SIZE);
-      const tzBuyAll = [...(first.tzBuy || [])];
-      const tzBuyEntryAll = [...(first.tzBuyEntry || [])];
+      const barAll = [...(first.bar || [])];
+      const barEntryAll = [...(first.barEntry || [])];
+      const pbarAll = [...(first.pbar || [])];
+      const pbarEntryAll = [...(first.pbarEntry || [])];
       const errorsAll = [...(first.errors || [])];
       let scannedTotal = first.scanned || 0;
       let allCached = !!first.cached;
@@ -229,8 +237,10 @@ export default function EntryZone() {
         await sleep(BATCH_GAP_MS);
         try {
           const batch = await fetchScanBatch(off, BATCH_SIZE);
-          tzBuyAll.push(...(batch.tzBuy || []));
-          tzBuyEntryAll.push(...(batch.tzBuyEntry || []));
+          barAll.push(...(batch.bar || []));
+          barEntryAll.push(...(batch.barEntry || []));
+          pbarAll.push(...(batch.pbar || []));
+          pbarEntryAll.push(...(batch.pbarEntry || []));
           errorsAll.push(...(batch.errors || []));
           scannedTotal += batch.scanned || 0;
           allCached = allCached && !!batch.cached;
@@ -242,8 +252,10 @@ export default function EntryZone() {
         setScanProgress(`${scannedTotal} / ${total}`);
       }
 
-      setTzBuy(tzBuyAll);
-      setTzBuyEntry(tzBuyEntryAll);
+      setBar(barAll);
+      setBarEntry(barEntryAll);
+      setPbar(pbarAll);
+      setPbarEntry(pbarEntryAll);
       setScanned(scannedTotal);
       setErrors(errorsAll);
       setCachedResult(allCached);
@@ -312,7 +324,8 @@ export default function EntryZone() {
     }
   }
 
-  const activeList = choice === "tzBuy" ? tzBuy : tzBuyEntry;
+  const activeList =
+    choice === "bar" ? bar : choice === "barEntry" ? barEntry : choice === "pbar" ? pbar : pbarEntry;
 
   // Years present in the current tab's active list, latest first, for the
   // Year filter dropdown.
@@ -371,30 +384,48 @@ export default function EntryZone() {
     <main className="container">
       <h1>Prime Trend</h1>
       <p className="subtitle">
-        DTF/WTF dual-timeframe screener — Part A: stocks whose weekly timeframe (WTF) is
-        currently active with TZ BUY 2, and whose daily timeframe (DTF) has broken out above it.
-        Part B (WTF at plain BAR level) isn&apos;t built yet.
+        DTF/WTF dual-timeframe screener. BAR / BAR ENTRY: DTF&apos;s own ladder, anchored off WTF
+        TZ BUY 2 and escalating through DTF&apos;s own RED1(-RED2) pullback. PBAR / PBAR ENTRY: the
+        parallel, WTF-BAR-triggered racing track that opens when DTF hasn&apos;t confirmed BAR
+        ENTRY yet by the time WTF&apos;s own BAR forms — see BAR Theory for the WTF-anchored side
+        of this.
       </p>
 
       <div className="card">
         <div className="tabs">
           <button
-            className={choice === "tzBuy" ? "tab active" : "tab"}
-            onClick={() => onChoiceChange("tzBuy")}
+            className={choice === "bar" ? "tab active" : "tab"}
+            onClick={() => onChoiceChange("bar")}
           >
-            DTF trading with TZ BUY
+            BAR
           </button>
           <button
-            className={choice === "tzBuyEntry" ? "tab active" : "tab"}
-            onClick={() => onChoiceChange("tzBuyEntry")}
+            className={choice === "barEntry" ? "tab active" : "tab"}
+            onClick={() => onChoiceChange("barEntry")}
           >
-            DTF TZ BUY ENTRY
+            BAR ENTRY
+          </button>
+          <button
+            className={choice === "pbar" ? "tab active" : "tab"}
+            onClick={() => onChoiceChange("pbar")}
+          >
+            PBAR
+          </button>
+          <button
+            className={choice === "pbarEntry" ? "tab active" : "tab"}
+            onClick={() => onChoiceChange("pbarEntry")}
+          >
+            PBAR ENTRY
           </button>
         </div>
         <p className="muted" style={{ marginTop: "-0.5rem", marginBottom: "1rem" }}>
-          {choice === "tzBuy"
-            ? "Above WTF TZ BUY 2 reference high"
-            : "DTF's own TZ BUY 2, above DTF TZ BUY"}
+          {choice === "bar"
+            ? "DTF's own BAR, formed after TZ BUY's RED1(-RED2) pullback"
+            : choice === "barEntry"
+            ? "DTF's own BAR ENTRY, above BAR's own reference high"
+            : choice === "pbar"
+            ? "DTF's own PBAR, triggered by WTF's own BAR when DTF hadn't confirmed BAR ENTRY yet"
+            : "DTF's own PBAR ENTRY, above PBAR's own reference high"}
         </p>
         <label className="muted" htmlFor="segment-select" style={{ display: "block", marginBottom: "0.35rem" }}>
           Segment
@@ -429,9 +460,11 @@ export default function EntryZone() {
             {" "}
             Powered by the full PRIME TREND theory: DTF is anchored off WTF&apos;s own currently
             LIVE TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 reference, which keeps climbing for as long as
-            that WTF tier stays alive. Activation price is a one-time snapshot of DTF&apos;s own
-            stage price, taken when this list&apos;s milestone most recently (re)formed (can differ
-            between the two lists). Stop loss price is that milestone&apos;s own live SL level — it
+            that WTF tier stays alive. BAR and BAR ENTRY are DTF&apos;s own ladder off that anchor;
+            PBAR and PBAR ENTRY are the separate, WTF-BAR-triggered racing track — both can be live
+            at once. Activation price is a one-time snapshot of that tier&apos;s own price, taken
+            when this list&apos;s milestone most recently (re)formed (can differ between tabs). Stop
+            loss price is that milestone&apos;s own live SL level — it
             ratchets down to a new reference low as one forms, unlike Activation price&apos;s
             one-time snapshot. % Risk is how far below Activation price that stop loss sits. Lowest
             low post entry is the lowest daily low made strictly after the entry day and strictly
@@ -539,7 +572,7 @@ export default function EntryZone() {
             <div className="field" style={{ flex: "1 1 100%", marginBottom: 0 }}>
               <label style={{ fontSize: "0.8rem" }}>Columns</label>
               <div className="col-filter-row">
-                {choice === "tzBuyEntry" && (
+                {(choice === "barEntry" || choice === "pbarEntry") && (
                   <>
                     <label className="col-filter-item">
                       <input
@@ -590,9 +623,10 @@ export default function EntryZone() {
       )}
 
       {rows.length > 0 && (() => {
-        const showStopLoss = choice === "tzBuyEntry";
-        const showLowestLow = choice === "tzBuyEntry";
-        const showHighestHigh = choice === "tzBuyEntry";
+        const isEntryTab = choice === "barEntry" || choice === "pbarEntry";
+        const showStopLoss = isEntryTab;
+        const showLowestLow = isEntryTab;
+        const showHighestHigh = isEntryTab;
         const highGroupCols = showHighestHigh ? (colHighPrice ? 1 : 0) + (colHighReturn ? 1 : 0) : 0;
         const lowGroupCols = showLowestLow ? (colLowPrice ? 1 : 0) + (colLowRetraced ? 1 : 0) : 0;
 
@@ -613,7 +647,7 @@ export default function EntryZone() {
                     <th className="col-left" style={row2StickyStyle}>Name</th>
                     <th className="col-left" style={row2StickyStyle}>Symbol</th>
                     <th style={row2StickyStyle}>Date</th>
-                    <th style={row2StickyStyle}>{choice === "tzBuy" ? "TZ BUY entry above" : "Price"}</th>
+                    <th style={row2StickyStyle}>Price</th>
                     {showStopLoss && (
                       <>
                         <th style={row2StickyStyle}>Price</th>
