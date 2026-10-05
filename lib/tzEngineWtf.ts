@@ -713,12 +713,44 @@ export class TZEngine {
       (buy.rear !== null || buy.rearReenter !== null) &&
       this.barEntryShape(prev, cur);
 
-    if (buy.rearReenter !== null && buy.rearReenter.sl !== null) {
+    // REVISION: a plain fresh BAR is its own, independent lineage/track
+    // from the REAR / REAR RE-ENTER ladder -- confirmed real-data case,
+    // USHA MARTIN.NS: 05/08/24 REAR SL(B), then 09/09/24: BAR forms
+    // directly, with no REAR RE-ENTER (recovery back above the REAR SL's
+    // own, much higher, re-entry threshold) ever happening in between.
+    // "A new REAR can occur for the REAR/REAR RE-ENTER/REAR 2/REAR
+    // RE-ENTER 2 LINEAGE... A REAR can also occur for the VALID BAR
+    // LINEAGE" -- these are two separate, parallel racing tracks, not
+    // one gating the other. Without this, evalRearSlProgress/
+    // evalRearReenterSlProgress's own dispatch priority below (unlike
+    // every other REAR dispatch branch here) never checks `dormant`, so
+    // a SL'd REAR/REAR RE-ENTER would otherwise claim every future
+    // candle forever, and a fresh BAR could never form again unless
+    // price fully re-entered back above the SL's own threshold.
+    const restartsAsFreshBar =
+      buy.active &&
+      buy.barLineages.length === 0 &&
+      !buy.barPending &&
+      ((buy.rearReenter !== null && buy.rearReenter.sl !== null && !buy.rearReenter.dormant) ||
+        (buy.rearReenter === null && buy.rear !== null && buy.rear.sl !== null && !buy.rear.dormant)) &&
+      this.barEntryShape(prev, cur);
+
+    if (buy.rearReenter !== null && buy.rearReenter.sl !== null && !buy.rearReenter.dormant && !restartsAsFreshBar) {
       ev.push(...this.evalRearReenterSlProgress(pc, buy, buy.rearReenter, buy.rearReenter.sl, prev, cur));
-    } else if (buy.rearReenter === null && buy.rear !== null && buy.rear.sl !== null) {
+    } else if (
+      buy.rearReenter === null &&
+      buy.rear !== null &&
+      buy.rear.sl !== null &&
+      !buy.rear.dormant &&
+      !restartsAsFreshBar
+    ) {
       ev.push(...this.evalRearSlProgress(pc, buy, buy.rear, buy.rear.sl, prev, cur));
-    } else if (barConfirmsToday) {
+    } else if (barConfirmsToday || restartsAsFreshBar) {
       ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(")));
+      if (restartsAsFreshBar) {
+        if (buy.rearReenter !== null) buy.rearReenter.dormant = true;
+        else if (buy.rear !== null) buy.rear.dormant = true;
+      }
       ev.push(...this.checkBarPending(pc, buy, prev, cur, false));
     } else if (buy.barLineages.length > 0) {
       ev.push(...this.evalBarLineagesProgress(pc, buy, prev, cur, preTodayBar2Ref));
@@ -988,11 +1020,25 @@ export class TZEngine {
     if (pc.dormant) return [];
     if (cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
       const subLabel = this.nextBarLabel(buy, branchLabel(pc.id));
-      buy.barLineages.push(new BarLineage(subLabel, cur.h, cur.l));
+      // Same VALID BAR rule as the bottom of evalBarLineagesProgress --
+      // this is the OTHER site a fresh reform can go through (reached
+      // via barConfirmsToday/the buy.barPending fallback below, both of
+      // which only call this when buy.barLineages is already empty, e.g.
+      // RED2 just retired the last/only bare lineage). buy.barPending
+      // true here means a RED1-RED2 cycle just confirmed; the
+      // restartsAsFreshBar caller (a fresh BAR immediately after a REAR/
+      // REAR RE-ENTER SL, no RED cycle involved) always passes it false,
+      // so that path never produces VALID BAR, matching "VALID BAR
+      // REQUIRES A ACTIVE BAR - RED 1 - RED 2 - VALID BAR."
+      const viaRedCycle = buy.barPending;
+      const isValidBar = this.weeklyBarSlRear && viaRedCycle && buy.barChainAnchor !== null;
+      const newLin = new BarLineage(subLabel, cur.h, cur.l);
+      newLin.validBar = isValidBar;
+      buy.barLineages.push(newLin);
       buy.barPending = false;
       buy.barHighPool = Math.max(buy.barHighPool, cur.h);
       if (supersedeRear) this.supersedeRearForNewBar(buy);
-      return [`BAR(${subLabel})`];
+      return [`${isValidBar ? "VALID BAR" : "BAR"}(${subLabel})`];
     }
     return [];
   }
@@ -1288,7 +1334,18 @@ export class TZEngine {
     // pinned once (see Buy.barChainAnchor) and stays pinned through
     // every later reform/VALID BAR cycle in this chain -- it is NOT
     // reset by anything in this function except REAR itself firing.
-    if (this.weeklyBarSlRear && buy.barChainAnchor !== null && !this.rearAncestorTerminated(buy)) {
+    //
+    // Deliberately NOT gated by rearAncestorTerminated -- that check
+    // looks at buy.rear/buy.rearReenter directly and would permanently
+    // block REAR for this buy forever after the FIRST REAR's own SL,
+    // which contradicts "A new REAR can occur for the REAR/REAR
+    // RE-ENTER/REAR 2/REAR RE-ENTER 2 LINEAGE... A REAR can also occur
+    // for the VALID BAR LINEAGE" -- REAR can legitimately happen again
+    // for a brand new chain (fresh barChainAnchor) even after an earlier,
+    // unrelated-by-now REAR in the same buy has already SL'd (confirmed
+    // real-data case: USHA MARTIN.NS B.1, whose own fresh chain after
+    // 05/08/24's REAR SL needs to be able to reach its own REAR again).
+    if (this.weeklyBarSlRear && buy.barChainAnchor !== null) {
       const anchor = buy.barChainAnchor;
       const isRear = cur.l >= prev.l && cur.h > anchor.refHigh && cur.h - anchor.refHigh >= THRESH - EPS && cur.c >= anchor.refHigh;
       if (isRear && !this.milestoneBlocked(pc)) {
@@ -1440,14 +1497,17 @@ export class TZEngine {
     }
 
     const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    // REVISION (weekly only, see this.weeklyBarSlRear): a bar2-less
-    // lineage's own bare SL is now deep failure in its own right (see
-    // deepFailureReached above) -- it no longer leaves the door open for
-    // an ungated fresh reform here; only a lineage that escalated to BAR
-    // 2 but hasn't yet reached SL2 still does. On every other timeframe
-    // a bar2-less SL'd lineage is still "dead enough to reform", unchanged.
-    const newestIsDead =
-      newest === null || (newest.sl !== null && (!this.weeklyBarSlRear || newest.bar2 !== null) && !newest.sl.sl2);
+    // A bare (bar2-null) lineage's own SL is "dead enough to reform"
+    // here on every timeframe, weekly included -- confirmed: "every BAR
+    // will be considered as the BASE BAR unless there is BAR 1 - BAR 2 -
+    // BAR SL - BAR SL 2." REAR already gets first crack at every candle
+    // via the chain-wide anchor check above (which returns early when it
+    // wins), so this plain reform is a genuinely parallel, lower-
+    // priority path -- it only ever fires on a candle where REAR itself
+    // did NOT also qualify -- not a shortcut that starves REAR out the
+    // way an earlier, narrower version of this flag prevented (back when
+    // REAR had no path of its own for a bare lineage at all).
+    const newestIsDead = newest === null || (newest.sl !== null && !newest.sl.sl2);
     // Captured BEFORE freshBarReady/the reform below can consume it --
     // true here means this reform (if any) is happening because a RED1-
     // RED2 cycle just confirmed (see clearForNewBarGeneration), not
