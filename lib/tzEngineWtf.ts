@@ -1404,8 +1404,23 @@ export class TZEngine {
     // 05/08/24's REAR SL needs to be able to reach its own REAR again).
     if (this.weeklyBarSlRear && buy.barChainAnchor !== null) {
       const anchor = buy.barChainAnchor;
+      // Real-data bug (USHA MARTIN.NS): without this, a DIFFERENT bar
+      // lineage's own first SL (e.g. B.4's, pinning a brand new anchor
+      // after the buy's existing REAR/BARC had already consumed and
+      // reset the PREVIOUS anchor) could fire a second, overwriting
+      // REAR/BARC formation on 10/06/24 while the buy's own REAR/BARC
+      // from 2021-03-01 was STILL alive and active (never SL'd) --
+      // visibly wrong, since "BARC(B)" fired a second time with no SL in
+      // between. A chain anchor can only consummate into an actual
+      // REAR/BARC takeover of buy.rear/buy.rearReenter while that slot
+      // isn't already occupied by a live, un-SL'd, non-dormant instance
+      // -- otherwise it just keeps quietly climbing in the background
+      // until the slot frees up.
+      const rearSlotOccupied =
+        (buy.rearReenter !== null && buy.rearReenter.sl === null && !buy.rearReenter.dormant) ||
+        (buy.rearReenter === null && buy.rear !== null && buy.rear.sl === null && !buy.rear.dormant);
       const isRear = cur.l >= prev.l && cur.h > anchor.refHigh && cur.h - anchor.refHigh >= THRESH - EPS && cur.c >= anchor.refHigh;
-      if (isRear && !this.milestoneBlocked(pc)) {
+      if (isRear && !this.milestoneBlocked(pc) && !rearSlotOccupied) {
         rearWinner = [cur.h, cur.l, anchor.deepFailure];
       } else {
         if (cur.h > anchor.refHigh && cur.h - anchor.refHigh >= ANY) {
@@ -1610,6 +1625,20 @@ export class TZEngine {
       buy.barLineages.push(newLin);
       buy.barPending = false;
       buy.barHighPool = Math.max(buy.barHighPool, cur.h);
+      // Same supersession checkBarPending already applies for its own
+      // fresh-BAR reform (buy.barLineages was empty there) -- this is
+      // the OTHER reform site (buy.barLineages non-empty, e.g. B.3 ->
+      // B.4). Without it, a still-active, un-SL'd buy.rear/rearReenter
+      // from years earlier could sit there indefinitely while a wholly
+      // separate, actively-cycling bar family races underneath it --
+      // confirmed real-data case, USHA MARTIN.NS: the chain anchor
+      // pinned by B.4's own 11/03/24 BAR SL couldn't fire its own
+      // REAR/BARC on 10/06/24 (see the chain-anchor check's own
+      // rearSlotOccupied guard) because the buy's ancient 2021-formed
+      // REAR had never been marked dormant, despite B.1 through B.4
+      // having long since taken over as the buy's own actively-racing
+      // bar family.
+      this.supersedeRearForNewBar(buy);
       ev.push(`${isValidBar ? "VALID BAR" : "BAR"}(${subLabel})`);
     }
 
