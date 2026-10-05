@@ -478,23 +478,11 @@ export class TZEngine {
 
     const collaterallyTerminated = new Set<number>();
     const exemptionBlockedPids = new Set<number>();
-    // Real-data bug (ETERNAL.NS branch B): B's own BAR SL2(B.1) chain
-    // confirmed REAR(B) -- a genuine milestone -- on 11/08/25, the SAME
-    // candle branch A achieved a fresh TZ BUY(A). preTodayLiveBuy only
-    // reflects YESTERDAY's state, so B (not live as of yesterday) had no
-    // exemption against A's fresh-buy achievement and got destroyed
-    // outright this same candle, right after winning its own milestone.
-    // A branch that achieves ANY milestone of its own this candle is
-    // never a valid collateral-termination target this candle -- the
-    // normal seq-based leadership contest (dormant-setting, the leader
-    // pass below) sorts out precedence starting the NEXT candle instead.
-    const achieversTodayPids = new Set(milestoneAchievers.map(([pc]) => pc.id));
     for (const [pc, isFreshBuy] of milestoneAchievers) {
       if (!pc.active) continue;
       let blockedThisAchiever = false;
       for (const [oid, other] of Array.from(this.branches.entries())) {
         if (other === pc || !other.active) continue;
-        if (achieversTodayPids.has(oid)) continue;
         // Real-data bug (ETERNAL.NS branch B): deepFailureReached (BAR
         // SL2/REAR SL) deliberately makes buyCurrentlyLive report false
         // so it stops BLOCKING a sibling's own TZ BUY/RED1/RED2 progress
@@ -518,7 +506,19 @@ export class TZEngine {
         // same way: dormant, never destroyed, as long as the REAR/REAR
         // RE-ENTER ladder itself (not necessarily its "2" tier) hasn't
         // failed.
-        const otherDeepFailurePending = other.buy !== null && this.deepFailureReached(other.buy);
+        // Deliberately NOT reusing deepFailureReached -- it also treats
+        // any historical REAR/BARC's own SL as "deep failure" (true for
+        // sibling-spawn eligibility, where that's the intent), which
+        // would wrongly protect a branch whose REAR/BARC failed long ago
+        // and has since moved on to a fresh, unrelated BAR cycle
+        // (confirmed real-data case: ICICIBANK.NS branch E, 2014 --
+        // reusing deepFailureReached here kept E alive off its stale
+        // 22/09/2014 BARC SL, when E should have died normally like the
+        // pre-existing code already did). This checks the ONE thing that
+        // actually needs protecting: a genuine BAR SL2 on a CURRENT bar
+        // lineage.
+        const otherDeepFailurePending =
+          other.buy !== null && other.buy.barLineages.some((lin) => lin.sl !== null && lin.sl.sl2);
         const otherRearChainAlive =
           other.buy !== null &&
           ((other.buy.rear !== null && other.buy.rear.sl === null) ||
