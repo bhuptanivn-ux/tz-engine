@@ -1105,6 +1105,8 @@ export class TZEngine {
         ev.push(`BAR SL(${lin.label})`);
         lin.sl = new BarSL(cur.h, cur.l);
         buy.red1 = null;
+        // Same fix as the main BAR SL site -- see its comment.
+        buy.barPending = false;
       } else {
         sl.refLow = cur.l;
         ev.push(`INVALID BAR LL(${lin.label})`);
@@ -1540,6 +1542,19 @@ export class TZEngine {
             }
             buy.red1 = null;
             lin.red1Since = false;
+            // Real-data bug (ICICIBANK.NS branch D, 2020): a RED1-RED2
+            // cycle completing on THIS lineage while it was still alive
+            // (red2Ever got set, but the lineage itself kept trading
+            // afterward -- confirmed: RED2(D) 02/03/2020, then BAR 2
+            // LL(D.1) 09/03/2020) left buy.barPending sitting true,
+            // unconsumed, for weeks. This BAR SL is a wholly separate,
+            // later event, not the direct result of that RED cycle --
+            // confirmed: "AFTER BAR SL, there has to be an ACTIVE BAR
+            // FOLLOWED BY RED1-RED2, only then VALID BAR can occur." A
+            // RED cycle that predates this SL can never satisfy that
+            // sequence, so it must not survive past this SL to wrongly
+            // credit whatever reforms next.
+            buy.barPending = false;
             continue;
           }
           if (lin === newestForRed1) {
