@@ -302,7 +302,20 @@ export class TZEngine {
   private buyCurrentlyLive(buy: Buy): boolean {
     if (!buy.active) return false;
     if (buy.rearReenter !== null) {
-      if (buy.rearReenter.sl !== null) return false;
+      if (buy.rearReenter.sl !== null) {
+        // Real-data bug (ICICIBANK.NS branch E, 2014): this used to bail
+        // out to "not live" the instant REAR RE-ENTER's own SL fired,
+        // forever after -- even once a brand new, unrelated BAR cascade
+        // had since reformed and was actively racing (confirmed: BAR(E.1)
+        // 13/10/2014, BAR 2(E.1) 20/10/2014, weeks after REAR RE-ENTER's
+        // own 22/09/2014 SL). That stale "not live" wrongly fed both
+        // sibling-spawn eligibility (a new TZ GREEN spawning while E was
+        // actually still racing) and the cross-branch TZ BUY gate (a
+        // long-dormant branch's own fresh TZ BUY sees no live buy
+        // anywhere and wipes E out). Check the CURRENT bar lineage first;
+        // only report "not live" once nothing is actually racing there.
+        return buy.barLineages.length > 0 && this.barLineagesRacing(buy);
+      }
       if (!buy.rearReenter.dormant) {
         if (buy.barLineages.length > 0) {
           if (this.barLineagesRacing(buy)) return true;
@@ -322,7 +335,10 @@ export class TZEngine {
         return !(buy.rearReenter.rre2 !== null && buy.rearReenter.rre2.slActive);
       }
     } else if (buy.rear !== null) {
-      if (buy.rear.sl !== null) return false;
+      if (buy.rear.sl !== null) {
+        // Same fix, one tier up -- see the REAR RE-ENTER comment above.
+        return buy.barLineages.length > 0 && this.barLineagesRacing(buy);
+      }
       if (!buy.rear.dormant) {
         if (buy.barLineages.length > 0) {
           if (this.barLineagesRacing(buy)) return true;
