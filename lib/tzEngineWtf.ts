@@ -1487,11 +1487,21 @@ export class TZEngine {
         }
 
         if (!sl.sl2) {
-          if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
+          // Confirmed: "VALID BAR should not stop the BAR SL 2 from
+          // occurring" / "should a lineage that's already reached BAR 2
+          // keep being tracked toward BAR SL2 even after a newer
+          // sibling has taken over newest status? YES." The recovery/
+          // reactivation shape is a privilege of the newest (live) bar
+          // only -- a non-newest, still-racing-in-the-background
+          // lineage must never be dropped just because price also
+          // happens to satisfy that shape; it keeps running its own
+          // plain quiet-climb/BAR SL2 watch below exactly as if this
+          // check didn't apply to it at all.
+          const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
+          if (isNewest && cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
             linEv.push(`INVALID BAR SL(${lin.label})`);
             buy.barHighPool = Math.max(buy.barHighPool, cur.h);
-            const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
-            if (isNewest && this.barEntryShape(prev, cur)) {
+            if (this.barEntryShape(prev, cur)) {
               lin.sl = null;
               lin.refHigh = cur.h;
               lin.refLow = cur.l;
@@ -1500,13 +1510,20 @@ export class TZEngine {
               lin.bar2 = null;
               reactivatedThisCandle = true;
               buy.barPending = false;
-              linEv.push(`${lin.validBar ? "VALID BAR" : "BAR"}(${lin.label})`);
-            } else if (isNewest) {
+              // Confirmed: "WHICH VALID BAR OCCURRED IN BETWEEN WITH
+              // ACTIVE BAR + RED 1 - RED 2? I guess you are considering
+              // VALID BAR AS NON RECURRING" -- VALID BAR names ONE
+              // specific formation (the outcome of an actual RED1-RED2
+              // cycle), not a permanent property of this label that
+              // every later reform inherits. This reactivation has no
+              // RED1-RED2 of its own (it's a plain price-recovery
+              // reform), so it's plain "BAR" again regardless of
+              // whether this same label was "VALID BAR" before.
+              lin.validBar = false;
+              linEv.push(`BAR(${lin.label})`);
+            } else {
               sl.invalidated = true;
               linEv.push(...this.dormantBarLowCheck(buy, lin, sl, cur));
-            } else {
-              const idx = buy.barLineages.indexOf(lin);
-              if (idx !== -1) buy.barLineages.splice(idx, 1);
             }
             continue;
           }
