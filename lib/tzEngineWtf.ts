@@ -97,6 +97,19 @@ export class Rear {
   dormant = false;
   red2Ever = false;
   rear2: Bar2 | null = null;
+  // Confirmed: "REAR 2 will come into picture only when BAR faces BAR
+  // SL2." true = this instance formed above a lineage that had already
+  // reached genuine BAR SL2 (deep failure) -- it's only a SHALLOW
+  // confirmation at this point and still needs its own RED1-RED2
+  // escalation to REAR 2 before PRIME TREND treats it as a complete WTF
+  // anchor (same Stage-1-gated DTF entry TZ BUY 2/REAR RE-ENTER 2
+  // already get). false = this instance formed off a chain whose first
+  // SL never reached SL2 (a bare lineage, or a BAR2-having one that SL'd
+  // without ever confirming SL2) -- it's named/labeled "BARC" instead of
+  // "REAR" throughout (see the event-naming helper below), is ALREADY
+  // the final WTF confirmation on its own, and never escalates to any
+  // "2" tier -- evalRear2 is skipped entirely for it.
+  deepOrigin = false;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -112,7 +125,27 @@ export class RearReenter {
   dormant = false;
   red2Ever = false;
   rre2: Bar2 | null = null;
+  // Same meaning/purpose as Rear.deepOrigin above, inherited from the
+  // Rear instance this RearReenter recovered from.
+  deepOrigin = false;
   constructor(public refHigh: number, public refLow: number) {}
+}
+
+/** Event-name prefix for a Rear/RearReenter-family event, branching on
+ * deepOrigin -- "REAR"/"REAR RE-ENTER" for a confirmed-BAR-SL2 (deep)
+ * origin, "BARC" for a bare/shallow origin. BARC deliberately has no
+ * separate "re-enter" word of its own: confirmed, "in case BARC SL
+ * triggers and again goes above earlier BARC reference high ... NO NEED
+ * REAR RE ENTER and will continue the BAR C rally" -- the exact same
+ * name recycles for every subsequent recovery cycle, the same way
+ * "REAR RE-ENTER" itself already recycles for the deep case's own later
+ * cycles (see evalRearReenterSlProgress). `kind` is the deep-case word
+ * this call site would otherwise use ("REAR" or "REAR RE-ENTER") --
+ * BARC is returned instead whenever deepOrigin is false, regardless of
+ * which `kind` was asked for.
+ */
+function rearName(deepOrigin: boolean, kind: "REAR" | "REAR RE-ENTER"): string {
+  return deepOrigin ? kind : "BARC";
 }
 
 export class Buy {
@@ -139,10 +172,15 @@ export class Buy {
   // currently active -- it does NOT move to a later sub-lineage's own SL
   // point, and a later VALID BAR's own SL does not re-anchor it either.
   // It keeps quietly climbing on new highs/lows (same convention as
-  // everywhere else in this engine) until an actual REAR fires, which
-  // resets it to null for the next chain. Null whenever this chain hasn't
-  // had a BAR SL yet (including right after a fresh chain start).
-  barChainAnchor: { label: string; refHigh: number; refLow: number } | null = null;
+  // everywhere else in this engine) until an actual REAR/BARC fires,
+  // which resets it to null for the next chain. Null whenever this
+  // chain hasn't had a BAR SL yet (including right after a fresh chain
+  // start). `deepFailure` starts false and flips permanently to true
+  // the moment ANY lineage confirms genuine BAR SL2 while this anchor
+  // is pinned -- it decides whether the eventual recovery is named
+  // "REAR" (deep, needs its own REAR 2 escalation) or "BARC" (shallow,
+  // already final) -- see Rear.deepOrigin/rearName.
+  barChainAnchor: { label: string; refHigh: number; refLow: number; deepFailure: boolean } | null = null;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -159,7 +197,9 @@ type Stage = Buy | BarLineage | Rear | RearReenter;
 
 // TZ BUY 2 variant: "TZ BUY 2(" is explicitly its own milestone -- unlike
 // BAR 2/REAR 2/REAR RE-ENTER 2 (none of which trigger the leadership contest).
-const MILESTONE_KEYS = ["TZ BUY(", "TZ BUY 2(", "BAR(", "REAR(", "REAR RE-ENTER("];
+// "BARC(" is the shallow-origin REAR/REAR RE-ENTER's own name (see
+// Rear.deepOrigin/rearName) -- same tier, same milestone status.
+const MILESTONE_KEYS = ["TZ BUY(", "TZ BUY 2(", "BAR(", "REAR(", "REAR RE-ENTER(", "BARC("];
 
 const SL_LL_KEYS = [
   "TZ GREEN SL(", "TZ GREEN LL(",
@@ -167,6 +207,7 @@ const SL_LL_KEYS = [
   "BAR LL(", "BAR SL(", "BAR SL LL(", "BAR SL2(",
   "REAR LL(", "REAR SL(",
   "REAR RE-ENTER LL(", "REAR RE-ENTER SL(",
+  "BARC LL(", "BARC SL(",
 ];
 
 export function isMilestone(ev: string): boolean {
@@ -691,20 +732,33 @@ export class TZEngine {
       if (buy.rear.sl === null) {
         let rearEv = this.evalRearHhLl(pc, buy, buy.rear, prev, cur);
         if (buy.rear.dormant) rearEv = rearEv.filter((e) => e.includes("LL("));
+        // rear2 is only ever set when deepOrigin (evalRear2 is gated
+        // below) -- always "REAR HH(" here, never "BARC HH(".
         if (buy.rear.rear2 !== null) rearEv = rearEv.filter((e) => !e.startsWith("REAR HH("));
         ev.push(...rearEv);
       }
-      ev.push(...this.evalRear2(pc, buy, buy.rear, prev, cur, preTodayRearRef));
+      // BARC (shallow origin) never escalates to a "2" tier at all --
+      // confirmed: "REAR 2 will come into picture only when BAR faces
+      // BAR SL2." evalRear2 is skipped entirely for it.
+      if (buy.rear.deepOrigin) {
+        ev.push(...this.evalRear2(pc, buy, buy.rear, prev, cur, preTodayRearRef));
+      }
     }
 
     if (buy.rearReenter !== null) {
       if (buy.rearReenter.sl === null) {
         let rreEv = this.evalRearReenterHhLl(pc, buy, buy.rearReenter, prev, cur);
         if (buy.rearReenter.dormant) rreEv = rreEv.filter((e) => e.includes("LL("));
-        if (buy.rearReenter.rre2 !== null) rreEv = rreEv.filter((e) => !e.startsWith("REAR RE-ENTER HH("));
+        // rre2 is only ever set when deepOrigin (evalRre2 is gated
+        // below) -- always "REAR RE-ENTER HH(" here, never "BARC HH(".
+        if (buy.rearReenter.rre2 !== null) {
+          rreEv = rreEv.filter((e) => !e.startsWith("REAR RE-ENTER HH("));
+        }
         ev.push(...rreEv);
       }
-      ev.push(...this.evalRre2(pc, buy, buy.rearReenter, prev, cur, preTodayRreRef));
+      if (buy.rearReenter.deepOrigin) {
+        ev.push(...this.evalRre2(pc, buy, buy.rearReenter, prev, cur, preTodayRreRef));
+      }
     }
 
     const barConfirmsToday =
@@ -747,7 +801,7 @@ export class TZEngine {
     ) {
       ev.push(...this.evalRearSlProgress(pc, buy, buy.rear, buy.rear.sl, prev, cur));
     } else if (barConfirmsToday || restartsAsFreshBar) {
-      ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(")));
+      ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(") || e.startsWith("BARC HH(")));
       if (restartsAsFreshBar) {
         if (buy.rearReenter !== null) buy.rearReenter.dormant = true;
         else if (buy.rear !== null) buy.rear.dormant = true;
@@ -784,7 +838,7 @@ export class TZEngine {
     if (buy.rearReenter !== null && buy.rearReenter.dormant && buy.rearReenter.sl === null) {
       const rre = buy.rearReenter;
       if (cur.l < rre.refLow && rre.refLow - cur.l >= THRESH - EPS && cur.c <= rre.refLow + EPS) {
-        ev.push(`REAR RE-ENTER SL(${branchLbl})`);
+        ev.push(`${rearName(rre.deepOrigin, "REAR RE-ENTER")} SL(${branchLbl})`);
         const sl = new RearReenterSL(cur.l);
         sl.entryThreshold = this.currentTopRef(buy);
         rre.sl = sl;
@@ -799,7 +853,7 @@ export class TZEngine {
     } else if (buy.rear !== null && buy.rear.dormant && buy.rear.sl === null) {
       const rear = buy.rear;
       if (cur.l < rear.refLow && rear.refLow - cur.l >= THRESH - EPS && cur.c <= rear.refLow + EPS) {
-        ev.push(`REAR SL(${branchLbl})`);
+        ev.push(`${rearName(rear.deepOrigin, "REAR")} SL(${branchLbl})`);
         const sl = new RearSL(cur.l);
         sl.entryThreshold = this.currentTopRef(buy);
         rear.sl = sl;
@@ -839,6 +893,7 @@ export class TZEngine {
         e.startsWith("BAR SL(") ||
         e.startsWith("REAR SL(") ||
         e.startsWith("REAR RE-ENTER SL(") ||
+        e.startsWith("BARC SL(") ||
         e.startsWith("TZ BUY SL(")
       ) {
         slLabels.add(labelOf(e));
@@ -1315,7 +1370,8 @@ export class TZEngine {
     preTodayBar2Ref: Map<string, number | null>
   ): string[] {
     const labelId = branchLabel(pc.id);
-    let rearWinner: [number, number] | null = null;
+    // Third element: deepOrigin -- see Rear.deepOrigin/rearName.
+    let rearWinner: [number, number, boolean] | null = null;
     let sl2ConfirmedToday = false;
     let reactivatedThisCandle = false;
     const perLineageEv = new Map<string, string[]>();
@@ -1350,7 +1406,7 @@ export class TZEngine {
       const anchor = buy.barChainAnchor;
       const isRear = cur.l >= prev.l && cur.h > anchor.refHigh && cur.h - anchor.refHigh >= THRESH - EPS && cur.c >= anchor.refHigh;
       if (isRear && !this.milestoneBlocked(pc)) {
-        rearWinner = [cur.h, cur.l];
+        rearWinner = [cur.h, cur.l, anchor.deepFailure];
       } else {
         if (cur.h > anchor.refHigh && cur.h - anchor.refHigh >= ANY) {
           anchor.refHigh = cur.h;
@@ -1380,7 +1436,7 @@ export class TZEngine {
             // SL first. A later lineage's own SL in this same chain
             // (including a VALID BAR's own SL) never re-anchors it.
             if (this.weeklyBarSlRear && buy.barChainAnchor === null) {
-              buy.barChainAnchor = { label: lin.label, refHigh: lin.refHigh, refLow: lin.refLow };
+              buy.barChainAnchor = { label: lin.label, refHigh: lin.refHigh, refLow: lin.refLow, deepFailure: false };
             }
             buy.red1 = null;
             lin.red1Since = false;
@@ -1456,6 +1512,12 @@ export class TZEngine {
             sl.sl2 = true;
             sl2ConfirmedToday = true;
             buy.barPending = false;
+            // Confirmed: "REAR 2 will come into picture only when BAR
+            // faces BAR SL2." Flips this chain's own eventual recovery
+            // from shallow (BARC, final immediately) to deep (REAR,
+            // needs its own REAR 2 escalation) -- permanently, for the
+            // rest of this chain's life (never flips back).
+            if (buy.barChainAnchor !== null) buy.barChainAnchor.deepFailure = true;
           }
         } else if (!this.weeklyBarSlRear && !this.rearAncestorTerminated(buy)) {
           // Pre-revision REAR path, kept exactly as before for every
@@ -1465,7 +1527,10 @@ export class TZEngine {
           const rearRef = preRef !== undefined && preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
           if (isRear && !this.milestoneBlocked(pc)) {
-            rearWinner = [cur.h, cur.l];
+            // Non-weekly: this is the only REAR path there is, always
+            // off a confirmed BAR SL2 -- BARC doesn't exist as a concept
+            // outside the weekly revision, so this is always deep.
+            rearWinner = [cur.h, cur.l, true];
             break;
           }
         }
@@ -1485,10 +1550,12 @@ export class TZEngine {
     for (const linEv of perLineageEv.values()) ev.push(...linEv);
 
     if (rearWinner !== null) {
-      const [rh, rl] = rearWinner;
-      ev = [`REAR(${labelId})`];
+      const [rh, rl, deepOrigin] = rearWinner;
+      const rear = new Rear(rh, rl);
+      rear.deepOrigin = deepOrigin;
+      ev = [`${rearName(deepOrigin, "REAR")}(${labelId})`];
       buy.rearReenter = null;
-      buy.rear = new Rear(rh, rl);
+      buy.rear = rear;
       buy.barLineages = [];
       buy.barSubCounter = 0;
       buy.barDeadLabels = new Set();
@@ -1553,23 +1620,24 @@ export class TZEngine {
   private evalRearHhLl(pc: ParentCycle, buy: Buy, rear: Rear, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
+    const name = rearName(rear.deepOrigin, "REAR");
     if (!rear.red1Since || rear.dormant || this.red1InvalidatesToday(buy, cur)) {
       if (cur.h > rear.refHigh && cur.h - rear.refHigh >= ANY) {
         rear.refHigh = cur.h;
-        ev.push(`REAR HH(${label})`);
+        ev.push(`${name} HH(${label})`);
       }
     } else {
       const diff = cur.h - rear.refHigh;
       if (cur.h > rear.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rear.refHigh)) {
         rear.refHigh = cur.h;
-        ev.push(`REAR HH(${label})`);
+        ev.push(`${name} HH(${label})`);
       }
     }
     if (cur.l < rear.refLow) {
       const gap = rear.refLow - cur.l;
       if ((gap >= THRESH - EPS && cur.c > rear.refLow + EPS) || gap < THRESH - EPS) {
         rear.refLow = cur.l;
-        ev.push(`REAR LL(${label})`);
+        ev.push(`${name} LL(${label})`);
       }
     }
     return ev;
@@ -1579,7 +1647,7 @@ export class TZEngine {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
     if (cur.l < rear.refLow && rear.refLow - cur.l >= THRESH - EPS && cur.c <= rear.refLow + EPS) {
-      ev.push(`REAR SL(${label})`);
+      ev.push(`${rearName(rear.deepOrigin, "REAR")} SL(${label})`);
       const sl = new RearSL(cur.l);
       sl.entryThreshold = this.currentTopRef(buy);
       rear.sl = sl;
@@ -1593,9 +1661,20 @@ export class TZEngine {
       return ev;
     }
     const red1Preexisting = buy.red1 !== null && buy.red1.active;
+    // Deep origin: RED1 only attaches after REAR has ALSO escalated to
+    // REAR 2 (REAR itself is only a shallow confirmation, per "REAR 2
+    // will come into picture only when BAR faces BAR SL2" -- REAR 2 and
+    // this RED1-RED2-to-fresh-BAR cycle are the two independent next
+    // steps once REAR 2 exists, same as everywhere else in this engine).
+    // Shallow/BARC: there is no "2" tier to wait for at all -- RED1
+    // attaches directly off BARC itself, exactly like a bare BarLineage
+    // already does in evalBarLineagesProgress's own per-lineage loop.
+    const red1Ready = rear.deepOrigin
+      ? rear.rear2 !== null && !rear.rear2.slActive && !rear.red2Ever
+      : !rear.red2Ever;
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rear, prev, cur));
-    } else if (rear.rear2 !== null && !rear.rear2.slActive && !rear.red2Ever) {
+    } else if (red1Ready) {
       ev.push(...this.attachFreshRed1(pc, buy, rear, prev, cur));
     }
     return ev;
@@ -1607,8 +1686,10 @@ export class TZEngine {
     const ref = sl.entryThreshold;
     const isReenter = cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref;
     if (isReenter && !this.milestoneBlocked(pc)) {
-      buy.rearReenter = new RearReenter(cur.h, cur.l);
-      ev.push(`REAR RE-ENTER(${labelId})`);
+      const rre = new RearReenter(cur.h, cur.l);
+      rre.deepOrigin = rear.deepOrigin;
+      buy.rearReenter = rre;
+      ev.push(`${rearName(rear.deepOrigin, "REAR RE-ENTER")}(${labelId})`);
       rear.dormant = true;
       return ev;
     }
@@ -1619,7 +1700,7 @@ export class TZEngine {
     // currently leads, exactly like every analogous recovery elsewhere.
     if (cur.h > ref && cur.h - ref >= ANY) {
       sl.entryThreshold = cur.h;
-      ev.push(`INVALID REAR SL HH(${labelId})`);
+      ev.push(`INVALID ${rearName(rear.deepOrigin, "REAR")} SL HH(${labelId})`);
     }
     return ev;
   }
@@ -1628,23 +1709,24 @@ export class TZEngine {
   private evalRearReenterHhLl(pc: ParentCycle, buy: Buy, rre: RearReenter, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
+    const name = rearName(rre.deepOrigin, "REAR RE-ENTER");
     if (!rre.red1Since || rre.dormant || this.red1InvalidatesToday(buy, cur)) {
       if (cur.h > rre.refHigh && cur.h - rre.refHigh >= ANY) {
         rre.refHigh = cur.h;
-        ev.push(`REAR RE-ENTER HH(${label})`);
+        ev.push(`${name} HH(${label})`);
       }
     } else {
       const diff = cur.h - rre.refHigh;
       if (cur.h > rre.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rre.refHigh)) {
         rre.refHigh = cur.h;
-        ev.push(`REAR RE-ENTER HH(${label})`);
+        ev.push(`${name} HH(${label})`);
       }
     }
     if (cur.l < rre.refLow) {
       const gap = rre.refLow - cur.l;
       if ((gap >= THRESH - EPS && cur.c > rre.refLow + EPS) || gap < THRESH - EPS) {
         rre.refLow = cur.l;
-        ev.push(`REAR RE-ENTER LL(${label})`);
+        ev.push(`${name} LL(${label})`);
       }
     }
     return ev;
@@ -1654,7 +1736,7 @@ export class TZEngine {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
     if (cur.l < rre.refLow && rre.refLow - cur.l >= THRESH - EPS && cur.c <= rre.refLow + EPS) {
-      ev.push(`REAR RE-ENTER SL(${label})`);
+      ev.push(`${rearName(rre.deepOrigin, "REAR RE-ENTER")} SL(${label})`);
       const sl = new RearReenterSL(cur.l);
       sl.entryThreshold = this.currentTopRef(buy);
       rre.sl = sl;
@@ -1668,9 +1750,13 @@ export class TZEngine {
       return ev;
     }
     const red1Preexisting = buy.red1 !== null && buy.red1.active;
+    // Same deep/shallow split as evalRearProgress above.
+    const red1Ready = rre.deepOrigin
+      ? rre.rre2 !== null && !rre.rre2.slActive && !rre.red2Ever
+      : !rre.red2Ever;
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rre, prev, cur));
-    } else if (rre.rre2 !== null && !rre.rre2.slActive && !rre.red2Ever) {
+    } else if (red1Ready) {
       ev.push(...this.attachFreshRed1(pc, buy, rre, prev, cur));
     }
     return ev;
@@ -1689,7 +1775,11 @@ export class TZEngine {
     const ref = sl.entryThreshold;
     const isReenterAgain = cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref;
     if (isReenterAgain && !this.milestoneBlocked(pc)) {
-      ev.push(`REAR RE-ENTER(${labelId})`);
+      // Same name recycles for this chain's every later re-entry cycle,
+      // deep or shallow alike (deep: "REAR RE-ENTER" repeats past its
+      // own first formation too, same as always; shallow: "BARC" is the
+      // only name it ever had -- confirmed, no separate re-entry word).
+      ev.push(`${rearName(rre.deepOrigin, "REAR RE-ENTER")}(${labelId})`);
       rre.sl = null;
       rre.refHigh = cur.h;
       rre.refLow = cur.l;
@@ -1703,7 +1793,7 @@ export class TZEngine {
     // milestoneBlocked, only the confirmation check above stays gated.
     if (cur.h > ref && cur.h - ref >= ANY) {
       sl.entryThreshold = cur.h;
-      ev.push(`INVALID REAR RE-ENTER SL HH(${labelId})`);
+      ev.push(`INVALID ${rearName(rre.deepOrigin, "REAR RE-ENTER")} SL HH(${labelId})`);
     }
     return ev;
   }
