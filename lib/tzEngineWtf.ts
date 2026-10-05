@@ -195,16 +195,17 @@ export class TZEngine {
   private deepFailureReached(buy: Buy): boolean {
     if (buy.rear !== null && buy.rear.sl !== null) return true;
     if (buy.rearReenter !== null && buy.rearReenter.sl !== null) return true;
-    // REVISION (weekly only, see this.weeklyBarSlRear): a lineage that
-    // never escalated past BAR 1 has no deeper tier to confirm SL2 on --
-    // for it, the bare BAR SL itself is now the deep-failure signal
-    // (previously, and still on every other timeframe, only BAR SL2
-    // counted at all, for every lineage regardless of whether BAR 2 ever
-    // formed). A lineage that DID reach BAR 2 still needs its own SL2
-    // confirmation, unchanged, on every timeframe.
-    return buy.barLineages.some(
-      (lin) => lin.sl !== null && ((this.weeklyBarSlRear && lin.bar2 === null) || lin.sl.sl2)
-    );
+    // Sibling-spawn eligibility (canSpawn/eligibleAnchor, below) stays tied
+    // exclusively to true deep failure -- BAR SL2 (a lineage that escalated
+    // to BAR 2 and then failed there too). A bare BAR SL (BAR 1 alone,
+    // never escalated) does NOT open this: its own alternatives are REAR
+    // (see evalBarLineagesProgress's bar2===null branch, a self-contained
+    // check that does not go through this function) or a fresh RED1-RED2-
+    // gated Valid BAR reform (not yet implemented) -- never a brand new
+    // sibling branch. (Confirmed real-data case this almost got wrong:
+    // USHA MARTIN.NS -- a bare BAR SL must never race a fresh sibling TZ
+    // BUY 2, only REAR/Valid BAR.)
+    return buy.barLineages.some((lin) => lin.sl !== null && lin.sl.sl2);
   }
 
   private barLineagesRacing(buy: Buy): boolean {
