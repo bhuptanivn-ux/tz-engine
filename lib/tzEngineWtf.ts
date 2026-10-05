@@ -208,6 +208,18 @@ const SL_LL_KEYS = [
   "REAR LL(", "REAR SL(",
   "REAR RE-ENTER LL(", "REAR RE-ENTER SL(",
   "BARC LL(", "BARC SL(",
+  // Real-data bug (ETERNAL.NS branch B): REAR 2/REAR RE-ENTER 2's own
+  // confirmation and SL are deliberately NOT in MILESTONE_KEYS (escalating
+  // within an already-established REAR/REAR RE-ENTER shouldn't re-trigger
+  // the cross-branch leadership contest) -- but that same omission also
+  // made them invisible whenever this branch is dormant (confirmed:
+  // REAR 2(B) SL'd 22/09/25 and re-entered 06/10/25 both went missing
+  // from output once another branch's own milestone made B dormant).
+  // Visible-while-dormant and contest-triggering are different concerns;
+  // this list (already carrying the escalation-like "BAR SL2(" above)
+  // is the right one for passthrough-only.
+  "REAR 2(", "REAR 2 SL(",
+  "REAR RE-ENTER 2(", "REAR RE-ENTER 2 SL(",
 ];
 
 export function isMilestone(ev: string): boolean {
@@ -471,7 +483,47 @@ export class TZEngine {
       let blockedThisAchiever = false;
       for (const [oid, other] of Array.from(this.branches.entries())) {
         if (other === pc || !other.active) continue;
-        if (other.seq < pc.seq) {
+        // Real-data bug (ETERNAL.NS branch B): deepFailureReached (BAR
+        // SL2/REAR SL) deliberately makes buyCurrentlyLive report false
+        // so it stops BLOCKING a sibling's own TZ BUY/RED1/RED2 progress
+        // (see buyCurrentlyLive's own comment) -- but that same "not
+        // live" signal was also feeding this exemption check below,
+        // which then had nothing to stop it from being fully DESTROYED
+        // (not just dormant-ed) the instant any other branch achieved a
+        // fresh milestone, even while its own REAR/REAR 2 was actively
+        // climbing toward confirmation off its BAR 2 reference high.
+        // "Not blocking others" and "safe to delete outright" are
+        // different things -- a deep-failure chain survives as dormant,
+        // exactly like a lower-seq branch does, never destroyed.
+        //
+        // Real-data bug (ETERNAL.NS branch B, one tier up): the SAME
+        // conflation hits REAR 2's own SL -- buyCurrentlyLive deliberately
+        // reports false while REAR 2 sits SL'd-but-recoverable (so it
+        // doesn't block a sibling's own progress either), but REAR/REAR
+        // RE-ENTER itself (the "2"'s own parent) is still fully alive and
+        // watching for its re-entry threshold (confirmed: REAR 2(B) must
+        // re-enter on 06/10/25 after its 22/09/25 SL). Protect that the
+        // same way: dormant, never destroyed, as long as the REAR/REAR
+        // RE-ENTER ladder itself (not necessarily its "2" tier) hasn't
+        // failed.
+        // Deliberately NOT reusing deepFailureReached -- it also treats
+        // any historical REAR/BARC's own SL as "deep failure" (true for
+        // sibling-spawn eligibility, where that's the intent), which
+        // would wrongly protect a branch whose REAR/BARC failed long ago
+        // and has since moved on to a fresh, unrelated BAR cycle
+        // (confirmed real-data case: ICICIBANK.NS branch E, 2014 --
+        // reusing deepFailureReached here kept E alive off its stale
+        // 22/09/2014 BARC SL, when E should have died normally like the
+        // pre-existing code already did). This checks the ONE thing that
+        // actually needs protecting: a genuine BAR SL2 on a CURRENT bar
+        // lineage.
+        const otherDeepFailurePending =
+          other.buy !== null && other.buy.barLineages.some((lin) => lin.sl !== null && lin.sl.sl2);
+        const otherRearChainAlive =
+          other.buy !== null &&
+          ((other.buy.rear !== null && other.buy.rear.sl === null) ||
+            (other.buy.rearReenter !== null && other.buy.rearReenter.sl === null));
+        if (other.seq < pc.seq || otherDeepFailurePending || otherRearChainAlive) {
           other.dormant = true;
         } else {
           if (!isFreshBuy && (this.preTodayLiveBuy.get(oid) ?? false)) {
@@ -1205,7 +1257,14 @@ export class TZEngine {
     if (lin.sl !== null) {
       if (cur.h > lin.bar2.refHigh && cur.h - lin.bar2.refHigh >= ANY) {
         lin.bar2.refHigh = cur.h;
-        ev.push(`INVALID BAR HH(${lin.label})`);
+        // Real-data bug (ETERNAL.NS B.1): on weekly, this same climb is
+        // ALSO tracked by the chain-wide anchor in
+        // evalBarLineagesProgress (see Buy.barChainAnchor), which pushes
+        // the identical "INVALID BAR HH(label)" -- firing both produced
+        // a literal duplicate string on 21/07/25. Still bump refHigh
+        // (other weekly logic, e.g. currentTopRef, reads it), just don't
+        // double the event text.
+        if (!this.weeklyBarSlRear) ev.push(`INVALID BAR HH(${lin.label})`);
       }
       return ev;
     }
@@ -1419,8 +1478,18 @@ export class TZEngine {
       const rearSlotOccupied =
         (buy.rearReenter !== null && buy.rearReenter.sl === null && !buy.rearReenter.dormant) ||
         (buy.rearReenter === null && buy.rear !== null && buy.rear.sl === null && !buy.rear.dormant);
+      // Deliberately NOT gated by milestoneBlocked (unlike TZ BUY/RED1/
+      // RED2/the old pre-revision REAR path) -- confirmed real-data case,
+      // ETERNAL.NS: branch B's own BAR 2(B.1) chain reaches REAR/REAR 2
+      // purely off its own reference high (304.70 -> 314.45) on
+      // 11/08/25 and 15/09/25, the SAME weeks branch A is independently
+      // making its own TZ BUY/TZ BUY 2 progress. "REAR - REAR 2 is
+      // applicable above the BAR 2 high" is a property of this chain's
+      // OWN lineage, not a cross-branch leadership contest -- that
+      // distinction belongs to rearSlotOccupied (this buy's own
+      // REAR/REAR RE-ENTER slot) only.
       const isRear = cur.l >= prev.l && cur.h > anchor.refHigh && cur.h - anchor.refHigh >= THRESH - EPS && cur.c >= anchor.refHigh;
-      if (isRear && !this.milestoneBlocked(pc) && !rearSlotOccupied) {
+      if (isRear && !rearSlotOccupied) {
         rearWinner = [cur.h, cur.l, anchor.deepFailure];
       } else {
         if (cur.h > anchor.refHigh && cur.h - anchor.refHigh >= ANY) {
