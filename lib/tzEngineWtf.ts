@@ -1276,30 +1276,63 @@ export class TZEngine {
       const sl = lin.sl;
 
       if (lin.bar2 === null) {
+        // A bare BAR SL can still be a false alarm, exactly like the
+        // bar2-having case below: price recovers back above the SL's own
+        // reference high within THRESH, and if a later plain breakout
+        // confirms, this reforms directly under the SAME lineage label,
+        // no RED1-RED2 needed (confirmed real-data case: possible even
+        // with no BAR 2 ever having formed -- do not skip this check for
+        // bar2===null lineages).
+        if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
+          linEv.push(`INVALID BAR SL(${lin.label})`);
+          buy.barHighPool = Math.max(buy.barHighPool, cur.h);
+          const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
+          if (isNewest && this.barEntryShape(prev, cur)) {
+            lin.sl = null;
+            lin.refHigh = cur.h;
+            lin.refLow = cur.l;
+            lin.red1Since = false;
+            lin.red2Ever = false;
+            reactivatedThisCandle = true;
+            buy.barPending = false;
+            linEv.push(`BAR(${lin.label})`);
+          } else if (isNewest) {
+            sl.invalidated = true;
+            linEv.push(...this.dormantBarLowCheck(buy, lin, sl, cur));
+          } else {
+            const idx = buy.barLineages.indexOf(lin);
+            if (idx !== -1) buy.barLineages.splice(idx, 1);
+          }
+          continue;
+        }
         // REVISION (weekly only, see this.weeklyBarSlRear): never
-        // escalated past BAR 1 -- the bare BAR SL itself is now enough
-        // for REAR eligibility, no SL2-equivalent confirmation to wait
-        // for (there's no deeper tier here to confirm against). Universal
-        // ideology, same as everywhere else in this codebase: the
-        // reference high keeps quietly climbing even after the SL --
-        // lin.refHigh is read here BEFORE today's own quiet-climb update
-        // below (so it's naturally "as it stood before today", no
-        // separate snapshot map needed the way the BAR-2-having case
-        // requires -- nothing else touches lin.refHigh once lin.sl is
-        // set). On every other timeframe this lineage stays a parked
-        // dead end here, unchanged, and its refHigh stays untouched too.
+        // escalated past BAR 1 -- a standing (non-invalidated) bare BAR
+        // SL is now enough for REAR eligibility on its own, no
+        // SL2-equivalent confirmation to wait for (there's no deeper
+        // tier here to confirm against). Uses sl.refHigh (not
+        // lin.refHigh) as the running reference -- same field the "BAR
+        // SL HH" quiet climb below updates, same convention the
+        // bar2-having case already uses for its own post-SL tracking.
+        // On every other timeframe this lineage stays a parked dead end
+        // here, unchanged.
         if (this.weeklyBarSlRear && !this.rearAncestorTerminated(buy)) {
-          const rearRef = lin.refHigh;
+          const rearRef = sl.refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
           if (isRear && !this.milestoneBlocked(pc)) {
             rearWinner = [lin, cur.h, cur.l];
             break;
           }
-          if (cur.h > lin.refHigh && cur.h - lin.refHigh >= ANY) {
-            lin.refHigh = cur.h;
-            // Same event name the BAR-2-having case already uses for its
-            // own post-SL quiet climb (sl.refHigh) -- same concept here.
-            linEv.push(`BAR SL HH(${lin.label})`);
+        }
+        if (cur.h > sl.refHigh && cur.h - sl.refHigh >= ANY) {
+          sl.refHigh = cur.h;
+          buy.barHighPool = Math.max(buy.barHighPool, sl.refHigh);
+          linEv.push(`BAR SL HH(${lin.label})`);
+        }
+        if (cur.l < sl.refLow) {
+          const gap = sl.refLow - cur.l;
+          if ((gap >= THRESH - EPS && cur.c > sl.refLow + EPS) || gap < THRESH - EPS) {
+            sl.refLow = cur.l;
+            linEv.push(`BAR SL LL(${lin.label})`);
           }
         }
         continue;
