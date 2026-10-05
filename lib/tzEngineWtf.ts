@@ -1276,62 +1276,56 @@ export class TZEngine {
       const sl = lin.sl;
 
       if (lin.bar2 === null) {
-        // A bare BAR SL can still be a false alarm, exactly like the
-        // bar2-having case below: price recovers back above the SL's own
-        // reference high within THRESH, and if a later plain breakout
-        // confirms, this reforms directly under the SAME lineage label,
-        // no RED1-RED2 needed (confirmed real-data case: possible even
-        // with no BAR 2 ever having formed -- do not skip this check for
-        // bar2===null lineages).
-        if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
-          linEv.push(`INVALID BAR SL(${lin.label})`);
-          buy.barHighPool = Math.max(buy.barHighPool, cur.h);
-          const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
-          if (isNewest && this.barEntryShape(prev, cur)) {
-            lin.sl = null;
-            lin.refHigh = cur.h;
-            lin.refLow = cur.l;
-            lin.red1Since = false;
-            lin.red2Ever = false;
-            reactivatedThisCandle = true;
-            buy.barPending = false;
-            linEv.push(`BAR(${lin.label})`);
-          } else if (isNewest) {
-            sl.invalidated = true;
-            linEv.push(...this.dormantBarLowCheck(buy, lin, sl, cur));
-          } else {
-            const idx = buy.barLineages.indexOf(lin);
-            if (idx !== -1) buy.barLineages.splice(idx, 1);
-          }
-          continue;
-        }
         // REVISION (weekly only, see this.weeklyBarSlRear): never
-        // escalated past BAR 1 -- a standing (non-invalidated) bare BAR
-        // SL is now enough for REAR eligibility on its own, no
-        // SL2-equivalent confirmation to wait for (there's no deeper
-        // tier here to confirm against). Uses sl.refHigh (not
-        // lin.refHigh) as the running reference -- same field the "BAR
-        // SL HH" quiet climb below updates, same convention the
-        // bar2-having case already uses for its own post-SL tracking.
-        // On every other timeframe this lineage stays a parked dead end
-        // here, unchanged.
+        // escalated past BAR 1 -- the bare BAR SL itself is enough for
+        // REAR eligibility on its own, no SL2-equivalent confirmation to
+        // wait for (there's no deeper tier here to confirm against).
+        // Checked FIRST, same candle as the "INVALID BAR SL" shape below
+        // -- REAR can win on the exact candle that would otherwise read
+        // as an invalid SL (confirmed real-data case: USHA MARTIN.NS,
+        // REAR(B) forms the same week lin.refHigh's own recovery shape
+        // would otherwise qualify as "INVALID BAR SL"). Uses lin.refHigh
+        // -- the lineage's OWN peak reached during its active life,
+        // which keeps climbing even after this SL (confirmed real-data
+        // case: KALYANKJIL.NS, where the bar's own high at SL time was
+        // far below the peak it reached earlier while still active) --
+        // NOT sl.refHigh, which is a separate field seeded from the SL
+        // candle's own high and can sit well below lin.refHigh. On every
+        // other timeframe this lineage stays a parked dead end here,
+        // unchanged.
         if (this.weeklyBarSlRear && !this.rearAncestorTerminated(buy)) {
-          const rearRef = sl.refHigh;
+          const rearRef = lin.refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
           if (isRear && !this.milestoneBlocked(pc)) {
             rearWinner = [lin, cur.h, cur.l];
             break;
           }
         }
-        if (cur.h > sl.refHigh && cur.h - sl.refHigh >= ANY) {
-          sl.refHigh = cur.h;
-          buy.barHighPool = Math.max(buy.barHighPool, sl.refHigh);
+        // "INVALID BAR SL" for a bare (never-escalated) lineage is NOT a
+        // reactivation the way it is for the bar2-having case below --
+        // confirmed: "INVALID BAR is nothing but a new reference high
+        // for the BAR which traded with the SL." It never revives the
+        // lineage and never blocks REAR (checked independently above,
+        // same candle) -- it only matters on a candle where REAR itself
+        // doesn't also confirm (e.g. cur.l < prev.l). Raises lin.refHigh
+        // itself (the lineage's own running peak), not sl.refHigh.
+        if (cur.h >= lin.refHigh && cur.h - lin.refHigh >= THRESH - EPS && cur.c >= lin.refHigh) {
+          linEv.push(`INVALID BAR SL(${lin.label})`);
+          buy.barHighPool = Math.max(buy.barHighPool, cur.h);
+          lin.refHigh = cur.h;
+        } else if (cur.h > lin.refHigh && cur.h - lin.refHigh >= ANY) {
+          lin.refHigh = cur.h;
+          buy.barHighPool = Math.max(buy.barHighPool, lin.refHigh);
           linEv.push(`BAR SL HH(${lin.label})`);
         }
-        if (cur.l < sl.refLow) {
-          const gap = sl.refLow - cur.l;
-          if ((gap >= THRESH - EPS && cur.c > sl.refLow + EPS) || gap < THRESH - EPS) {
-            sl.refLow = cur.l;
+        // Low side: a further decline updates the reference low, but
+        // never confirms "BAR SL2" for a bare lineage -- there's no
+        // deeper tier here to confirm against; REAR is the only way
+        // forward (Valid BAR, not yet implemented, will be the other).
+        if (cur.l < lin.refLow) {
+          const gap = lin.refLow - cur.l;
+          if ((gap >= THRESH - EPS && cur.c > lin.refLow + EPS) || gap < THRESH - EPS) {
+            lin.refLow = cur.l;
             linEv.push(`BAR SL LL(${lin.label})`);
           }
         }
