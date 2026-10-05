@@ -137,6 +137,7 @@ const EVENT_KIND_COLOR: Record<string, string> = {
   "INVALID TZ BUY HH": LIGHT_GREEN,
   "INVALID REAR SL HH": LIGHT_GREEN,
   "INVALID REAR RE-ENTER SL HH": LIGHT_GREEN,
+  "INVALID BARC SL HH": LIGHT_GREEN,
 
   "BAR 2": DARK_GREEN,
   "BAR 2 HH": DARK_GREEN,
@@ -166,6 +167,16 @@ const EVENT_KIND_COLOR: Record<string, string> = {
   "INVALID REAR RE-ENTER 2 HH": DARK_GREEN,
   "REAR RE-ENTER 2 LL": LIGHT_RED,
   "REAR RE-ENTER 2 SL": LIGHT_RED,
+
+  // BARC: the shallow-origin version of REAR/REAR RE-ENTER (a recovery
+  // off a bare BAR SL rather than a confirmed BAR SL2) -- see
+  // Rear.deepOrigin/rearName in lib/tzEngineWtf.ts. It never escalates
+  // to any "2" tier, so it only ever needs the plain (light) tier --
+  // no CONDITIONAL_RED_AFTER entry, unlike REAR SL/REAR RE-ENTER SL.
+  BARC: LIGHT_GREEN,
+  "BARC HH": LIGHT_GREEN,
+  "BARC LL": LIGHT_RED,
+  "BARC SL": LIGHT_RED,
 };
 
 // REAR SL / REAR RE-ENTER SL are NOT unconditionally "deep" the way BAR
