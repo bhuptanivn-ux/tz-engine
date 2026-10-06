@@ -76,15 +76,7 @@
 
 import { ANY, branchLabel, Day, EPS, THRESH, TZEngine, ParentCycle } from "./tzEngineWtf";
 
-// "BARC" and "VALID BAR" are the two shallow, no-Stage-1-gate anchors
-// (see TZEngine's own Rear.deepOrigin/rearName in lib/tzEngineWtf.ts for
-// BARC, and BarLineage.validBar for VALID BAR) -- confirmed: "BARC AND
-// VALID BAR will not need STAGE gate. It can start with BAR - BAR ENTRY
-// post RED 1 / RED 1 - RED 2." Unlike the three deep families below, DTF
-// tracking for these opens directly at the WTF formation itself -- no
-// mandatory DTF TZ BUY breakout above the WTF anchor's own reference
-// first (see simulateDtfAll's `skipStage1`).
-export type PrimeTrendFamily = "TZ BUY 2" | "REAR 2" | "REAR RE-ENTER 2" | "BARC" | "VALID BAR";
+export type PrimeTrendFamily = "TZ BUY 2" | "REAR 2" | "REAR RE-ENTER 2";
 
 export interface PrimeTrendResult {
   family: PrimeTrendFamily;
@@ -557,11 +549,7 @@ interface FamilySpec {
   form: string;
   hh: string;
   exits: string[];
-  // Only the three deep families have a nested nested-lineage early-exit
-  // (a BAR 2-having lineage reaching genuine BAR SL2 inside this
-  // instance's own window) -- absent for BARC/VALID BAR, which have no
-  // such nested tier to watch for.
-  barPrefix?: string;
+  barPrefix: string;
 }
 
 const FAMILIES: Record<PrimeTrendFamily, FamilySpec> = {
@@ -573,38 +561,17 @@ const FAMILIES: Record<PrimeTrendFamily, FamilySpec> = {
     exits: ["REAR RE-ENTER 2 SL(", "REAR RE-ENTER SL("],
     barPrefix: "BAR SL2(",
   },
-  // BARC's own formation/re-entry event is the SAME recycled name every
-  // time (see rearName in lib/tzEngineWtf.ts) -- each occurrence opens
-  // its own fresh WtfInstance here, exactly like any other family's
-  // formation event. Its own SL ends the window; the whole buy dying
-  // (TZ BUY SL) is the other, shared way out.
-  BARC: { form: "BARC(", hh: "BARC HH(", exits: ["BARC SL(", "TZ BUY SL("] },
-  // VALID BAR's own formation event, similarly -- exits on its own SL,
-  // on a later escalation to genuine BAR SL2 (a VALID BAR lineage CAN
-  // reach BAR 2 and then SL2, same as any other BAR lineage), or the
-  // whole buy dying.
-  "VALID BAR": { form: "VALID BAR(", hh: "BAR HH(", exits: ["VALID BAR SL(", "BAR SL2(", "TZ BUY SL("] },
 };
 
-const FAMILY_NAMES: PrimeTrendFamily[] = ["TZ BUY 2", "REAR 2", "REAR RE-ENTER 2", "BARC", "VALID BAR"];
+const FAMILY_NAMES: PrimeTrendFamily[] = ["TZ BUY 2", "REAR 2", "REAR RE-ENTER 2"];
 
-/** The live Bar2-shaped (or Rear-/BarLineage-shaped, both already have
- * their own refLow) object for this family on this branch's buy right
- * now, or null if that tier doesn't currently exist for it. Used both to
- * resolve a formation event to its pid and, via hasTierAfter, as the
- * "has this tier vanished with no explicit SL event" ceiling in
- * wtfInstancesForFamily. */
+/** The live Bar2-shaped object for this family on this branch's buy right
+ * now, or null if that tier doesn't currently exist for it. */
 function tierObject(pc: ParentCycle, family: PrimeTrendFamily): { refLow: number } | null {
   if (pc.buy === null) return null;
   if (family === "TZ BUY 2") return pc.buy.tzBuy2;
   if (family === "REAR 2") return pc.buy.rear !== null ? pc.buy.rear.rear2 : null;
-  if (family === "REAR RE-ENTER 2") return pc.buy.rearReenter !== null ? pc.buy.rearReenter.rre2 : null;
-  if (family === "BARC") return pc.buy.rear !== null && !pc.buy.rear.deepOrigin ? pc.buy.rear : null;
-  // "VALID BAR": the newest lineage, while it's still a live VALID BAR --
-  // same "only the newest lineage matters for ongoing tracking"
-  // convention used throughout lib/tzEngineWtf.ts itself.
-  const newest = pc.buy.barLineages.length > 0 ? pc.buy.barLineages[pc.buy.barLineages.length - 1] : null;
-  return newest !== null && newest.validBar ? newest : null;
+  return pc.buy.rearReenter !== null ? pc.buy.rearReenter.rre2 : null;
 }
 
 export interface WtfTraceEntry {
@@ -637,8 +604,6 @@ export function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
       "TZ BUY 2": new Map(),
       "REAR 2": new Map(),
       "REAR RE-ENTER 2": new Map(),
-      BARC: new Map(),
-      "VALID BAR": new Map(),
     };
     // BAR SL2's own exit price needs that SPECIFIC BAR lineage's own SL
     // reference low, as it stood before this candle -- not any of the
@@ -668,8 +633,6 @@ export function runWtfTrace(wtfDays: Day[]): WtfTraceEntry[] {
       "TZ BUY 2": new Set(),
       "REAR 2": new Set(),
       "REAR RE-ENTER 2": new Set(),
-      BARC: new Set(),
-      "VALID BAR": new Set(),
     };
     for (const [pid, pc] of engine.branches) {
       aliveAfter.set(pid, branchLabel(pid));
@@ -739,19 +702,11 @@ function wtfInstancesForFamily(
         );
       }
       const letter = e.slice(spec.form.length, -1);
-      // VALID BAR's own formation event is labeled with the full
-      // lineage sub-label ("B.1"), not the bare branch letter every
-      // other family's formation event uses ("B") -- aliveAfter only
-      // ever holds bare branch letters, so resolving pid (and matching
-      // the ONE buy-level exit among VALID BAR's own exits, "TZ BUY
-      // SL(") needs that bare letter specifically; "VALID BAR SL("/
-      // "BAR SL2(" still match on the FULL lineage label below.
-      const branchLetter = family === "VALID BAR" ? letter.split(".")[0] : letter;
       // Which pid does this formation belong to? Whichever pid holds this
-      // exact branch letter right after this candle -- unambiguous.
+      // exact letter right after this candle -- unambiguous.
       let pid: number | null = null;
       for (const [p, l] of aliveAfter) {
-        if (l === branchLetter) {
+        if (l === letter) {
           pid = p;
           break;
         }
@@ -774,19 +729,14 @@ function wtfInstancesForFamily(
         let hit: string | null = null;
         for (const e2 of evs2) {
           for (const exitPrefix of spec.exits) {
-            // Matches against the full label ("B.1") for a lineage-level
-            // exit (VALID BAR SL(/BAR SL2() or the bare branch letter
-            // ("B") for a buy-level one (TZ BUY SL() -- letter===
-            // branchLetter for every family but VALID BAR, so this is a
-            // no-op there.
-            if (e2 === `${exitPrefix}${letter})` || e2 === `${exitPrefix}${branchLetter})`) {
+            if (e2 === `${exitPrefix}${letter})`) {
               hit = e2;
               endPrice = pre2[family].get(pid) ?? null;
               break;
             }
           }
           if (hit !== null) break;
-          if (spec.barPrefix !== undefined && e2.startsWith(`${spec.barPrefix}${letter}.`)) {
+          if (e2.startsWith(`${spec.barPrefix}${letter}.`)) {
             hit = e2;
             const linLabel = e2.slice(spec.barPrefix.length, -1);
             endPrice = preBarSl2.get(linLabel) ?? day2.c;
@@ -932,9 +882,7 @@ export function wtfSlLabel(endEvent: string | null): string | null {
     endEvent.startsWith("REAR RE-ENTER 2 SL(") ||
     endEvent.startsWith("TZ BUY SL(") ||
     endEvent.startsWith("REAR SL(") ||
-    endEvent.startsWith("REAR RE-ENTER SL(") ||
-    endEvent.startsWith("BARC SL(") ||
-    endEvent.startsWith("VALID BAR SL(")
+    endEvent.startsWith("REAR RE-ENTER SL(")
   ) {
     return endEvent.split("(")[0];
   }
@@ -958,15 +906,6 @@ function simulateDtfAll(
     }
   }
   if (startIdx === null) return [[], null];
-
-  // Confirmed: "BARC AND VALID BAR will not need STAGE gate. It can
-  // start with BAR - BAR ENTRY post RED 1 / RED 1 - RED 2." Unlike the
-  // three deep families, there's no mandatory DTF TZ BUY breakout above
-  // the WTF anchor's own reference first -- the RED1/RED1-RED2 -> BAR ->
-  // BAR ENTRY ladder (BarLevelState/stepBarLevel, same mechanics as
-  // every other tier) just runs for this instance's ENTIRE window,
-  // starting the moment it opens.
-  const skipStage1 = inst.family === "BARC" || inst.family === "VALID BAR";
 
   let s1: Stage | null = null;
   // The BAR/BAR ENTRY ladder running under the current Stage 1 (TZ BUY)
@@ -1050,21 +989,6 @@ function simulateDtfAll(
     });
   };
 
-  // Seeded ONCE, up front, instead of via a real breakout detection --
-  // s1 stays permanently active for skipStage1 families (no code below
-  // ever flips it inactive, since the Stage-1 detection/SL blocks are
-  // themselves skipped for them), so the existing "BAR/BAR ENTRY ladder,
-  // only while TZ BUY is active" block just runs for the whole window.
-  if (skipStage1) {
-    const seed = preS1Ref ?? dtfDays[startIdx].h;
-    s1 = new Stage(seed, seed);
-    s1Since = inst.formationDate;
-    s1ActivationPrice = seed;
-    hh1 = seed;
-    hh1Date = inst.formationDate;
-    barState = new BarLevelState(0, null, "BAR");
-  }
-
   let i = startIdx;
   while (i < dtfDays.length && dtfDays[i].date <= inst.endDate) {
     const prev = dtfDays[i - 1];
@@ -1075,51 +999,47 @@ function simulateDtfAll(
       hh1Date = cur.date;
     }
 
-    // --- Stage 1: DTF TZ BUY (unchanged) -- skipped entirely for
-    // BARC/VALID BAR, which have no Stage 1 gate at all; s1 was already
-    // seeded once, permanently active, before this loop started. ---
-    const wasS1Active = skipStage1 || (s1 !== null && s1.active);
-    if (!skipStage1) {
-      if (s1 === null) {
-        if (preS1Ref !== null && containingWeekStart(wtfDates, cur.date) !== inst.formationDate) {
-          if (breakoutShape(prev, cur, preS1Ref)) {
-            s1 = new Stage(cur.h, cur.l);
-            s1Since = cur.date;
-            s1ActivationPrice = cur.h;
-            // Highest High includes the entry candle's own High, not just
-            // days after it -- see the Highest High comment on
-            // PrimeTrendLiveStatus above.
-            hh1 = cur.h;
-            hh1Date = cur.date;
-          } else if (cur.h > preS1Ref && cur.h - preS1Ref >= ANY) {
-            preS1Ref = cur.h;
-          }
-        }
-      } else if (s1.active) {
-        if (slShape(cur, s1.refLow)) {
-          s1.frozenRef = s1.refHigh;
-          s1.active = false;
-        } else {
-          if (cur.l < s1.refLow) s1.refLow = cur.l;
-          if (cur.h > s1.refHigh && cur.h - s1.refHigh >= ANY) s1.refHigh = cur.h;
-        }
-      } else {
-        const frozenRef = s1.frozenRef as number;
-        if (breakoutShape(prev, cur, frozenRef)) {
+    // --- Stage 1: DTF TZ BUY (unchanged) ---
+    const wasS1Active = s1 !== null && s1.active;
+    if (s1 === null) {
+      if (preS1Ref !== null && containingWeekStart(wtfDates, cur.date) !== inst.formationDate) {
+        if (breakoutShape(prev, cur, preS1Ref)) {
           s1 = new Stage(cur.h, cur.l);
           s1Since = cur.date;
           s1ActivationPrice = cur.h;
+          // Highest High includes the entry candle's own High, not just
+          // days after it -- see the Highest High comment on
+          // PrimeTrendLiveStatus above.
           hh1 = cur.h;
           hh1Date = cur.date;
-        } else if (cur.h > frozenRef && cur.h - frozenRef >= ANY) {
-          s1.frozenRef = cur.h;
+        } else if (cur.h > preS1Ref && cur.h - preS1Ref >= ANY) {
+          preS1Ref = cur.h;
         }
       }
+    } else if (s1.active) {
+      if (slShape(cur, s1.refLow)) {
+        s1.frozenRef = s1.refHigh;
+        s1.active = false;
+      } else {
+        if (cur.l < s1.refLow) s1.refLow = cur.l;
+        if (cur.h > s1.refHigh && cur.h - s1.refHigh >= ANY) s1.refHigh = cur.h;
+      }
+    } else {
+      const frozenRef = s1.frozenRef as number;
+      if (breakoutShape(prev, cur, frozenRef)) {
+        s1 = new Stage(cur.h, cur.l);
+        s1Since = cur.date;
+        s1ActivationPrice = cur.h;
+        hh1 = cur.h;
+        hh1Date = cur.date;
+      } else if (cur.h > frozenRef && cur.h - frozenRef >= ANY) {
+        s1.frozenRef = cur.h;
+      }
     }
-    const isS1Active = skipStage1 || (s1 !== null && s1.active);
+    const isS1Active = s1 !== null && s1.active;
 
     // --- TZ BUY's own SL wipes the whole BAR/BAR ENTRY structure outright ---
-    if (!skipStage1 && wasS1Active && !isS1Active) {
+    if (wasS1Active && !isS1Active) {
       if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
         pushRow(
           barState.level,
@@ -1182,16 +1102,8 @@ function simulateDtfAll(
     // --- WTF PBAR / DTF PBAR / PBAR ENTRY racing track -- triggers once,
     // on the first WTF BAR formation (for this instance's own branch)
     // that occurs while DTF tier 2 still hasn't confirmed; independent of
-    // Stage 1's own active/SL state from then on. Not applicable to
-    // BARC/VALID BAR -- their own primary ladder is ALREADY anchored
-    // directly on the WTF formation with no DTF breakout gate, so a
-    // second WTF-BAR-triggered racing track would just duplicate it. ---
-    while (
-      !skipStage1 &&
-      pbarState === null &&
-      pbarCandidateIdx < pbarCandidateDates.length &&
-      cur.date > pbarCandidateDates[pbarCandidateIdx]
-    ) {
+    // Stage 1's own active/SL state from then on. ---
+    while (pbarState === null && pbarCandidateIdx < pbarCandidateDates.length && cur.date > pbarCandidateDates[pbarCandidateIdx]) {
       const qualifies = !dtfTier2EverConfirmed;
       pbarCandidateIdx += 1;
       if (qualifies) pbarState = new BarLevelState(0, null, "PBAR");

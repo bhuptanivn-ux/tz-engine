@@ -75,13 +75,6 @@ export class BarLineage {
   sl: BarSL | null = null;
   red2Ever = false;
   bar2: Bar2 | null = null;
-  // Set when this lineage was itself formed as a "VALID BAR" (a fresh
-  // RED1-RED2-confirmed reform occurring after this chain's own first BAR
-  // SL, weekly only -- see Buy.barChainAnchor). Only changes this
-  // lineage's own event naming (VALID BAR / VALID BAR SL instead of
-  // BAR / BAR SL); every other mechanism (BAR 2, BAR SL2, INVALID BAR SL,
-  // ...) is unaffected by it.
-  validBar = false;
   constructor(public label: string, public refHigh: number, public refLow: number) {}
 }
 
@@ -97,19 +90,6 @@ export class Rear {
   dormant = false;
   red2Ever = false;
   rear2: Bar2 | null = null;
-  // Confirmed: "REAR 2 will come into picture only when BAR faces BAR
-  // SL2." true = this instance formed above a lineage that had already
-  // reached genuine BAR SL2 (deep failure) -- it's only a SHALLOW
-  // confirmation at this point and still needs its own RED1-RED2
-  // escalation to REAR 2 before PRIME TREND treats it as a complete WTF
-  // anchor (same Stage-1-gated DTF entry TZ BUY 2/REAR RE-ENTER 2
-  // already get). false = this instance formed off a chain whose first
-  // SL never reached SL2 (a bare lineage, or a BAR2-having one that SL'd
-  // without ever confirming SL2) -- it's named/labeled "BARC" instead of
-  // "REAR" throughout (see the event-naming helper below), is ALREADY
-  // the final WTF confirmation on its own, and never escalates to any
-  // "2" tier -- evalRear2 is skipped entirely for it.
-  deepOrigin = false;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -125,27 +105,7 @@ export class RearReenter {
   dormant = false;
   red2Ever = false;
   rre2: Bar2 | null = null;
-  // Same meaning/purpose as Rear.deepOrigin above, inherited from the
-  // Rear instance this RearReenter recovered from.
-  deepOrigin = false;
   constructor(public refHigh: number, public refLow: number) {}
-}
-
-/** Event-name prefix for a Rear/RearReenter-family event, branching on
- * deepOrigin -- "REAR"/"REAR RE-ENTER" for a confirmed-BAR-SL2 (deep)
- * origin, "BARC" for a bare/shallow origin. BARC deliberately has no
- * separate "re-enter" word of its own: confirmed, "in case BARC SL
- * triggers and again goes above earlier BARC reference high ... NO NEED
- * REAR RE ENTER and will continue the BAR C rally" -- the exact same
- * name recycles for every subsequent recovery cycle, the same way
- * "REAR RE-ENTER" itself already recycles for the deep case's own later
- * cycles (see evalRearReenterSlProgress). `kind` is the deep-case word
- * this call site would otherwise use ("REAR" or "REAR RE-ENTER") --
- * BARC is returned instead whenever deepOrigin is false, regardless of
- * which `kind` was asked for.
- */
-function rearName(deepOrigin: boolean, kind: "REAR" | "REAR RE-ENTER"): string {
-  return deepOrigin ? kind : "BARC";
 }
 
 export class Buy {
@@ -168,19 +128,13 @@ export class Buy {
   // bar2-having -- hits SL first), from that lineage's own refHigh/refLow
   // at that moment ("the BAR who faced the 1st BAR SL"). REAR eligibility
   // for the whole chain is checked against this anchor from then on,
-  // regardless of which sub-lineage (B.2, B.3, VALID BAR, ...) is
-  // currently active -- it does NOT move to a later sub-lineage's own SL
-  // point, and a later VALID BAR's own SL does not re-anchor it either.
-  // It keeps quietly climbing on new highs/lows (same convention as
-  // everywhere else in this engine) until an actual REAR/BARC fires,
-  // which resets it to null for the next chain. Null whenever this
-  // chain hasn't had a BAR SL yet (including right after a fresh chain
-  // start). `deepFailure` starts false and flips permanently to true
-  // the moment ANY lineage confirms genuine BAR SL2 while this anchor
-  // is pinned -- it decides whether the eventual recovery is named
-  // "REAR" (deep, needs its own REAR 2 escalation) or "BARC" (shallow,
-  // already final) -- see Rear.deepOrigin/rearName.
-  barChainAnchor: { label: string; refHigh: number; refLow: number; deepFailure: boolean } | null = null;
+  // regardless of which sub-lineage (B.2, B.3, ...) is currently active --
+  // it does NOT move to a later sub-lineage's own SL point. It keeps
+  // quietly climbing on new highs/lows (same convention as everywhere
+  // else in this engine) until an actual REAR fires, which resets it to
+  // null for the next chain. Null whenever this chain hasn't had a BAR
+  // SL yet (including right after a fresh chain start).
+  barChainAnchor: { label: string; refHigh: number; refLow: number } | null = null;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -197,9 +151,7 @@ type Stage = Buy | BarLineage | Rear | RearReenter;
 
 // TZ BUY 2 variant: "TZ BUY 2(" is explicitly its own milestone -- unlike
 // BAR 2/REAR 2/REAR RE-ENTER 2 (none of which trigger the leadership contest).
-// "BARC(" is the shallow-origin REAR/REAR RE-ENTER's own name (see
-// Rear.deepOrigin/rearName) -- same tier, same milestone status.
-const MILESTONE_KEYS = ["TZ BUY(", "TZ BUY 2(", "BAR(", "REAR(", "REAR RE-ENTER(", "BARC("];
+const MILESTONE_KEYS = ["TZ BUY(", "TZ BUY 2(", "BAR(", "REAR(", "REAR RE-ENTER("];
 
 const SL_LL_KEYS = [
   "TZ GREEN SL(", "TZ GREEN LL(",
@@ -207,7 +159,6 @@ const SL_LL_KEYS = [
   "BAR LL(", "BAR SL(", "BAR SL LL(", "BAR SL2(",
   "REAR LL(", "REAR SL(",
   "REAR RE-ENTER LL(", "REAR RE-ENTER SL(",
-  "BARC LL(", "BARC SL(",
   // Real-data bug (ETERNAL.NS branch B): REAR 2/REAR RE-ENTER 2's own
   // confirmation and SL are deliberately NOT in MILESTONE_KEYS (escalating
   // within an already-established REAR/REAR RE-ENTER shouldn't re-trigger
@@ -523,13 +474,13 @@ export class TZEngine {
         // RE-ENTER ladder itself (not necessarily its "2" tier) hasn't
         // failed.
         // Deliberately NOT reusing deepFailureReached -- it also treats
-        // any historical REAR/BARC's own SL as "deep failure" (true for
+        // any historical REAR's own SL as "deep failure" (true for
         // sibling-spawn eligibility, where that's the intent), which
-        // would wrongly protect a branch whose REAR/BARC failed long ago
-        // and has since moved on to a fresh, unrelated BAR cycle
-        // (confirmed real-data case: ICICIBANK.NS branch E, 2014 --
-        // reusing deepFailureReached here kept E alive off its stale
-        // 22/09/2014 BARC SL, when E should have died normally like the
+        // would wrongly protect a branch whose REAR failed long ago and
+        // has since moved on to a fresh, unrelated BAR cycle (confirmed
+        // real-data case: ICICIBANK.NS branch E, 2014 -- reusing
+        // deepFailureReached here kept E alive off its stale 22/09/2014
+        // REAR SL, when E should have died normally like the
         // pre-existing code already did). This checks the ONE thing that
         // actually needs protecting: a genuine BAR SL2 on a CURRENT bar
         // lineage.
@@ -800,33 +751,22 @@ export class TZEngine {
       if (buy.rear.sl === null) {
         let rearEv = this.evalRearHhLl(pc, buy, buy.rear, prev, cur);
         if (buy.rear.dormant) rearEv = rearEv.filter((e) => e.includes("LL("));
-        // rear2 is only ever set when deepOrigin (evalRear2 is gated
-        // below) -- always "REAR HH(" here, never "BARC HH(".
         if (buy.rear.rear2 !== null) rearEv = rearEv.filter((e) => !e.startsWith("REAR HH("));
         ev.push(...rearEv);
       }
-      // BARC (shallow origin) never escalates to a "2" tier at all --
-      // confirmed: "REAR 2 will come into picture only when BAR faces
-      // BAR SL2." evalRear2 is skipped entirely for it.
-      if (buy.rear.deepOrigin) {
-        ev.push(...this.evalRear2(pc, buy, buy.rear, prev, cur, preTodayRearRef));
-      }
+      ev.push(...this.evalRear2(pc, buy, buy.rear, prev, cur, preTodayRearRef));
     }
 
     if (buy.rearReenter !== null) {
       if (buy.rearReenter.sl === null) {
         let rreEv = this.evalRearReenterHhLl(pc, buy, buy.rearReenter, prev, cur);
         if (buy.rearReenter.dormant) rreEv = rreEv.filter((e) => e.includes("LL("));
-        // rre2 is only ever set when deepOrigin (evalRre2 is gated
-        // below) -- always "REAR RE-ENTER HH(" here, never "BARC HH(".
         if (buy.rearReenter.rre2 !== null) {
           rreEv = rreEv.filter((e) => !e.startsWith("REAR RE-ENTER HH("));
         }
         ev.push(...rreEv);
       }
-      if (buy.rearReenter.deepOrigin) {
-        ev.push(...this.evalRre2(pc, buy, buy.rearReenter, prev, cur, preTodayRreRef));
-      }
+      ev.push(...this.evalRre2(pc, buy, buy.rearReenter, prev, cur, preTodayRreRef));
     }
 
     const barConfirmsToday =
@@ -869,7 +809,7 @@ export class TZEngine {
     ) {
       ev.push(...this.evalRearSlProgress(pc, buy, buy.rear, buy.rear.sl, prev, cur));
     } else if (barConfirmsToday || restartsAsFreshBar) {
-      ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(") || e.startsWith("BARC HH(")));
+      ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(")));
       if (restartsAsFreshBar) {
         if (buy.rearReenter !== null) buy.rearReenter.dormant = true;
         else if (buy.rear !== null) buy.rear.dormant = true;
@@ -906,7 +846,7 @@ export class TZEngine {
     if (buy.rearReenter !== null && buy.rearReenter.dormant && buy.rearReenter.sl === null) {
       const rre = buy.rearReenter;
       if (cur.l < rre.refLow && rre.refLow - cur.l >= THRESH - EPS && cur.c <= rre.refLow + EPS) {
-        ev.push(`${rearName(rre.deepOrigin, "REAR RE-ENTER")} SL(${branchLbl})`);
+        ev.push(`REAR RE-ENTER SL(${branchLbl})`);
         const sl = new RearReenterSL(cur.l);
         sl.entryThreshold = this.currentTopRef(buy);
         rre.sl = sl;
@@ -921,7 +861,7 @@ export class TZEngine {
     } else if (buy.rear !== null && buy.rear.dormant && buy.rear.sl === null) {
       const rear = buy.rear;
       if (cur.l < rear.refLow && rear.refLow - cur.l >= THRESH - EPS && cur.c <= rear.refLow + EPS) {
-        ev.push(`${rearName(rear.deepOrigin, "REAR")} SL(${branchLbl})`);
+        ev.push(`REAR SL(${branchLbl})`);
         const sl = new RearSL(cur.l);
         sl.entryThreshold = this.currentTopRef(buy);
         rear.sl = sl;
@@ -961,7 +901,6 @@ export class TZEngine {
         e.startsWith("BAR SL(") ||
         e.startsWith("REAR SL(") ||
         e.startsWith("REAR RE-ENTER SL(") ||
-        e.startsWith("BARC SL(") ||
         e.startsWith("TZ BUY SL(")
       ) {
         slLabels.add(labelOf(e));
@@ -1105,8 +1044,6 @@ export class TZEngine {
         ev.push(`BAR SL(${lin.label})`);
         lin.sl = new BarSL(cur.h, cur.l);
         buy.red1 = null;
-        // Same fix as the main BAR SL site -- see its comment.
-        buy.barPending = false;
       } else {
         sl.refLow = cur.l;
         ev.push(`INVALID BAR LL(${lin.label})`);
@@ -1146,25 +1083,12 @@ export class TZEngine {
     if (pc.dormant) return [];
     if (cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
       const subLabel = this.nextBarLabel(buy, branchLabel(pc.id));
-      // Same VALID BAR rule as the bottom of evalBarLineagesProgress --
-      // this is the OTHER site a fresh reform can go through (reached
-      // via barConfirmsToday/the buy.barPending fallback below, both of
-      // which only call this when buy.barLineages is already empty, e.g.
-      // RED2 just retired the last/only bare lineage). buy.barPending
-      // true here means a RED1-RED2 cycle just confirmed; the
-      // restartsAsFreshBar caller (a fresh BAR immediately after a REAR/
-      // REAR RE-ENTER SL, no RED cycle involved) always passes it false,
-      // so that path never produces VALID BAR, matching "VALID BAR
-      // REQUIRES A ACTIVE BAR - RED 1 - RED 2 - VALID BAR."
-      const viaRedCycle = buy.barPending;
-      const isValidBar = this.weeklyBarSlRear && viaRedCycle && buy.barChainAnchor !== null;
       const newLin = new BarLineage(subLabel, cur.h, cur.l);
-      newLin.validBar = isValidBar;
       buy.barLineages.push(newLin);
       buy.barPending = false;
       buy.barHighPool = Math.max(buy.barHighPool, cur.h);
       if (supersedeRear) this.supersedeRearForNewBar(buy);
-      return [`${isValidBar ? "VALID BAR" : "BAR"}(${subLabel})`];
+      return [`BAR(${subLabel})`];
     }
     return [];
   }
@@ -1447,8 +1371,7 @@ export class TZEngine {
     preTodayBar2Ref: Map<string, number | null>
   ): string[] {
     const labelId = branchLabel(pc.id);
-    // Third element: deepOrigin -- see Rear.deepOrigin/rearName.
-    let rearWinner: [number, number, boolean] | null = null;
+    let rearWinner: [number, number] | null = null;
     let sl2ConfirmedToday = false;
     let reactivatedThisCandle = false;
     const perLineageEv = new Map<string, string[]>();
@@ -1466,33 +1389,32 @@ export class TZEngine {
     // SL goes straight to REAR on 10/06/24, never reactivating under the
     // same label the way a plain 2-BAR SL normally would). The anchor is
     // pinned once (see Buy.barChainAnchor) and stays pinned through
-    // every later reform/VALID BAR cycle in this chain -- it is NOT
-    // reset by anything in this function except REAR itself firing.
+    // every later reform cycle in this chain -- it is NOT reset by
+    // anything in this function except REAR itself firing.
     //
     // Deliberately NOT gated by rearAncestorTerminated -- that check
     // looks at buy.rear/buy.rearReenter directly and would permanently
     // block REAR for this buy forever after the FIRST REAR's own SL,
     // which contradicts "A new REAR can occur for the REAR/REAR
-    // RE-ENTER/REAR 2/REAR RE-ENTER 2 LINEAGE... A REAR can also occur
-    // for the VALID BAR LINEAGE" -- REAR can legitimately happen again
-    // for a brand new chain (fresh barChainAnchor) even after an earlier,
-    // unrelated-by-now REAR in the same buy has already SL'd (confirmed
-    // real-data case: USHA MARTIN.NS B.1, whose own fresh chain after
-    // 05/08/24's REAR SL needs to be able to reach its own REAR again).
+    // RE-ENTER/REAR 2/REAR RE-ENTER 2 LINEAGE" -- REAR can legitimately
+    // happen again for a brand new chain (fresh barChainAnchor) even
+    // after an earlier, unrelated-by-now REAR in the same buy has
+    // already SL'd (confirmed real-data case: USHA MARTIN.NS B.1, whose
+    // own fresh chain after 05/08/24's REAR SL needs to be able to reach
+    // its own REAR again).
     if (this.weeklyBarSlRear && buy.barChainAnchor !== null) {
       const anchor = buy.barChainAnchor;
       // Real-data bug (USHA MARTIN.NS): without this, a DIFFERENT bar
       // lineage's own first SL (e.g. B.4's, pinning a brand new anchor
-      // after the buy's existing REAR/BARC had already consumed and
-      // reset the PREVIOUS anchor) could fire a second, overwriting
-      // REAR/BARC formation on 10/06/24 while the buy's own REAR/BARC
-      // from 2021-03-01 was STILL alive and active (never SL'd) --
-      // visibly wrong, since "BARC(B)" fired a second time with no SL in
-      // between. A chain anchor can only consummate into an actual
-      // REAR/BARC takeover of buy.rear/buy.rearReenter while that slot
-      // isn't already occupied by a live, un-SL'd, non-dormant instance
-      // -- otherwise it just keeps quietly climbing in the background
-      // until the slot frees up.
+      // after the buy's existing REAR had already consumed and reset the
+      // PREVIOUS anchor) could fire a second, overwriting REAR formation
+      // on 10/06/24 while the buy's own REAR from 2021-03-01 was STILL
+      // alive and active (never SL'd) -- visibly wrong, since "REAR(B)"
+      // fired a second time with no SL in between. A chain anchor can
+      // only consummate into an actual REAR takeover of
+      // buy.rear/buy.rearReenter while that slot isn't already occupied
+      // by a live, un-SL'd, non-dormant instance -- otherwise it just
+      // keeps quietly climbing in the background until the slot frees up.
       const rearSlotOccupied =
         (buy.rearReenter !== null && buy.rearReenter.sl === null && !buy.rearReenter.dormant) ||
         (buy.rearReenter === null && buy.rear !== null && buy.rear.sl === null && !buy.rear.dormant);
@@ -1508,7 +1430,7 @@ export class TZEngine {
       // REAR/REAR RE-ENTER slot) only.
       const isRear = cur.l >= prev.l && cur.h > anchor.refHigh && cur.h - anchor.refHigh >= THRESH - EPS && cur.c >= anchor.refHigh;
       if (isRear && !rearSlotOccupied) {
-        rearWinner = [cur.h, cur.l, anchor.deepFailure];
+        rearWinner = [cur.h, cur.l];
       } else {
         if (cur.h > anchor.refHigh && cur.h - anchor.refHigh >= ANY) {
           anchor.refHigh = cur.h;
@@ -1531,30 +1453,17 @@ export class TZEngine {
         perLineageEv.set(lin.label, linEv);
         if (lin.sl === null) {
           if (cur.l < lin.refLow && lin.refLow - cur.l >= THRESH - EPS && cur.c <= lin.refLow + EPS) {
-            linEv.push(`${lin.validBar ? "VALID BAR SL" : "BAR SL"}(${lin.label})`);
+            linEv.push(`BAR SL(${lin.label})`);
             lin.sl = new BarSL(cur.h, cur.l);
             // "The BAR who faced the 1st BAR SL" -- pinned once per
             // chain, from whichever lineage (bare or bar2-having) hits
             // SL first. A later lineage's own SL in this same chain
-            // (including a VALID BAR's own SL) never re-anchors it.
+            // never re-anchors it.
             if (this.weeklyBarSlRear && buy.barChainAnchor === null) {
-              buy.barChainAnchor = { label: lin.label, refHigh: lin.refHigh, refLow: lin.refLow, deepFailure: false };
+              buy.barChainAnchor = { label: lin.label, refHigh: lin.refHigh, refLow: lin.refLow };
             }
             buy.red1 = null;
             lin.red1Since = false;
-            // Real-data bug (ICICIBANK.NS branch D, 2020): a RED1-RED2
-            // cycle completing on THIS lineage while it was still alive
-            // (red2Ever got set, but the lineage itself kept trading
-            // afterward -- confirmed: RED2(D) 02/03/2020, then BAR 2
-            // LL(D.1) 09/03/2020) left buy.barPending sitting true,
-            // unconsumed, for weeks. This BAR SL is a wholly separate,
-            // later event, not the direct result of that RED cycle --
-            // confirmed: "AFTER BAR SL, there has to be an ACTIVE BAR
-            // FOLLOWED BY RED1-RED2, only then VALID BAR can occur." A
-            // RED cycle that predates this SL can never satisfy that
-            // sequence, so it must not survive past this SL to wrongly
-            // credit whatever reforms next.
-            buy.barPending = false;
             continue;
           }
           if (lin === newestForRed1) {
@@ -1576,8 +1485,8 @@ export class TZEngine {
           // only occur for the 2 BAR and not single BAR. Hence, INVALID
           // BAR SL is also out of picture for SINGLE BAR - BAR SL." This
           // lineage is simply a parked dead end from here: REAR (checked
-          // above, chain-wide) or a fresh/VALID BAR reform (bottom of
-          // this function) are the only ways forward.
+          // above, chain-wide) or a fresh BAR reform (bottom of this
+          // function) are the only ways forward.
           continue;
         }
 
@@ -1610,16 +1519,6 @@ export class TZEngine {
               lin.bar2 = null;
               reactivatedThisCandle = true;
               buy.barPending = false;
-              // Confirmed: "WHICH VALID BAR OCCURRED IN BETWEEN WITH
-              // ACTIVE BAR + RED 1 - RED 2? I guess you are considering
-              // VALID BAR AS NON RECURRING" -- VALID BAR names ONE
-              // specific formation (the outcome of an actual RED1-RED2
-              // cycle), not a permanent property of this label that
-              // every later reform inherits. This reactivation has no
-              // RED1-RED2 of its own (it's a plain price-recovery
-              // reform), so it's plain "BAR" again regardless of
-              // whether this same label was "VALID BAR" before.
-              lin.validBar = false;
               linEv.push(`BAR(${lin.label})`);
             } else {
               sl.invalidated = true;
@@ -1644,12 +1543,6 @@ export class TZEngine {
             sl.sl2 = true;
             sl2ConfirmedToday = true;
             buy.barPending = false;
-            // Confirmed: "REAR 2 will come into picture only when BAR
-            // faces BAR SL2." Flips this chain's own eventual recovery
-            // from shallow (BARC, final immediately) to deep (REAR,
-            // needs its own REAR 2 escalation) -- permanently, for the
-            // rest of this chain's life (never flips back).
-            if (buy.barChainAnchor !== null) buy.barChainAnchor.deepFailure = true;
           }
         } else if (!this.weeklyBarSlRear && !this.rearAncestorTerminated(buy)) {
           // Pre-revision REAR path, kept exactly as before for every
@@ -1659,10 +1552,7 @@ export class TZEngine {
           const rearRef = preRef !== undefined && preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
           if (isRear && !this.milestoneBlocked(pc)) {
-            // Non-weekly: this is the only REAR path there is, always
-            // off a confirmed BAR SL2 -- BARC doesn't exist as a concept
-            // outside the weekly revision, so this is always deep.
-            rearWinner = [cur.h, cur.l, true];
+            rearWinner = [cur.h, cur.l];
             break;
           }
         }
@@ -1682,10 +1572,9 @@ export class TZEngine {
     for (const linEv of perLineageEv.values()) ev.push(...linEv);
 
     if (rearWinner !== null) {
-      const [rh, rl, deepOrigin] = rearWinner;
+      const [rh, rl] = rearWinner;
       const rear = new Rear(rh, rl);
-      rear.deepOrigin = deepOrigin;
-      ev = [`${rearName(deepOrigin, "REAR")}(${labelId})`];
+      ev = [`REAR(${labelId})`];
       buy.rearReenter = null;
       buy.rear = rear;
       buy.barLineages = [];
@@ -1708,15 +1597,6 @@ export class TZEngine {
     // way an earlier, narrower version of this flag prevented (back when
     // REAR had no path of its own for a bare lineage at all).
     const newestIsDead = newest === null || (newest.sl !== null && !newest.sl.sl2);
-    // Captured BEFORE freshBarReady/the reform below can consume it --
-    // true here means this reform (if any) is happening because a RED1-
-    // RED2 cycle just confirmed (see clearForNewBarGeneration), not
-    // because of a plain dead-end reform. Combined with barChainAnchor
-    // already being pinned (this chain already had its first BAR SL),
-    // that's exactly "VALID BAR REQUIRES A ACTIVE BAR - RED 1 - RED 2 -
-    // VALID BAR" -- a dead-end reform with no RED1-RED2 (e.g. "BAR B.1 -
-    // BAR SL - BAR B.1") never qualifies, only this path does.
-    const viaRedCycle = buy.barPending;
     const freshBarReady = newestIsDead || buy.barPending;
     if (!pc.dormant && !reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
       const surviving: BarLineage[] = [];
@@ -1737,8 +1617,6 @@ export class TZEngine {
       buy.barLineages = surviving;
       const subLabel = this.nextBarLabel(buy, labelId);
       const newLin = new BarLineage(subLabel, cur.h, cur.l);
-      const isValidBar = this.weeklyBarSlRear && viaRedCycle && buy.barChainAnchor !== null;
-      newLin.validBar = isValidBar;
       buy.barLineages.push(newLin);
       buy.barPending = false;
       buy.barHighPool = Math.max(buy.barHighPool, cur.h);
@@ -1749,14 +1627,13 @@ export class TZEngine {
       // from years earlier could sit there indefinitely while a wholly
       // separate, actively-cycling bar family races underneath it --
       // confirmed real-data case, USHA MARTIN.NS: the chain anchor
-      // pinned by B.4's own 11/03/24 BAR SL couldn't fire its own
-      // REAR/BARC on 10/06/24 (see the chain-anchor check's own
-      // rearSlotOccupied guard) because the buy's ancient 2021-formed
-      // REAR had never been marked dormant, despite B.1 through B.4
-      // having long since taken over as the buy's own actively-racing
-      // bar family.
+      // pinned by B.4's own 11/03/24 BAR SL couldn't fire its own REAR
+      // on 10/06/24 (see the chain-anchor check's own rearSlotOccupied
+      // guard) because the buy's ancient 2021-formed REAR had never
+      // been marked dormant, despite B.1 through B.4 having long since
+      // taken over as the buy's own actively-racing bar family.
       this.supersedeRearForNewBar(buy);
-      ev.push(`${isValidBar ? "VALID BAR" : "BAR"}(${subLabel})`);
+      ev.push(`BAR(${subLabel})`);
     }
 
     return ev;
@@ -1766,24 +1643,23 @@ export class TZEngine {
   private evalRearHhLl(pc: ParentCycle, buy: Buy, rear: Rear, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
-    const name = rearName(rear.deepOrigin, "REAR");
     if (!rear.red1Since || rear.dormant || this.red1InvalidatesToday(buy, cur)) {
       if (cur.h > rear.refHigh && cur.h - rear.refHigh >= ANY) {
         rear.refHigh = cur.h;
-        ev.push(`${name} HH(${label})`);
+        ev.push(`REAR HH(${label})`);
       }
     } else {
       const diff = cur.h - rear.refHigh;
       if (cur.h > rear.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rear.refHigh)) {
         rear.refHigh = cur.h;
-        ev.push(`${name} HH(${label})`);
+        ev.push(`REAR HH(${label})`);
       }
     }
     if (cur.l < rear.refLow) {
       const gap = rear.refLow - cur.l;
       if ((gap >= THRESH - EPS && cur.c > rear.refLow + EPS) || gap < THRESH - EPS) {
         rear.refLow = cur.l;
-        ev.push(`${name} LL(${label})`);
+        ev.push(`REAR LL(${label})`);
       }
     }
     return ev;
@@ -1793,7 +1669,7 @@ export class TZEngine {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
     if (cur.l < rear.refLow && rear.refLow - cur.l >= THRESH - EPS && cur.c <= rear.refLow + EPS) {
-      ev.push(`${rearName(rear.deepOrigin, "REAR")} SL(${label})`);
+      ev.push(`REAR SL(${label})`);
       const sl = new RearSL(cur.l);
       sl.entryThreshold = this.currentTopRef(buy);
       rear.sl = sl;
@@ -1807,20 +1683,14 @@ export class TZEngine {
       return ev;
     }
     const red1Preexisting = buy.red1 !== null && buy.red1.active;
-    // Deep origin: RED1 only attaches after REAR has ALSO escalated to
-    // REAR 2 (REAR itself is only a shallow confirmation, per "REAR 2
-    // will come into picture only when BAR faces BAR SL2" -- REAR 2 and
-    // this RED1-RED2-to-fresh-BAR cycle are the two independent next
-    // steps once REAR 2 exists, same as everywhere else in this engine).
-    // Shallow/BARC: there is no "2" tier to wait for at all -- RED1
-    // attaches directly off BARC itself, exactly like a bare BarLineage
-    // already does in evalBarLineagesProgress's own per-lineage loop.
-    const red1Ready = rear.deepOrigin
-      ? rear.rear2 !== null && !rear.rear2.slActive && !rear.red2Ever
-      : !rear.red2Ever;
+    // RED1 only attaches after REAR has ALSO escalated to REAR 2 (REAR
+    // itself is only a shallow confirmation, per "REAR 2 will come into
+    // picture only when BAR faces BAR SL2" -- REAR 2 and this RED1-
+    // RED2-to-fresh-BAR cycle are the two independent next steps once
+    // REAR 2 exists, same as everywhere else in this engine).
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rear, prev, cur));
-    } else if (red1Ready) {
+    } else if (rear.rear2 !== null && !rear.rear2.slActive && !rear.red2Ever) {
       ev.push(...this.attachFreshRed1(pc, buy, rear, prev, cur));
     }
     return ev;
@@ -1832,10 +1702,8 @@ export class TZEngine {
     const ref = sl.entryThreshold;
     const isReenter = cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref;
     if (isReenter && !this.milestoneBlocked(pc)) {
-      const rre = new RearReenter(cur.h, cur.l);
-      rre.deepOrigin = rear.deepOrigin;
-      buy.rearReenter = rre;
-      ev.push(`${rearName(rear.deepOrigin, "REAR RE-ENTER")}(${labelId})`);
+      buy.rearReenter = new RearReenter(cur.h, cur.l);
+      ev.push(`REAR RE-ENTER(${labelId})`);
       rear.dormant = true;
       return ev;
     }
@@ -1846,7 +1714,7 @@ export class TZEngine {
     // currently leads, exactly like every analogous recovery elsewhere.
     if (cur.h > ref && cur.h - ref >= ANY) {
       sl.entryThreshold = cur.h;
-      ev.push(`INVALID ${rearName(rear.deepOrigin, "REAR")} SL HH(${labelId})`);
+      ev.push(`INVALID REAR SL HH(${labelId})`);
     }
     return ev;
   }
@@ -1855,24 +1723,23 @@ export class TZEngine {
   private evalRearReenterHhLl(pc: ParentCycle, buy: Buy, rre: RearReenter, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
-    const name = rearName(rre.deepOrigin, "REAR RE-ENTER");
     if (!rre.red1Since || rre.dormant || this.red1InvalidatesToday(buy, cur)) {
       if (cur.h > rre.refHigh && cur.h - rre.refHigh >= ANY) {
         rre.refHigh = cur.h;
-        ev.push(`${name} HH(${label})`);
+        ev.push(`REAR RE-ENTER HH(${label})`);
       }
     } else {
       const diff = cur.h - rre.refHigh;
       if (cur.h > rre.refHigh && (diff < THRESH - EPS || cur.l < prev.l || cur.c < rre.refHigh)) {
         rre.refHigh = cur.h;
-        ev.push(`${name} HH(${label})`);
+        ev.push(`REAR RE-ENTER HH(${label})`);
       }
     }
     if (cur.l < rre.refLow) {
       const gap = rre.refLow - cur.l;
       if ((gap >= THRESH - EPS && cur.c > rre.refLow + EPS) || gap < THRESH - EPS) {
         rre.refLow = cur.l;
-        ev.push(`${name} LL(${label})`);
+        ev.push(`REAR RE-ENTER LL(${label})`);
       }
     }
     return ev;
@@ -1882,7 +1749,7 @@ export class TZEngine {
     const ev: string[] = [];
     const label = branchLabel(pc.id);
     if (cur.l < rre.refLow && rre.refLow - cur.l >= THRESH - EPS && cur.c <= rre.refLow + EPS) {
-      ev.push(`${rearName(rre.deepOrigin, "REAR RE-ENTER")} SL(${label})`);
+      ev.push(`REAR RE-ENTER SL(${label})`);
       const sl = new RearReenterSL(cur.l);
       sl.entryThreshold = this.currentTopRef(buy);
       rre.sl = sl;
@@ -1896,13 +1763,9 @@ export class TZEngine {
       return ev;
     }
     const red1Preexisting = buy.red1 !== null && buy.red1.active;
-    // Same deep/shallow split as evalRearProgress above.
-    const red1Ready = rre.deepOrigin
-      ? rre.rre2 !== null && !rre.rre2.slActive && !rre.red2Ever
-      : !rre.red2Ever;
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rre, prev, cur));
-    } else if (red1Ready) {
+    } else if (rre.rre2 !== null && !rre.rre2.slActive && !rre.red2Ever) {
       ev.push(...this.attachFreshRed1(pc, buy, rre, prev, cur));
     }
     return ev;
@@ -1921,11 +1784,7 @@ export class TZEngine {
     const ref = sl.entryThreshold;
     const isReenterAgain = cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref;
     if (isReenterAgain && !this.milestoneBlocked(pc)) {
-      // Same name recycles for this chain's every later re-entry cycle,
-      // deep or shallow alike (deep: "REAR RE-ENTER" repeats past its
-      // own first formation too, same as always; shallow: "BARC" is the
-      // only name it ever had -- confirmed, no separate re-entry word).
-      ev.push(`${rearName(rre.deepOrigin, "REAR RE-ENTER")}(${labelId})`);
+      ev.push(`REAR RE-ENTER(${labelId})`);
       rre.sl = null;
       rre.refHigh = cur.h;
       rre.refLow = cur.l;
@@ -1939,7 +1798,7 @@ export class TZEngine {
     // milestoneBlocked, only the confirmation check above stays gated.
     if (cur.h > ref && cur.h - ref >= ANY) {
       sl.entryThreshold = cur.h;
-      ev.push(`INVALID ${rearName(rre.deepOrigin, "REAR RE-ENTER")} SL HH(${labelId})`);
+      ev.push(`INVALID REAR RE-ENTER SL HH(${labelId})`);
     }
     return ev;
   }
