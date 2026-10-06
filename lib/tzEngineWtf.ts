@@ -123,18 +123,6 @@ export class Buy {
   rearReenter: RearReenter | null = null;
   barHighPool = 0;
   reentryThreshold: number | null = null;
-  // REVISION (weekly only, see TZEngine.weeklyBarSlRear): pinned once, at
-  // this BAR chain's own FIRST BAR SL (whichever lineage -- bare or
-  // bar2-having -- hits SL first), from that lineage's own refHigh/refLow
-  // at that moment ("the BAR who faced the 1st BAR SL"). REAR eligibility
-  // for the whole chain is checked against this anchor from then on,
-  // regardless of which sub-lineage (B.2, B.3, ...) is currently active --
-  // it does NOT move to a later sub-lineage's own SL point. It keeps
-  // quietly climbing on new highs/lows (same convention as everywhere
-  // else in this engine) until an actual REAR fires, which resets it to
-  // null for the next chain. Null whenever this chain hasn't had a BAR
-  // SL yet (including right after a fresh chain start).
-  barChainAnchor: { label: string; refHigh: number; refLow: number } | null = null;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -222,13 +210,9 @@ export class TZEngine {
     // Sibling-spawn eligibility (canSpawn/eligibleAnchor, below) stays tied
     // exclusively to true deep failure -- BAR SL2 (a lineage that escalated
     // to BAR 2 and then failed there too). A bare BAR SL (BAR 1 alone,
-    // never escalated) does NOT open this: its own alternatives are REAR
-    // (see evalBarLineagesProgress's bar2===null branch, a self-contained
-    // check that does not go through this function) or a fresh RED1-RED2-
-    // gated Valid BAR reform (not yet implemented) -- never a brand new
-    // sibling branch. (Confirmed real-data case this almost got wrong:
-    // USHA MARTIN.NS -- a bare BAR SL must never race a fresh sibling TZ
-    // BUY 2, only REAR/Valid BAR.)
+    // never escalated) does NOT open this -- it's simply a dead end
+    // (see evalBarLineagesProgress's bar2===null branch): no REAR, no
+    // sibling spawn, just a fresh BAR reform.
     return buy.barLineages.some((lin) => lin.sl !== null && lin.sl.sl2);
   }
 
@@ -665,7 +649,6 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
-        buy.barChainAnchor = null;
         buy.rear = null;
         buy.rearReenter = null;
         buy.tzBuy2 = null;
@@ -855,7 +838,6 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
-        buy.barChainAnchor = null;
         buy.barPending = false;
       }
     } else if (buy.rear !== null && buy.rear.dormant && buy.rear.sl === null) {
@@ -869,7 +851,6 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
-        buy.barChainAnchor = null;
         buy.red1 = null;
         buy.barPending = false;
       }
@@ -1167,7 +1148,6 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
-        buy.barChainAnchor = null;
         buy.barPending = false;
         buy.rear = null;
         buy.rearReenter = null;
@@ -1199,14 +1179,7 @@ export class TZEngine {
     if (lin.sl !== null) {
       if (cur.h > lin.bar2.refHigh && cur.h - lin.bar2.refHigh >= ANY) {
         lin.bar2.refHigh = cur.h;
-        // Real-data bug (ETERNAL.NS B.1): on weekly, this same climb is
-        // ALSO tracked by the chain-wide anchor in
-        // evalBarLineagesProgress (see Buy.barChainAnchor), which pushes
-        // the identical "INVALID BAR HH(label)" -- firing both produced
-        // a literal duplicate string on 21/07/25. Still bump refHigh
-        // (other weekly logic, e.g. currentTopRef, reads it), just don't
-        // double the event text.
-        if (!this.weeklyBarSlRear) ev.push(`INVALID BAR HH(${lin.label})`);
+        ev.push(`INVALID BAR HH(${lin.label})`);
       }
       return ev;
     }
@@ -1284,7 +1257,6 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
-        buy.barChainAnchor = null;
         buy.barPending = false;
         return ev;
       }
@@ -1345,7 +1317,6 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
-        buy.barChainAnchor = null;
         buy.barPending = false;
         return ev;
       }
@@ -1378,72 +1349,6 @@ export class TZEngine {
     const lineageObjs = new Map<string, BarLineage>();
     const preEv: string[] = [];
 
-    // REVISION (weekly only, see this.weeklyBarSlRear): REAR eligibility
-    // off this chain's own FIRST BAR SL -- "the BAR who faced the 1st BAR
-    // SL" -- regardless of whether that lineage (or any later one in the
-    // same chain) ever escalated to BAR 2. Checked once per candle,
-    // BEFORE the per-lineage loop below, so REAR wins priority over
-    // whatever that loop would otherwise do this same candle (a bar2-
-    // having lineage's own INVALID BAR SL reactivation included --
-    // confirmed real-data case: USHA MARTIN.NS B.4, whose 11/03/24 BAR
-    // SL goes straight to REAR on 10/06/24, never reactivating under the
-    // same label the way a plain 2-BAR SL normally would). The anchor is
-    // pinned once (see Buy.barChainAnchor) and stays pinned through
-    // every later reform cycle in this chain -- it is NOT reset by
-    // anything in this function except REAR itself firing.
-    //
-    // Deliberately NOT gated by rearAncestorTerminated -- that check
-    // looks at buy.rear/buy.rearReenter directly and would permanently
-    // block REAR for this buy forever after the FIRST REAR's own SL,
-    // which contradicts "A new REAR can occur for the REAR/REAR
-    // RE-ENTER/REAR 2/REAR RE-ENTER 2 LINEAGE" -- REAR can legitimately
-    // happen again for a brand new chain (fresh barChainAnchor) even
-    // after an earlier, unrelated-by-now REAR in the same buy has
-    // already SL'd (confirmed real-data case: USHA MARTIN.NS B.1, whose
-    // own fresh chain after 05/08/24's REAR SL needs to be able to reach
-    // its own REAR again).
-    if (this.weeklyBarSlRear && buy.barChainAnchor !== null) {
-      const anchor = buy.barChainAnchor;
-      // Real-data bug (USHA MARTIN.NS): without this, a DIFFERENT bar
-      // lineage's own first SL (e.g. B.4's, pinning a brand new anchor
-      // after the buy's existing REAR had already consumed and reset the
-      // PREVIOUS anchor) could fire a second, overwriting REAR formation
-      // on 10/06/24 while the buy's own REAR from 2021-03-01 was STILL
-      // alive and active (never SL'd) -- visibly wrong, since "REAR(B)"
-      // fired a second time with no SL in between. A chain anchor can
-      // only consummate into an actual REAR takeover of
-      // buy.rear/buy.rearReenter while that slot isn't already occupied
-      // by a live, un-SL'd, non-dormant instance -- otherwise it just
-      // keeps quietly climbing in the background until the slot frees up.
-      const rearSlotOccupied =
-        (buy.rearReenter !== null && buy.rearReenter.sl === null && !buy.rearReenter.dormant) ||
-        (buy.rearReenter === null && buy.rear !== null && buy.rear.sl === null && !buy.rear.dormant);
-      // Deliberately NOT gated by milestoneBlocked (unlike TZ BUY/RED1/
-      // RED2/the old pre-revision REAR path) -- confirmed real-data case,
-      // ETERNAL.NS: branch B's own BAR 2(B.1) chain reaches REAR/REAR 2
-      // purely off its own reference high (304.70 -> 314.45) on
-      // 11/08/25 and 15/09/25, the SAME weeks branch A is independently
-      // making its own TZ BUY/TZ BUY 2 progress. "REAR - REAR 2 is
-      // applicable above the BAR 2 high" is a property of this chain's
-      // OWN lineage, not a cross-branch leadership contest -- that
-      // distinction belongs to rearSlotOccupied (this buy's own
-      // REAR/REAR RE-ENTER slot) only.
-      const isRear = cur.l >= prev.l && cur.h > anchor.refHigh && cur.h - anchor.refHigh >= THRESH - EPS && cur.c >= anchor.refHigh;
-      if (isRear && !rearSlotOccupied) {
-        rearWinner = [cur.h, cur.l];
-      } else {
-        if (cur.h > anchor.refHigh && cur.h - anchor.refHigh >= ANY) {
-          anchor.refHigh = cur.h;
-          buy.barHighPool = Math.max(buy.barHighPool, anchor.refHigh);
-          preEv.push(`INVALID BAR HH(${anchor.label})`);
-        }
-        if (cur.l < anchor.refLow) {
-          anchor.refLow = cur.l;
-          preEv.push(`INVALID BAR LL(${anchor.label})`);
-        }
-      }
-    }
-
     const newestForRed1 = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
 
     if (rearWinner === null) {
@@ -1455,13 +1360,6 @@ export class TZEngine {
           if (cur.l < lin.refLow && lin.refLow - cur.l >= THRESH - EPS && cur.c <= lin.refLow + EPS) {
             linEv.push(`BAR SL(${lin.label})`);
             lin.sl = new BarSL(cur.h, cur.l);
-            // "The BAR who faced the 1st BAR SL" -- pinned once per
-            // chain, from whichever lineage (bare or bar2-having) hits
-            // SL first. A later lineage's own SL in this same chain
-            // never re-anchors it.
-            if (this.weeklyBarSlRear && buy.barChainAnchor === null) {
-              buy.barChainAnchor = { label: lin.label, refHigh: lin.refHigh, refLow: lin.refLow };
-            }
             buy.red1 = null;
             lin.red1Since = false;
             continue;
@@ -1481,12 +1379,12 @@ export class TZEngine {
 
         if (lin.bar2 === null) {
           // A single (never-escalated) BAR's own SL has no "INVALID BAR
-          // SL" or "BAR SL2" concept at all -- confirmed: "BAR SL 2 can
-          // only occur for the 2 BAR and not single BAR. Hence, INVALID
-          // BAR SL is also out of picture for SINGLE BAR - BAR SL." This
-          // lineage is simply a parked dead end from here: REAR (checked
-          // above, chain-wide) or a fresh BAR reform (bottom of this
-          // function) are the only ways forward.
+          // SL", "BAR SL2", or REAR concept at all -- confirmed: "BAR SL
+          // 2 can only occur for the 2 BAR and not single BAR" / "REAR
+          // will now only occur above the BAR 2 reference high after
+          // the BAR SL2." This lineage is simply a parked dead end from
+          // here: only a fresh BAR reform (bottom of this function) is
+          // the way forward.
           continue;
         }
 
@@ -1544,14 +1442,22 @@ export class TZEngine {
             sl2ConfirmedToday = true;
             buy.barPending = false;
           }
-        } else if (!this.weeklyBarSlRear && !this.rearAncestorTerminated(buy)) {
-          // Pre-revision REAR path, kept exactly as before for every
-          // non-weekly timeframe only -- on weekly this is superseded by
-          // the chain-wide anchor check above (see its own comment).
+        } else if (!this.rearAncestorTerminated(buy)) {
+          // REAR only ever occurs above BAR 2's own reference high, and
+          // only once this lineage has confirmed genuine BAR SL2 (sl.sl2
+          // true -- the else branch of the !sl.sl2 check above). A bare
+          // BAR SL alone never opens REAR eligibility.
           const preRef = preTodayBar2Ref.get(lin.label);
           const rearRef = preRef !== undefined && preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
-          if (isRear && !this.milestoneBlocked(pc)) {
+          // Deliberately NOT gated by milestoneBlocked -- confirmed real-
+          // data case, ETERNAL.NS: branch B's own BAR 2(B.1) chain reaches
+          // REAR purely off its own reference high (304.70 -> 314.45),
+          // the SAME weeks an unrelated sibling branch is independently
+          // making its own TZ BUY/TZ BUY 2 progress. REAR above BAR 2's
+          // own high is a property of this chain's own lineage, not a
+          // cross-branch leadership contest.
+          if (isRear) {
             rearWinner = [cur.h, cur.l];
             break;
           }
@@ -1580,7 +1486,6 @@ export class TZEngine {
       buy.barLineages = [];
       buy.barSubCounter = 0;
       buy.barDeadLabels = new Set();
-      buy.barChainAnchor = null;
       buy.barPending = false;
       return ev;
     }
@@ -1677,7 +1582,6 @@ export class TZEngine {
       buy.barLineages = [];
       buy.barSubCounter = 0;
       buy.barDeadLabels = new Set();
-      buy.barChainAnchor = null;
       buy.red1 = null;
       buy.barPending = false;
       return ev;
@@ -1758,7 +1662,6 @@ export class TZEngine {
       buy.barLineages = [];
       buy.barSubCounter = 0;
       buy.barDeadLabels = new Set();
-      buy.barChainAnchor = null;
       buy.barPending = false;
       return ev;
     }
