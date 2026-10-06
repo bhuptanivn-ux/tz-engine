@@ -177,6 +177,7 @@ export class TZEngine {
   branches = new Map<number, ParentCycle>();
   private seqCounter = 0;
   private preTodayLiveBuy = new Map<number, boolean>();
+  private preTodayTzBuy2Active = new Map<number, boolean>();
 
   // REVISION, weekly timeframe only: a BAR lineage that never escalated
   // past BAR 1 (bar2 === null) opens REAR eligibility on its own bare BAR
@@ -232,6 +233,20 @@ export class TZEngine {
    * exactly the signal that mechanism exists to produce. */
   private barLineagesPermanentDeadEnd(buy: Buy): boolean {
     return buy.barLineages.every((lin) => lin.sl !== null && lin.bar2 === null);
+  }
+
+  // Real-data bug (ICICIBANK.NS branch E, 2013): a buy whose TZ BUY 2 was
+  // never stopped out AND never even escalated into a BAR (no REAR, no
+  // REAR RE-ENTER, no BAR lineage ever attempted) -- i.e. nothing under it
+  // is actually racing -- still read as "currently live" forever once the
+  // branch went dormant (buried under a more senior sibling), permanently
+  // blocking every later branch's own fresh TZ BUY confirmation for years.
+  // A buy with real structure underneath (an open REAR/REAR RE-ENTER, or a
+  // BAR lineage racing or sitting at genuine deep failure) is deliberately
+  // NOT covered by this -- only a buy with literally nothing happening
+  // beneath its own un-SL'd TZ BUY 2.
+  private buyHasNoRacingStructure(buy: Buy): boolean {
+    return buy.rear === null && buy.rearReenter === null && buy.barLineages.length === 0;
   }
 
   private buyCurrentlyLive(buy: Buy): boolean {
@@ -305,6 +320,27 @@ export class TZEngine {
     return false;
   }
 
+  // Real-data bug (ICICIBANK.NS branches F/G, 2022): once a NEWER sibling
+  // (spawned off this chain's own BAR SL2) has already WON the race by
+  // confirming its own TZ BUY 2 -- not merely progressing toward it, which
+  // is why this checks yesterday's already-confirmed state rather than
+  // reusing milestoneBlocked's broader "any live buy" signal -- this
+  // chain's own REAR must not be allowed to hijack in afterward. REAR's
+  // reference keeps climbing quietly (via evalBar2's own INVALID BAR HH
+  // tracking) but stops being eligible to actually confirm. Deliberately
+  // NOT the same check as milestoneBlocked: ETERNAL.NS branch B's REAR
+  // confirmed purely off its own reference while a sibling was
+  // independently still progressing toward (not yet confirmed at) its own
+  // TZ BUY/TZ BUY 2 -- that must keep working.
+  private racedOutByNewerTzBuy2(pc: ParentCycle): boolean {
+    for (const [pid, other] of this.branches) {
+      if (pid !== pc.id && other.seq > pc.seq && (this.preTodayTzBuy2Active.get(pid) ?? false)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** True if this buy's current REAR-family ancestor (REAR RE-ENTER if it
    * exists, else REAR) has ALREADY failed at its own SL. */
   private rearAncestorTerminated(buy: Buy): boolean {
@@ -353,19 +389,46 @@ export class TZEngine {
 
     let anyLiveBuy = false;
     for (const pc of this.branches.values()) {
-      if (pc.active && pc.buy !== null && this.buyCurrentlyLive(pc.buy)) {
+      if (
+        pc.active &&
+        pc.buy !== null &&
+        this.buyCurrentlyLive(pc.buy) &&
+        !(pc.dormant && this.buyHasNoRacingStructure(pc.buy))
+      ) {
         anyLiveBuy = true;
         break;
       }
     }
 
     this.preTodayLiveBuy = new Map();
+    this.preTodayTzBuy2Active = new Map();
     for (const [pid, pc] of this.branches) {
-      this.preTodayLiveBuy.set(pid, pc.buy !== null && this.buyCurrentlyLive(pc.buy));
+      this.preTodayLiveBuy.set(
+        pid,
+        pc.buy !== null &&
+          this.buyCurrentlyLive(pc.buy) &&
+          !(pc.dormant && this.buyHasNoRacingStructure(pc.buy)),
+      );
+      this.preTodayTzBuy2Active.set(
+        pid,
+        pc.buy !== null && pc.buy.tzBuy2 !== null && !pc.buy.tzBuy2.slActive,
+      );
     }
 
     if (!anyLiveBuy) {
-      for (const pc of this.branches.values()) pc.dormant = false;
+      // Real-data bug (ICICIBANK.NS branch E): this used to wake up EVERY
+      // dormant branch the instant nothing anywhere was live, which let a
+      // branch with nothing racing underneath it (see
+      // buyHasNoRacingStructure) resume its own stale RED1/BAR formation
+      // the moment it was correctly excluded above -- overwriting a
+      // sibling's own fresh TZ GREEN/TZ BUY output instead of staying
+      // buried. A branch with real structure (REAR/REAR RE-ENTER open, or
+      // a BAR lineage) still needs this wake-up to resume watching for its
+      // own re-entry/progress; only the no-structure dead ends stay buried.
+      for (const pc of this.branches.values()) {
+        if (pc.buy !== null && pc.dormant && this.buyHasNoRacingStructure(pc.buy)) continue;
+        pc.dormant = false;
+      }
     }
 
     for (const pid of Array.from(this.branches.keys())) {
@@ -1424,8 +1487,11 @@ export class TZEngine {
           // the SAME weeks an unrelated sibling branch is independently
           // making its own TZ BUY/TZ BUY 2 progress. REAR above BAR 2's
           // own high is a property of this chain's own lineage, not a
-          // cross-branch leadership contest.
-          if (isRear) {
+          // cross-branch leadership contest. But once that sibling has
+          // already WON by confirming its own TZ BUY 2 (not just
+          // progressing toward it), REAR can no longer hijack in --
+          // see racedOutByNewerTzBuy2.
+          if (isRear && !this.racedOutByNewerTzBuy2(pc)) {
             rearWinner = [cur.h, cur.l];
             break;
           }
