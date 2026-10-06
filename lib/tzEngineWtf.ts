@@ -759,44 +759,12 @@ export class TZEngine {
       (buy.rear !== null || buy.rearReenter !== null) &&
       this.barEntryShape(prev, cur);
 
-    // REVISION: a plain fresh BAR is its own, independent lineage/track
-    // from the REAR / REAR RE-ENTER ladder -- confirmed real-data case,
-    // USHA MARTIN.NS: 05/08/24 REAR SL(B), then 09/09/24: BAR forms
-    // directly, with no REAR RE-ENTER (recovery back above the REAR SL's
-    // own, much higher, re-entry threshold) ever happening in between.
-    // "A new REAR can occur for the REAR/REAR RE-ENTER/REAR 2/REAR
-    // RE-ENTER 2 LINEAGE... A REAR can also occur for the VALID BAR
-    // LINEAGE" -- these are two separate, parallel racing tracks, not
-    // one gating the other. Without this, evalRearSlProgress/
-    // evalRearReenterSlProgress's own dispatch priority below (unlike
-    // every other REAR dispatch branch here) never checks `dormant`, so
-    // a SL'd REAR/REAR RE-ENTER would otherwise claim every future
-    // candle forever, and a fresh BAR could never form again unless
-    // price fully re-entered back above the SL's own threshold.
-    const restartsAsFreshBar =
-      buy.active &&
-      buy.barLineages.length === 0 &&
-      !buy.barPending &&
-      ((buy.rearReenter !== null && buy.rearReenter.sl !== null && !buy.rearReenter.dormant) ||
-        (buy.rearReenter === null && buy.rear !== null && buy.rear.sl !== null && !buy.rear.dormant)) &&
-      this.barEntryShape(prev, cur);
-
-    if (buy.rearReenter !== null && buy.rearReenter.sl !== null && !buy.rearReenter.dormant && !restartsAsFreshBar) {
+    if (buy.rearReenter !== null && buy.rearReenter.sl !== null) {
       ev.push(...this.evalRearReenterSlProgress(pc, buy, buy.rearReenter, buy.rearReenter.sl, prev, cur));
-    } else if (
-      buy.rearReenter === null &&
-      buy.rear !== null &&
-      buy.rear.sl !== null &&
-      !buy.rear.dormant &&
-      !restartsAsFreshBar
-    ) {
+    } else if (buy.rearReenter === null && buy.rear !== null && buy.rear.sl !== null) {
       ev.push(...this.evalRearSlProgress(pc, buy, buy.rear, buy.rear.sl, prev, cur));
-    } else if (barConfirmsToday || restartsAsFreshBar) {
+    } else if (barConfirmsToday) {
       ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(")));
-      if (restartsAsFreshBar) {
-        if (buy.rearReenter !== null) buy.rearReenter.dormant = true;
-        else if (buy.rear !== null) buy.rear.dormant = true;
-      }
       ev.push(...this.checkBarPending(pc, buy, prev, cur, false));
     } else if (buy.barLineages.length > 0) {
       ev.push(...this.evalBarLineagesProgress(pc, buy, prev, cur, preTodayBar2Ref));
@@ -1521,23 +1489,9 @@ export class TZEngine {
       }
       buy.barLineages = surviving;
       const subLabel = this.nextBarLabel(buy, labelId);
-      const newLin = new BarLineage(subLabel, cur.h, cur.l);
-      buy.barLineages.push(newLin);
+      buy.barLineages.push(new BarLineage(subLabel, cur.h, cur.l));
       buy.barPending = false;
       buy.barHighPool = Math.max(buy.barHighPool, cur.h);
-      // Same supersession checkBarPending already applies for its own
-      // fresh-BAR reform (buy.barLineages was empty there) -- this is
-      // the OTHER reform site (buy.barLineages non-empty, e.g. B.3 ->
-      // B.4). Without it, a still-active, un-SL'd buy.rear/rearReenter
-      // from years earlier could sit there indefinitely while a wholly
-      // separate, actively-cycling bar family races underneath it --
-      // confirmed real-data case, USHA MARTIN.NS: the chain anchor
-      // pinned by B.4's own 11/03/24 BAR SL couldn't fire its own REAR
-      // on 10/06/24 (see the chain-anchor check's own rearSlotOccupied
-      // guard) because the buy's ancient 2021-formed REAR had never
-      // been marked dormant, despite B.1 through B.4 having long since
-      // taken over as the buy's own actively-racing bar family.
-      this.supersedeRearForNewBar(buy);
       ev.push(`BAR(${subLabel})`);
     }
 
