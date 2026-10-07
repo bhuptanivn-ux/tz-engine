@@ -132,6 +132,14 @@ export class ParentCycle {
   redEver = false;
   refHighAtRed = 0;
   buy: Buy | null = null;
+  // Real-data bug (ICICIBANK.NS hypothetical, confirmed): once this
+  // branch's own TZ GREEN HH climb first coincides, on the same candle,
+  // with a genuine-BAR-SL2 lineage elsewhere reaching its own INVALID
+  // BAR HH, this branch's climb is from then on racing over the exact
+  // same ground as that lineage's REAR eligibility -- recording its own
+  // HH separately is redundant. Sticky once set: "start it from 14/01"
+  // (the first coincidence), not re-checked day by day.
+  hhAbsorbedByRear = false;
   constructor(public id: number, public seq: number, public refHigh: number, public refLow: number) {}
 }
 
@@ -474,6 +482,28 @@ export class TZEngine {
       }
     }
 
+    // Real-data bug (ICICIBANK.NS hypothetical, confirmed): the first
+    // candle a sibling's own TZ GREEN HH coincides with some OTHER
+    // branch's genuine-BAR-SL2 lineage reaching INVALID BAR HH, that
+    // sibling's climb has merged with that lineage's own REAR-eligible
+    // ground -- its own HH is retracted THIS candle (it was already
+    // pushed above, before this cross-branch check could run) and the
+    // sibling is marked so every FUTURE HH stays suppressed too,
+    // regardless of whether the exact numbers coincide again later.
+    const anyInvalidBarHhToday = Array.from(perBranchEvents.values()).some((events) =>
+      events.some((e) => e.startsWith("INVALID BAR HH("))
+    );
+    if (anyInvalidBarHhToday) {
+      for (const [pid, events] of perBranchEvents) {
+        if (events.some((e) => e.startsWith("INVALID BAR HH("))) continue;
+        if (events.some((e) => e.startsWith("TZ GREEN HH("))) {
+          const pcOwner = this.branches.get(pid) as ParentCycle;
+          pcOwner.hhAbsorbedByRear = true;
+          perBranchEvents.set(pid, events.filter((e) => !e.startsWith("TZ GREEN HH(")));
+        }
+      }
+    }
+
     const activeBranches = Array.from(this.branches.values()).filter((pc) => pc.active);
     const tip =
       activeBranches.length > 0 ? activeBranches.reduce((a, b) => (b.seq > a.seq ? b : a)) : null;
@@ -662,7 +692,7 @@ export class TZEngine {
       pc.refHigh = pc.buy.refHigh;
     }
 
-    if (hh && !hasLiveBuy && !isSl) ev.push(`TZ GREEN HH(${label})`);
+    if (hh && !hasLiveBuy && !isSl && !pc.hhAbsorbedByRear) ev.push(`TZ GREEN HH(${label})`);
     if (ll && !hasLiveBuy) ev.push(`TZ GREEN LL(${label})`);
 
     if (isSl) {
