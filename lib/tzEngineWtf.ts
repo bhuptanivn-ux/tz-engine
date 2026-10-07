@@ -407,6 +407,25 @@ export class TZEngine {
     return `${labelId}.${n}`;
   }
 
+  /** The newest lineage for "who's newest" purposes -- NOT necessarily
+   * the literal last array element. A lineage that never escalated past
+   * BAR 1 and then hit its own bare SL (bar2 === null, sl !== null) is a
+   * permanent dead end that can sit at the tail of buy.barLineages for
+   * many candles (it's only ever swept by the opportunistic fresh-BAR
+   * cleanup). Real-data bug (ETERNAL.NS D.10/D.11): such a dead end must
+   * not shadow a still-live lineage sitting right behind it as "not
+   * newest" -- confirmed, a bare BAR SL opens the door for that lineage
+   * to reform under its own label the moment it recovers, same as if
+   * the dead end had already been pruned.
+   */
+  private newestLiveLineage(lineages: BarLineage[]): BarLineage | null {
+    for (let i = lineages.length - 1; i >= 0; i--) {
+      const l = lineages[i];
+      if (!(l.bar2 === null && l.sl !== null)) return l;
+    }
+    return null;
+  }
+
   process(prev: Day, cur: Day): string[] {
     const perBranchEvents = new Map<number, string[]>();
     const milestoneAchievers: [ParentCycle, boolean][] = [];
@@ -815,7 +834,7 @@ export class TZEngine {
     const preTodayRearRef = buy.rear !== null ? buy.rear.refHigh : null;
     const preTodayRreRef = buy.rearReenter !== null ? buy.rearReenter.refHigh : null;
 
-    const newestLin = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    const newestLin = this.newestLiveLineage(buy.barLineages);
     if (newestLin !== null && !this.barHhSuppressedToday(buy, newestLin, prev, cur)) {
       const linHhEv = this.evalBarLineageHh(buy, newestLin, prev, cur);
       if (newestLin.bar2 === null) {
@@ -1494,7 +1513,7 @@ export class TZEngine {
     const lineageObjs = new Map<string, BarLineage>();
     const preEv: string[] = [];
 
-    const newestForRed1 = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    const newestForRed1 = this.newestLiveLineage(buy.barLineages);
 
     if (rearWinner === null) {
       for (const lin of Array.from(buy.barLineages)) {
@@ -1561,7 +1580,7 @@ export class TZEngine {
           // same label; a non-newest lineage just gets marked invalidated
           // and stops being tracked (see the sl.invalidated short-circuit
           // above, and the survivor filter above this function's own loop).
-          const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
+          const isNewest = lin === this.newestLiveLineage(buy.barLineages);
           if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
             linEv.push(`INVALID BAR SL(${lin.label})`);
             buy.barHighPool = Math.max(buy.barHighPool, cur.h);
@@ -1653,7 +1672,7 @@ export class TZEngine {
       return ev;
     }
 
-    const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    const newest = this.newestLiveLineage(buy.barLineages);
     // A bare (bar2-null) lineage's own SL is "dead enough to reform"
     // here on every timeframe, weekly included -- confirmed: "every BAR
     // will be considered as the BASE BAR unless there is BAR 1 - BAR 2 -
