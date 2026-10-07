@@ -876,7 +876,26 @@ export class TZEngine {
       ev = ev.filter((e) => !(e.startsWith("REAR HH(") || e.startsWith("REAR RE-ENTER HH(")));
       ev.push(...this.checkBarPending(pc, buy, prev, cur, false));
     } else if (buy.barLineages.length > 0) {
+      // Real-data bug (ICICIBANK.NS hypothetical, confirmed): a sibling
+      // lineage's own BAR 2 SL event was already pushed into `ev` ABOVE
+      // (the bar2EvByLabel push, before this dispatch even runs) using
+      // the lineage array as it stood at the START of today -- so when
+      // THIS SAME candle's SL-tier processing below both SL's that
+      // sibling at the lineage level AND confirms genuine BAR SL2 for a
+      // different lineage, the sibling gets correctly dropped from
+      // buy.barLineages, but its earlier-pushed BAR 2 SL text was never
+      // retracted. Confirmed wrong: "NO NEED TO RECORD BAR SL A.2 since
+      // it automatically got terminated." Any lineage present before
+      // this call but gone after it is terminated silently -- strip
+      // every event already in `ev` for its label, not just the ones
+      // evalBarLineagesProgress itself would have pushed.
+      const labelsBefore = new Set(buy.barLineages.map((l) => l.label));
       ev.push(...this.evalBarLineagesProgress(pc, buy, prev, cur, preTodayBar2Ref));
+      const labelsAfter = new Set(buy.barLineages.map((l) => l.label));
+      const droppedLabels = [...labelsBefore].filter((l) => !labelsAfter.has(l));
+      if (droppedLabels.length > 0) {
+        ev = ev.filter((e) => !droppedLabels.includes(labelOf(e)));
+      }
     } else if (buy.rearReenter !== null && !buy.rearReenter.dormant) {
       ev.push(...this.evalRearReenterProgress(pc, buy, buy.rearReenter, prev, cur));
     } else if (buy.rearReenter === null && buy.rear !== null && !buy.rear.dormant) {
