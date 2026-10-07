@@ -249,8 +249,23 @@ export class TZEngine {
     return buy.rear === null && buy.rearReenter === null && buy.barLineages.length === 0;
   }
 
-  private buyCurrentlyLive(buy: Buy): boolean {
+  private buyCurrentlyLive(pc: ParentCycle): boolean {
+    const buy = pc.buy as Buy;
     if (!buy.active) return false;
+    // Real-data bug (ICICIBANK.NS branch F): once a newer sibling has
+    // already won the race (racedOutByNewerTzBuy2), this chain's own
+    // un-SL'd, not-dormant REAR/REAR RE-ENTER keeps climbing and
+    // tracking forever in the backend (see evalRear2's own comment) but
+    // must NOT count as "live" for blocking every EVEN NEWER branch's
+    // own fresh TZ BUY -- otherwise a raced-out REAR that simply never
+    // gets a formal SL (because price keeps climbing with the market)
+    // would block every later branch's TZ BUY confirmation
+    // indefinitely. Scoped to ONLY that specific "still open, not
+    // dormant" claim -- an ALREADY-SL'd REAR/REAR RE-ENTER (checked just
+    // below) must keep returning its own correct answer regardless of
+    // racedOut, or a dangling un-escalated TZ BUY 2 underneath it would
+    // wrongly fall through to the final tzBuy2 check instead.
+    const racedOut = this.racedOutByNewerTzBuy2(pc);
     if (buy.rearReenter !== null) {
       if (buy.rearReenter.sl !== null) {
         // Real-data bug (ICICIBANK.NS branch E, 2014): this used to bail
@@ -267,6 +282,7 @@ export class TZEngine {
         return buy.barLineages.length > 0 && this.barLineagesRacing(buy);
       }
       if (!buy.rearReenter.dormant) {
+        if (racedOut) return false;
         if (buy.barLineages.length > 0) {
           if (this.barLineagesRacing(buy)) return true;
           if (!this.barLineagesPermanentDeadEnd(buy)) return false;
@@ -290,6 +306,7 @@ export class TZEngine {
         return buy.barLineages.length > 0 && this.barLineagesRacing(buy);
       }
       if (!buy.rear.dormant) {
+        if (racedOut) return false;
         if (buy.barLineages.length > 0) {
           if (this.barLineagesRacing(buy)) return true;
           if (!this.barLineagesPermanentDeadEnd(buy)) return false;
@@ -392,7 +409,7 @@ export class TZEngine {
       if (
         pc.active &&
         pc.buy !== null &&
-        this.buyCurrentlyLive(pc.buy) &&
+        this.buyCurrentlyLive(pc) &&
         !(pc.dormant && this.buyHasNoRacingStructure(pc.buy))
       ) {
         anyLiveBuy = true;
@@ -400,20 +417,27 @@ export class TZEngine {
       }
     }
 
+    // Computed into a local map first, and only swapped into
+    // this.preTodayTzBuy2Active once the preTodayLiveBuy loop below has
+    // finished reading it -- that loop calls buyCurrentlyLive, which
+    // itself reads this.preTodayTzBuy2Active (via racedOutByNewerTzBuy2),
+    // so overwriting it mid-loop would mix yesterday's and today's values
+    // depending on branch iteration order.
+    const newTzBuy2Active = new Map<number, boolean>();
+    for (const [pid, pc] of this.branches) {
+      newTzBuy2Active.set(pid, pc.buy !== null && pc.buy.tzBuy2 !== null && !pc.buy.tzBuy2.slActive);
+    }
+
     this.preTodayLiveBuy = new Map();
-    this.preTodayTzBuy2Active = new Map();
     for (const [pid, pc] of this.branches) {
       this.preTodayLiveBuy.set(
         pid,
         pc.buy !== null &&
-          this.buyCurrentlyLive(pc.buy) &&
+          this.buyCurrentlyLive(pc) &&
           !(pc.dormant && this.buyHasNoRacingStructure(pc.buy)),
       );
-      this.preTodayTzBuy2Active.set(
-        pid,
-        pc.buy !== null && pc.buy.tzBuy2 !== null && !pc.buy.tzBuy2.slActive,
-      );
     }
+    this.preTodayTzBuy2Active = newTzBuy2Active;
 
     if (!anyLiveBuy) {
       // Real-data bug (ICICIBANK.NS branch E): this used to wake up EVERY
@@ -454,7 +478,7 @@ export class TZEngine {
     const tip =
       activeBranches.length > 0 ? activeBranches.reduce((a, b) => (b.seq > a.seq ? b : a)) : null;
     const tipDeepFailure =
-      tip !== null && tip.buy !== null && this.deepFailureReached(tip.buy) && !this.buyCurrentlyLive(tip.buy);
+      tip !== null && tip.buy !== null && this.deepFailureReached(tip.buy) && !this.buyCurrentlyLive(tip);
     const tipTzbuy2Sl =
       tip !== null && tip.buy !== null && tip.buy.tzBuy2 !== null && tip.buy.tzBuy2.slActive;
     const tipRear2Sl =
@@ -1269,18 +1293,18 @@ export class TZEngine {
     if (rear.rear2 === null) {
       if (rear.sl === null) {
         const ref = preTodayRearRef !== null ? preTodayRearRef : rear.refHigh;
-        // Real-data bug (ICICIBANK.NS): REAR itself confirmed before a
-        // newer sibling won the race, but the escalation to REAR 2 can
-        // still happen LATER, after that sibling's own TZ BUY 2 already
-        // won. Same rule as REAR's own confirmation (racedOutByNewerTzBuy2)
-        // -- once won, no further escalation in this chain, backend only.
-        if (
-          cur.l >= prev.l &&
-          cur.h > ref &&
-          cur.h - ref >= THRESH - EPS &&
-          cur.c >= ref &&
-          !this.racedOutByNewerTzBuy2(pc)
-        ) {
+        // Real-data bug (ICICIBANK.NS hypothetical, confirmed): once a
+        // newer sibling has already won the race, this chain's REAR
+        // (and its escalation to REAR 2) must keep confirming and
+        // tracking its own reference internally exactly as if nothing
+        // had happened -- "RECORDED AT THE BACKEND" -- so that if the
+        // race ever reopens (the newer sibling's own TZ BUY 2 later
+        // fails), this chain picks up from its own true current
+        // reference, not a stale pre-race one. Only the VISIBLE text is
+        // suppressed, in process()'s own output filter (see
+        // racedOutByNewerTzBuy2's other use there) -- never the
+        // confirmation logic itself.
+        if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
           rear.rear2 = new Bar2(cur.h, cur.l);
           ev.push(`REAR 2(${label})`);
         }
@@ -1298,13 +1322,7 @@ export class TZEngine {
     const r2 = rear.rear2;
     if (r2.slActive) {
       const ref = r2.reentryThreshold !== null ? r2.reentryThreshold : r2.refHigh;
-      if (
-        cur.l >= prev.l &&
-        cur.h > ref &&
-        cur.h - ref >= THRESH - EPS &&
-        cur.c >= ref &&
-        !this.racedOutByNewerTzBuy2(pc)
-      ) {
+      if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         r2.refHigh = cur.h;
         r2.refLow = cur.l;
         r2.slActive = false;
@@ -1525,17 +1543,20 @@ export class TZEngine {
           const preRef = preTodayBar2Ref.get(lin.label);
           const rearRef = preRef !== undefined && preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
           const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
-          // Deliberately NOT gated by milestoneBlocked -- confirmed real-
-          // data case, ETERNAL.NS: branch B's own BAR 2(B.1) chain reaches
-          // REAR purely off its own reference high (304.70 -> 314.45),
-          // the SAME weeks an unrelated sibling branch is independently
-          // making its own TZ BUY/TZ BUY 2 progress. REAR above BAR 2's
-          // own high is a property of this chain's own lineage, not a
-          // cross-branch leadership contest. But once that sibling has
-          // already WON by confirming its own TZ BUY 2 (not just
-          // progressing toward it), REAR can no longer hijack in --
-          // see racedOutByNewerTzBuy2.
-          if (isRear && !this.racedOutByNewerTzBuy2(pc)) {
+          // Deliberately NOT gated by milestoneBlocked, OR by whether a
+          // newer sibling has already won the race (racedOutByNewerTzBuy2)
+          // -- confirmed real-data case, ETERNAL.NS: branch B's own BAR
+          // 2(B.1) chain reaches REAR purely off its own reference high
+          // (304.70 -> 314.45), the SAME weeks an unrelated sibling
+          // branch is independently making its own TZ BUY/TZ BUY 2
+          // progress. REAR above BAR 2's own high is a property of this
+          // chain's own lineage, not a cross-branch leadership contest.
+          // Confirmed (ICICIBANK.NS hypothetical): even once a sibling
+          // HAS already won, REAR must still confirm and keep tracking
+          // its own reference internally -- "RECORDED AT THE BACKEND" --
+          // so the state is correct if the race ever reopens. Only
+          // process()'s own output filter decides whether this shows.
+          if (isRear) {
             rearWinner = [cur.h, cur.l];
             break;
           }
