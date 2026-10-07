@@ -1273,7 +1273,15 @@ export class TZEngine {
       return ev;
     }
     if (lin.sl !== null) {
-      if (cur.h > lin.bar2.refHigh && cur.h - lin.bar2.refHigh >= ANY) {
+      // Real-data bug (ICICIBANK.NS hypothetical, confirmed): INVALID
+      // BAR HH is only a thing for a lineage that has reached genuine
+      // BAR SL 2 (deep failure) -- a plain BAR SL (sl.sl2 still false)
+      // has no HH concept at all, only INVALID BAR SL (handled by the
+      // lineage-level SL-tier check, not here). Confirmed: "There was
+      // not BAR SL 2 just a BAR SL. It will be looking for INVALID BAR
+      // SL only ... INVALID BAR HH can occur only for the BAR after
+      // BAR SL 2."
+      if (lin.sl.sl2 && cur.h > lin.bar2.refHigh && cur.h - lin.bar2.refHigh >= ANY) {
         lin.bar2.refHigh = cur.h;
         ev.push(`INVALID BAR HH(${lin.label})`);
       }
@@ -1469,15 +1477,13 @@ export class TZEngine {
             lin.sl = new BarSL(cur.h, cur.l);
             buy.red1 = null;
             lin.red1Since = false;
-            // Real-data bug (ICICIBANK.NS hypothetical, confirmed): the
-            // same candle that breaches this lineage's own BAR SL
-            // reference can ALSO be the opening leg of a fresh RED1
-            // pullback measured from its own peak -- a big enough single
-            // drop is both at once, and the old code discarded the RED1
-            // opportunity entirely by continuing past it unchecked.
-            if (lin === newestForRed1 && !lin.red2Ever) {
-              linEv.push(...this.attachFreshRed1(pc, buy, lin, prev, cur));
-            }
+            // Reverted: a fresh RED1 is not needed here -- once a
+            // lineage has its own BAR SL, a brand-new BAR is already
+            // free to form directly (see the newestIsDead-gated
+            // freshBarReady check below), so there is nothing for a
+            // same-candle RED1 to unlock. Confirmed: "Since it was BAR
+            // SL, I doubt RED 1 was required since NEW BAR will anyways
+            // be valid to occur."
             continue;
           }
           if (lin === newestForRed1) {
