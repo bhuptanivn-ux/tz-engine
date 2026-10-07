@@ -87,7 +87,10 @@ export async function GET(req: NextRequest) {
   // paying for a full re-scan.
   const cached = await readScreenerCache(segment, end, batchKey);
   if (cached) {
-    return NextResponse.json({ ...cached, total, offset, limit, cached: true });
+    return NextResponse.json(
+      { ...cached, total, offset, limit, cached: true },
+      { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+    );
   }
 
   const bar: ScreenerRow[] = [];
@@ -125,5 +128,8 @@ export async function GET(req: NextRequest) {
   };
   await writeScreenerCache(segment, end, batchKey, payload);
 
-  return NextResponse.json({ ...payload, total, offset, limit, cached: false });
+  return NextResponse.json(
+    { ...payload, total, offset, limit, cached: false },
+    { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+  );
 }

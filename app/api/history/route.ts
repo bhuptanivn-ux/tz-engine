@@ -30,7 +30,16 @@ export async function GET(req: NextRequest) {
 
   try {
     const { rows, source, blobError } = await fetchHistoryWithSource(symbol, start, end, interval);
-    return NextResponse.json({ symbol, interval, source, blobDebug: blobError, rows });
+    // Underlying data only changes once a day (the refresh-daily cron), so
+    // letting Vercel's edge serve repeat identical requests for an hour
+    // avoids re-invoking this Function (and re-shipping its full response
+    // body) on every page load/interval change for the same symbol+range
+    // -- that was counting against Fast Origin Transfer on every single
+    // request, with no caching at all.
+    return NextResponse.json(
+      { symbol, interval, source, blobDebug: blobError, rows },
+      { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "History fetch failed";
     return NextResponse.json({ error: message }, { status: 502 });

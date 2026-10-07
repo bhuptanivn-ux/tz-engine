@@ -15,7 +15,12 @@ export async function GET(req: NextRequest) {
 
   try {
     const firstTradeDate = await fetchFirstTradeDate(symbol);
-    return NextResponse.json({ symbol, firstTradeDate });
+    // A symbol's first trade date is effectively immutable -- safe to let
+    // the edge serve this for a full day without re-invoking the Function.
+    return NextResponse.json(
+      { symbol, firstTradeDate },
+      { headers: { "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=604800" } }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Metadata fetch failed";
     return NextResponse.json({ error: message }, { status: 502 });

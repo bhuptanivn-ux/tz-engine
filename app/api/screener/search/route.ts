@@ -14,5 +14,10 @@ export async function GET(req: NextRequest) {
     (e) => e.symbol.toLowerCase().includes(q) || e.name.toLowerCase().includes(q)
   ).slice(0, 20);
 
-  return NextResponse.json({ results });
+  // SCREENER_UNIVERSE is a static, build-time array, so this is safe to
+  // cache for as long as this deployment is live.
+  return NextResponse.json(
+    { results },
+    { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+  );
 }
