@@ -577,12 +577,24 @@ export class TZEngine {
     for (const [pid, events] of perBranchEvents) {
       const pcNow = this.branches.get(pid);
       if (collaterallyTerminated.has(pid)) continue;
+      // Real-data bug (ICICIBANK.NS G): once a newer sibling has already
+      // won the race (racedOutByNewerTzBuy2), this chain's ENTIRE REAR
+      // family -- not just REAR 2's own confirmation/re-entry, which is
+      // all the earlier fix covered -- is backend bookkeeping only: its
+      // reference keeps climbing/tracking internally (so state stays
+      // correct if the race ever reopens), but none of REAR/REAR 2/REAR
+      // RE-ENTER's own HH/LL/SL/2 text should reach the visible output.
+      // Confirmed wrong: REAR SL(G) showing on 02/03/2026, the same day
+      // TZ BUY 2 SL(H) finally failed -- "no need to show them if the
+      // later cycle has won the race."
+      const racedOut = pcNow !== undefined && this.racedOutByNewerTzBuy2(pcNow);
+      const eligible = racedOut ? events.filter((e) => !e.includes("REAR")) : events;
       if (pcNow !== undefined && pcNow.dormant && pid !== newBranchId) {
         if (exemptionBlockedPids.has(pid)) continue;
-        visible.push(...events.filter((e) => isMilestone(e) || isSlOrLl(e)));
-        if (events.some((e) => isMilestone(e))) pcNow.dormant = false;
+        visible.push(...eligible.filter((e) => isMilestone(e) || isSlOrLl(e)));
+        if (eligible.some((e) => isMilestone(e))) pcNow.dormant = false;
       } else {
-        visible.push(...events);
+        visible.push(...eligible);
       }
     }
 
