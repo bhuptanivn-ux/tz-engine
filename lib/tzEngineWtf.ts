@@ -1537,6 +1537,24 @@ export class TZEngine {
           // the BAR SL2." This lineage is simply a parked dead end from
           // here: only a fresh BAR reform (bottom of this function) is
           // the way forward.
+          //
+          // Real-data bug (ETERNAL.NS D.10/D.11): this dead end used to
+          // just sit in buy.barLineages, produced by `continue` alone,
+          // until some later candle's opportunistic fresh-BAR cleanup
+          // finally swept it out. Every "newest lineage" computation
+          // elsewhere (isNewest above, the fresh-BAR-ready check below)
+          // takes literal array position, so a zombie dead end sitting
+          // after a still-live lineage wrongly shadowed that live
+          // lineage as "not newest" for however many candles it lingered
+          // -- in one real case, for weeks. Pruned immediately instead:
+          // it contributes nothing from here on anyway, so removing it
+          // the moment it's recognized (rather than waiting for the
+          // later cleanup) changes nothing about ITS OWN output, only
+          // fixes who counts as newest behind it.
+          const idx = buy.barLineages.indexOf(lin);
+          if (idx !== -1) buy.barLineages.splice(idx, 1);
+          const deadNum = parseInt(lin.label.split(".").pop() as string, 10);
+          buy.barDeadLabels.add(deadNum);
           continue;
         }
 
@@ -1561,7 +1579,29 @@ export class TZEngine {
           // same label; a non-newest lineage just gets marked invalidated
           // and stops being tracked (see the sl.invalidated short-circuit
           // above, and the survivor filter above this function's own loop).
-          const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
+          //
+          // Real-data bug (ETERNAL.NS D.10/D.11): "newest" for this
+          // purpose is NOT literal array position. A permanently-dead
+          // parked lineage (bar2 === null, its own bare SL already fired
+          // -- the dead-end case just above this block) can sit after a
+          // still-live, bar2-escalated lineage in buy.barLineages for
+          // many candles before the opportunistic fresh-BAR cleanup
+          // finally sweeps it out. Confirmed: a BAR SL is NOT a dead end
+          // the way BAR SL 2 is -- "it opens the door for another BAR as
+          // long as there is no BAR SL 2" -- so the still-live lineage
+          // directly behind such a zombie must still be treated as THE
+          // newest, free to reform under its own label the moment it
+          // recovers, exactly as if the dead entry had already been
+          // pruned.
+          let newestLiveIdx = -1;
+          for (let i = buy.barLineages.length - 1; i >= 0; i--) {
+            const l = buy.barLineages[i];
+            if (!(l.bar2 === null && l.sl !== null)) {
+              newestLiveIdx = i;
+              break;
+            }
+          }
+          const isNewest = newestLiveIdx !== -1 && lin === buy.barLineages[newestLiveIdx];
           if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
             linEv.push(`INVALID BAR SL(${lin.label})`);
             buy.barHighPool = Math.max(buy.barHighPool, cur.h);
