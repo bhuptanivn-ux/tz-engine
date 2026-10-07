@@ -1469,6 +1469,15 @@ export class TZEngine {
             lin.sl = new BarSL(cur.h, cur.l);
             buy.red1 = null;
             lin.red1Since = false;
+            // Real-data bug (ICICIBANK.NS hypothetical, confirmed): the
+            // same candle that breaches this lineage's own BAR SL
+            // reference can ALSO be the opening leg of a fresh RED1
+            // pullback measured from its own peak -- a big enough single
+            // drop is both at once, and the old code discarded the RED1
+            // opportunity entirely by continuing past it unchecked.
+            if (lin === newestForRed1 && !lin.red2Ever) {
+              linEv.push(...this.attachFreshRed1(pc, buy, lin, prev, cur));
+            }
             continue;
           }
           if (lin === newestForRed1) {
