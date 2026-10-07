@@ -784,7 +784,17 @@ export class TZEngine {
     }
 
     if (newestLin !== null && newestLin.bar2 !== null) {
-      const surviving = buy.barLineages.filter((l) => l === newestLin || l.sl !== null);
+      // Real-data bug (ICICIBANK.NS G.1): a lineage that has already
+      // recovered above its own BAR SL reference high (sl.invalidated) has
+      // nothing left to track toward -- its own BAR SL 2 is off the table
+      // once that recovery happened. Once a newer BAR has reached BAR 2 (a
+      // genuine BAR1-BAR2 active elsewhere), such an invalidated lineage is
+      // terminated here, same as one that was never SL'd at all; only a
+      // still-un-invalidated SL'd lineage keeps its "track toward BAR SL 2"
+      // privilege.
+      const surviving = buy.barLineages.filter(
+        (l) => l === newestLin || (l.sl !== null && !l.sl.invalidated),
+      );
       buy.barLineages = surviving;
       for (const linSurvivor of surviving) {
         ev.push(...(bar2EvByLabel.get(linSurvivor.label) ?? []));
@@ -1247,7 +1257,18 @@ export class TZEngine {
     if (rear.rear2 === null) {
       if (rear.sl === null) {
         const ref = preTodayRearRef !== null ? preTodayRearRef : rear.refHigh;
-        if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
+        // Real-data bug (ICICIBANK.NS): REAR itself confirmed before a
+        // newer sibling won the race, but the escalation to REAR 2 can
+        // still happen LATER, after that sibling's own TZ BUY 2 already
+        // won. Same rule as REAR's own confirmation (racedOutByNewerTzBuy2)
+        // -- once won, no further escalation in this chain, backend only.
+        if (
+          cur.l >= prev.l &&
+          cur.h > ref &&
+          cur.h - ref >= THRESH - EPS &&
+          cur.c >= ref &&
+          !this.racedOutByNewerTzBuy2(pc)
+        ) {
           rear.rear2 = new Bar2(cur.h, cur.l);
           ev.push(`REAR 2(${label})`);
         }
@@ -1265,7 +1286,13 @@ export class TZEngine {
     const r2 = rear.rear2;
     if (r2.slActive) {
       const ref = r2.reentryThreshold !== null ? r2.reentryThreshold : r2.refHigh;
-      if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
+      if (
+        cur.l >= prev.l &&
+        cur.h > ref &&
+        cur.h - ref >= THRESH - EPS &&
+        cur.c >= ref &&
+        !this.racedOutByNewerTzBuy2(pc)
+      ) {
         r2.refHigh = cur.h;
         r2.refLow = cur.l;
         r2.slActive = false;
@@ -1425,21 +1452,26 @@ export class TZEngine {
         }
 
         if (!sl.sl2) {
-          // Confirmed: "VALID BAR should not stop the BAR SL 2 from
-          // occurring" / "should a lineage that's already reached BAR 2
-          // keep being tracked toward BAR SL2 even after a newer
-          // sibling has taken over newest status? YES." The recovery/
-          // reactivation shape is a privilege of the newest (live) bar
-          // only -- a non-newest, still-racing-in-the-background
-          // lineage must never be dropped just because price also
-          // happens to satisfy that shape; it keeps running its own
-          // plain quiet-climb/BAR SL2 watch below exactly as if this
-          // check didn't apply to it at all.
+          // Real-data bug (ICICIBANK.NS G.1): INVALID BAR SL is compulsory
+          // to record once price closes back above a lineage's own BAR SL
+          // reference high -- it is NOT a privilege of the newest lineage.
+          // Confirmed wrong: "BAR SL HH ... There is no use of this. Once
+          // closed above the BAR SL reference high, INVALID BAR SL
+          // occurs." Gating it behind isNewest (as "VALID BAR should not
+          // stop BAR SL 2 from occurring" originally did, confirmed on
+          // SUZLON.NS B.6/B.7) only applies to a lineage that NEVER
+          // recovers above its own SL reference -- that one legitimately
+          // keeps climbing/BAR-SL2-watching forever in the background.
+          // Once it DOES recover (this check fires), only the newest
+          // lineage gets to literally reform as a fresh BAR under the
+          // same label; a non-newest lineage just gets marked invalidated
+          // and stops being tracked (see the sl.invalidated short-circuit
+          // above, and the survivor filter above this function's own loop).
           const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
-          if (isNewest && cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
+          if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
             linEv.push(`INVALID BAR SL(${lin.label})`);
             buy.barHighPool = Math.max(buy.barHighPool, cur.h);
-            if (this.barEntryShape(prev, cur)) {
+            if (isNewest && this.barEntryShape(prev, cur)) {
               lin.sl = null;
               lin.refHigh = cur.h;
               lin.refLow = cur.l;
