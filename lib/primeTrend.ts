@@ -1026,30 +1026,60 @@ export const DTF_SL_EXIT_TYPES = new Set([
   "DTF PBAR SL + DTF PBAR ENTRY SL",
 ]);
 
+interface WtfBarWindow {
+  formationDate: string;
+  endDate: string | null;
+  endReason: "BAR SL" | "new BAR" | null;
+}
+
 /** The WTF engine's own native "BAR(" milestone (lib/tzEngineWtf.ts's
  * RED1->RED2->BAR1 cascade, run on WEEKLY candles) formed by THIS
  * instance's own branch (matched by the WTF engine's own label
  * convention, `${letter}.${n}` -- lib/tzEngineWtf.ts's `nextBarLabel`),
  * within this instance's own window. This is the "WTF BAR" trigger for
- * the DTF PBAR/PBAR ENTRY ladder below, scoped to one specific instance
- * rather than scanned globally across the whole WTF series. Dates only
- * (not resolved to a pid) -- by construction every "BAR(" label under
- * this letter belongs to this instance's own branch for as long as that
- * branch is alive (branch letters never get reused while still alive --
- * see the branch-letter-recycling note on WtfInstance above). */
-function wtfBarFormationDatesForLetter(
+ * the DTF PBAR/PBAR ENTRY ladder below. Each formation (first, or a
+ * later reform) governs its own window, ending at EITHER that specific
+ * label's own CONFIRMED "BAR SL(label)" (the WTF engine's own
+ * `^BAR SL\(` anchor excludes a later "INVALID BAR SL(label)" --
+ * confirmed: a provisional WTF BAR SL that the engine itself later
+ * retracts still counts as a real failure for PBAR purposes, requiring
+ * a brand new DTF RED1 once the label reforms -- verified against real
+ * COCHINSHIP.NS data, where WTF BAR(B.1) SL'd 22/05/23, got marked
+ * "INVALID" and reformed 29/05/23, and DTF only resumed seeking via a
+ * fresh RED1 on 07/06/23, not immediately off the already-unlocked
+ * pre-22/05 door) OR a fresh "BAR(" formation line, whichever comes
+ * first -- same shape as lib/tarTbar.ts's own `findWindows`, just
+ * scoped to this one instance's own letter and date bounds rather than
+ * scanned globally. "WTF BAR active" (the continuous precondition for
+ * PBAR/PBAR ENTRY, alongside WTF TZ BUY 2 and "DTF BAR ENTRY inactive")
+ * means "within one of these windows, before its own endDate". */
+function wtfBarWindowsForLetter(
   wtfTrace: WtfTraceEntry[],
   letter: string,
   formationDate: string,
   endDate: string
-): string[] {
-  const prefix = `BAR(${letter}.`;
-  const dates: string[] = [];
+): WtfBarWindow[] {
+  const formPrefix = `BAR(${letter}.`;
+  const slPrefix = `BAR SL(${letter}.`;
+  const formations: string[] = [];
+  const sls: string[] = [];
   for (const { day, events } of wtfTrace) {
     if (day.date <= formationDate || day.date > endDate) continue;
-    if (events.some((e) => e.startsWith(prefix) && e.endsWith(")"))) dates.push(day.date);
+    for (const e of events) {
+      if (e.startsWith(formPrefix) && e.endsWith(")")) formations.push(day.date);
+      if (e.startsWith(slPrefix) && e.endsWith(")")) sls.push(day.date);
+    }
   }
-  return dates;
+  const windows: WtfBarWindow[] = [];
+  for (let i = 0; i < formations.length; i++) {
+    const f = formations[i];
+    const next = formations[i + 1] ?? null;
+    const matchingSl = sls.find((sl) => sl > f && (next === null || sl < next));
+    if (matchingSl) windows.push({ formationDate: f, endDate: matchingSl, endReason: "BAR SL" });
+    else if (next) windows.push({ formationDate: f, endDate: next, endReason: "new BAR" });
+    else windows.push({ formationDate: f, endDate: null, endReason: null });
+  }
+  return windows;
 }
 
 /** Merges the WTF anchor's own terminal failure label onto the last
@@ -1115,17 +1145,22 @@ function simulateDtfAll(
   let barState: BarLevelState | null = null;
   const rows: PrimeTrendResult[] = [];
 
-  // --- DTF PBAR / PBAR ENTRY -- own continuous ladder (see this
-  // module's header for the full derivation), scoped to this WHOLE
-  // instance's own window, NOT reset per individual WTF BAR reform.
-  // Starts once, at the FIRST qualifying WTF BAR under this letter where
-  // DTF BAR ENTRY is NOT currently active -- checked in order across
-  // every qualifying WTF BAR until one passes, since an earlier one
-  // might fail the gate while a later one succeeds. Once started, runs
-  // on its own for the rest of this instance's window regardless of any
-  // later WTF BAR reform under the same letter.
-  const pbarCandidateDates = wtfBarFormationDatesForLetter(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
-  let pbarCandidateIdx = 0;
+  // --- DTF PBAR / PBAR ENTRY -- own ladder (see this module's header
+  // for the full derivation). Requires THREE conditions simultaneously,
+  // continuously, not just once at the start: WTF BAR (this specific
+  // label) active, WTF TZ BUY 2 active (already guaranteed -- this
+  // whole function only runs within this instance's own window), and
+  // DTF BAR ENTRY inactive. The moment WTF BAR's own governing window
+  // ends (its own confirmed SL, or a fresh reform superseding it -- see
+  // wtfBarWindowsForLetter), the ladder is wiped outright (any open
+  // PBAR ENTRY force-closed) and can only restart fresh at the NEXT
+  // qualifying window -- it does NOT carry over accumulated RED-gate
+  // state across that boundary (confirmed via real COCHINSHIP.NS data:
+  // WTF BAR(B.1) SL'd then reformed a week later, and DTF needed a
+  // brand new RED1 afterward, not an immediate reform off the
+  // already-unlocked pre-SL door).
+  const pbarWindows = wtfBarWindowsForLetter(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
+  let pbarWindowIdx = 0;
   let pbarState: PbarLevelState | null = null;
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
@@ -1293,14 +1328,52 @@ function simulateDtfAll(
       }
     }
 
-    // --- DTF PBAR / PBAR ENTRY -- starts once, at the first qualifying
-    // WTF BAR under this letter where DTF BAR ENTRY is not currently
-    // active; then runs continuously (ignoring further candidates).
-    while (pbarState === null && pbarCandidateIdx < pbarCandidateDates.length && cur.date > pbarCandidateDates[pbarCandidateIdx]) {
-      const barEntryActive = barState !== null && barState.mode === "BAR_ENTRY_ACTIVE";
-      pbarCandidateIdx += 1;
-      if (!barEntryActive) pbarState = new PbarLevelState();
+    // --- DTF PBAR / PBAR ENTRY --------------------------------------
+    const barEntryActiveNow = barState !== null && barState.mode === "BAR_ENTRY_ACTIVE";
+
+    // "DTF BAR ENTRY inactive" is also a continuous precondition -- if
+    // BAR ENTRY becomes active while PBAR is only seeking (not yet in
+    // an active tier; once PBAR is in an active tier the exclusivity
+    // rule above already prevents BAR ENTRY from ever forming), wipe
+    // the seeking structure outright. Nothing to close -- no entry was
+    // ever open in these modes.
+    if (pbarState !== null && barEntryActiveNow && (pbarState.mode === "SEEK_PBAR" || pbarState.mode === "SEEK_REACTIVATION")) {
+      pbarState = null;
     }
+
+    // WTF BAR's own governing window ending (its own confirmed SL, or a
+    // fresh reform superseding it) wipes the ladder outright too -- any
+    // open PBAR ENTRY is force-closed, and a fresh structure can only
+    // start at the NEXT qualifying window.
+    while (pbarWindowIdx < pbarWindows.length && pbarWindows[pbarWindowIdx].endDate !== null && cur.date > (pbarWindows[pbarWindowIdx].endDate as string)) {
+      if (pbarState !== null && pbarState.mode === "PBAR_ENTRY_ACTIVE" && pbarState.rowEntryDate !== null) {
+        const windowExitType =
+          pbarWindows[pbarWindowIdx].endReason === "BAR SL" ? "WTF BAR SL (wipes ENTRY)" : "WTF BAR reform (wipes ENTRY)";
+        pushRow(
+          0,
+          "PBAR ENTRY",
+          pbarState.rowEntryDate,
+          pbarState.rowEntryPrice as number,
+          windowExitType,
+          pbarWindows[pbarWindowIdx].endDate as string,
+          pbarState.pbarEntryRefLow,
+          pbarState.rowHH,
+          pbarState.rowHHDate
+        );
+      }
+      pbarState = null;
+      pbarWindowIdx += 1;
+    }
+
+    // Start a fresh structure once we're inside a qualifying window,
+    // nothing is currently running, and DTF BAR ENTRY is inactive.
+    if (pbarState === null && pbarWindowIdx < pbarWindows.length) {
+      const w = pbarWindows[pbarWindowIdx];
+      if (cur.date > w.formationDate && (w.endDate === null || cur.date <= w.endDate) && !barEntryActiveNow) {
+        pbarState = new PbarLevelState();
+      }
+    }
+
     if (pbarState !== null) {
       const { opened, closed } = stepPbarLevel(pbarState, prev, cur);
       if (opened) {
