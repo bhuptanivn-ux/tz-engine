@@ -35,49 +35,45 @@
 // reactivation (above its own earlier reference high, unchanged) starts
 // a brand new BAR/BAR ENTRY window from scratch every time.
 //
-// WTF PBAR / DTF PBAR / PBAR ENTRY -- "3 types of bar theory", Type 1: a
-// SECOND, independent route to the same "PRIME TREND confirmed" goal,
-// racing the BAR/BAR ENTRY ladder above. This instance's own WTF-side
-// RED1->RED2->BAR1 cascade (lib/tzEngineWtf.ts, run on WEEKLY candles --
-// the same "BAR(label)" milestone lib/tarTbar.ts's TAR/TBAR anchors on)
-// produces its own BAR, WHILE DTF TZ BUY (Stage 1) is NOT currently
-// active. (BAR ENTRY can only ever be active while TZ BUY is active too
-// -- barState is created exactly on TZ BUY's own (re)formation and wiped
-// exactly on its own SL -- so "no active TZ BUY" already implies "no
-// active BAR ENTRY either"; there's no separate tier-2 check to make.)
-// At that point DTF starts seeking its OWN RED1 (or RED1-RED2) and its
-// own BAR -> BAR ENTRY cascade, using the IDENTICAL BarLevelState/
-// stepBarLevel mechanics as BAR/BAR ENTRY (same continuous RED1->RED2
-// tracker, same parent/child dependency, same nested BAR1/BAR2 routine
-// phase, same decisive-SL-to-REAR rule) -- confirmed rule-for-rule
-// identical, just tagged "PBAR" instead of "BAR" so the two tracks' rows
-// stay unambiguous (PBAR ENTRY / PBAR REAR ENTRY / PBAR REAR RE-ENTER /
-// PBAR2, vs BAR ENTRY / REAR ENTRY / REAR RE-ENTER / BAR2).
+// DTF TAR / TAR ENTRY (escalating to PBAR / PBAR ENTRY) -- a SECOND,
+// independent route to the same "PRIME TREND confirmed" goal, alongside
+// the BAR/BAR ENTRY ladder above. Reuses lib/tarTbar.ts's own TAR/TBAR
+// engine AS-IS (same WTF-native "BAR(label)" milestone anchor, same
+// continuous RED1->RED2 tracker, same TAR->TBAR parent/child dependency,
+// same nested BAR1/BAR2 routine phase, same decisive-TAR-SL-escalation
+// rule) -- just reported under PRIME TREND's own names: tarTbar.ts's
+// "TBAR" is this module's "TAR ENTRY", its "REAR"/"REAR ENTRY"/"REAR
+// RE-ENTER" (the escalation past a decisive TAR SL, gated by a complete
+// RED1-RED2 at that TAR's own formation) are this module's "PBAR"/"PBAR
+// ENTRY"/"PBAR RE-ENTER", and its nested-cycle "BAR2" row is this
+// module's "TAR2".
 //
-// Triggers AT MOST ONCE per instance -- the first WTF BAR (first
-// formation, or a later reform after the WTF side's own BAR SL) that
-// occurs while DTF TZ BUY isn't currently active. DTF starts watching
-// from the day after that WTF BAR's own formation date -- same "day
-// after formation" convention tarTbar.ts uses.
+// Gate for STARTING this track at a given qualifying WTF BAR (this
+// instance's own branch, same RED1->RED2->BAR1 cascade): DTF BAR ENTRY
+// must NOT be currently active at that moment. Nothing else about DTF's
+// own TZ BUY/BAR/BAR ENTRY state matters -- occurred or never occurred,
+// active or not, confirmed-then-SL'd -- only BAR ENTRY's CURRENT state.
+// Checked independently at EVERY qualifying WTF BAR under this
+// instance's letter (not just the first ever): if DTF keeps climbing via
+// TZ BUY -> BAR -> BAR ENTRY, that's the confirmed entry; if that fails
+// at any stage and a fresh WTF RED1-RED2-BAR occurs while BAR ENTRY
+// isn't currently active, DTF shifts to this TAR/PBAR track instead.
+// DTF starts watching from the day after that WTF BAR's own formation
+// date, same "day after formation" convention tarTbar.ts uses.
 //
-// It's then a RACE against DTF TZ BUY's own reactivation (above its own
-// frozen reference high, same as always): whichever confirms first wins.
-// Once PBAR reaches an active tier (PBAR itself, or PBAR ENTRY), TZ BUY's
-// reactivation breakout is blocked outright -- that race is decided, TZ
-// BUY stays dormant for as long as PBAR remains in an active tier (same
-// shape as TZ ENGINE's own BAR-SL2 race between a brand new cycle
-// reaching TZ BUY and REAR forming -- only one side of a race actually
-// gets to occur). If PBAR later drops back out of an active tier (its
-// own SL, seeking its own reformation/reactivation), TZ BUY's
-// reactivation watch resumes normally in the meantime.
+// So in total there are 3 named ways PRIME TREND confirms an entry: BAR
+// ENTRY, TAR ENTRY, and PBAR ENTRY (PBAR RE-ENTER collapsing further
+// escalations of the latter).
 //
 // WTF BAR itself needs no separate name here -- it's the same WTF-native
-// "BAR(label)" milestone in every one of the 3 types (Type 2: WTF BAR
-// after a DTF SAR exit -> TAR/TBAR, lib/tarTbar.ts; Type 3: WTF RED2 with
-// no DTF SAR -> unrestricted nested BAR1/BAR2, not yet implemented) --
-// what differs is only the DTF-side response.
+// "BAR(label)" milestone in every one of the "3 types of bar theory"
+// (Type 2: WTF BAR after a DTF SAR exit -> TAR/TBAR, lib/tarTbar.ts,
+// reused directly above; Type 3: WTF RED2 with no DTF SAR -> unrestricted
+// nested BAR1/BAR2, not yet implemented) -- what differs is only the
+// DTF-side response.
 
 import { ANY, branchLabel, Day, EPS, THRESH, TZEngine, ParentCycle } from "./tzEngineWtf";
+import { computeTarTbar, type TarTbarResult, type TarTbarLiveStatus } from "./tarTbar";
 
 export type PrimeTrendFamily = "TZ BUY 2" | "REAR 2" | "REAR RE-ENTER 2";
 
@@ -89,14 +85,15 @@ export interface PrimeTrendResult {
   // (collapsed); "side" names which of those this row is, or "BAR2" for
   // the nested BAR1->BAR2 cycle's own row (see the BAR/BAR ENTRY section
   // below) -- a BAR2 row OVERLAPS its enclosing level's own row rather
-  // than replacing it. The "PBAR..." variants are the WTF-BAR-triggered
-  // racing track (Type 1 of the "3 types of bar theory" -- see the PBAR
-  // section below): structurally identical tiers/rules, just anchored on
-  // WTF's own BAR milestone instead of DTF TZ BUY -- it's a race against
-  // the BAR/BAR ENTRY track above (whichever reaches an active tier
-  // first wins; see the PBAR section for the exact exclusivity rule).
+  // than replacing it. "TAR ENTRY" / "PBAR ENTRY" / "PBAR RE-ENTER" /
+  // "TAR2" are the WTF-BAR-anchored TAR/TBAR track (reusing
+  // lib/tarTbar.ts's own engine -- see that module's header, and the DTF
+  // TAR / TAR ENTRY section below): "TAR ENTRY" is tarTbar.ts's "TBAR",
+  // "PBAR ENTRY"/"PBAR RE-ENTER" are its "REAR ENTRY"/"REAR RE-ENTER",
+  // "TAR2" is its nested-cycle "BAR2" row -- same OVERLAPS-rather-than-
+  // replaces convention.
   level: number;
-  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "PBAR ENTRY" | "PBAR REAR ENTRY" | "PBAR REAR RE-ENTER" | "PBAR2";
+  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "TAR ENTRY" | "PBAR ENTRY" | "PBAR RE-ENTER" | "TAR2";
   entryDate: string;
   entryPrice: number;
   exitType: string;
@@ -148,18 +145,21 @@ export interface PrimeTrendLiveStatus {
   stage2StopLoss: number | null;
   stage2HighestHigh: number | null;
   stage2HighestHighDate: string | null;
-  // The WTF-BAR-triggered PBAR/PBAR ENTRY racing track (Type 1 of the "3
-  // types of bar theory" -- see the PBAR section below). Independent of
-  // Stage 1/Stage 2: can be active even if Stage 1 has since SL'd, since
-  // it's anchored on the WTF side, not on DTF TZ BUY.
-  // PBAR itself (tier 1 of that track) currently active.
+  // The WTF-BAR-anchored DTF TAR/TAR ENTRY (escalating to PBAR/PBAR
+  // ENTRY) track -- reuses lib/tarTbar.ts's own TAR/TBAR engine as-is
+  // (see the DTF TAR / TAR ENTRY section below). Gated at its own
+  // starting WTF BAR on "DTF BAR ENTRY not currently active then", but
+  // otherwise independent of Stage 1/Stage 2 from that point on.
+  // Tier 1 (TAR itself, or PBAR = tarTbar.ts's "REAR" one level up)
+  // currently active -- not yet escalated to its own tier-2 entry.
   pbarTier1Active: boolean;
   pbarTier1Since: string | null;
   pbarTier1ActivationPrice: number | null;
   pbarTier1StopLoss: number | null;
   pbarTier1HighestHigh: number | null;
   pbarTier1HighestHighDate: string | null;
-  // PBAR ENTRY (tier 2 of that track) currently active.
+  // Tier 2 -- TAR ENTRY, or PBAR ENTRY/PBAR RE-ENTER one level up --
+  // currently active (a confirmed entry is open right now).
   pbarActive: boolean;
   pbarSince: string | null;
   pbarActivationPrice: number | null;
@@ -245,24 +245,32 @@ type BarMode =
   | "SEEK_BAR_ENTRY_REACTIVATION"
   | "SEEK_REACTIVATION";
 
-// "BAR" is the DTF-TZ-BUY-anchored track; "PBAR" is the WTF-BAR-triggered
-// racing track (see the PBAR section below) -- identical mechanics,
-// different anchor and different row naming so the two tracks' rows stay
-// unambiguous when they appear side by side in the same results list.
-type BarTag = "BAR" | "PBAR";
-
-function sideForBarLevel(
-  level: number,
-  tag: BarTag
-): "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "PBAR ENTRY" | "PBAR REAR ENTRY" | "PBAR REAR RE-ENTER" {
-  if (tag === "PBAR") {
-    return level === 0 ? "PBAR ENTRY" : level === 1 ? "PBAR REAR ENTRY" : "PBAR REAR RE-ENTER";
-  }
+function sideForBarLevel(level: number): "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" {
   return level === 0 ? "BAR ENTRY" : level === 1 ? "REAR ENTRY" : "REAR RE-ENTER";
 }
 
+// Maps lib/tarTbar.ts's own row shape onto PRIME TREND's names: "TBAR" ->
+// "TAR ENTRY", "REAR ENTRY"/"REAR RE-ENTER" -> "PBAR ENTRY"/"PBAR
+// RE-ENTER" (the escalation past a decisive TAR SL), "BAR2" (its nested
+// BAR1->BAR2 cycle) -> "TAR2". exitType strings are likewise reworded
+// into PRIME TREND's own "DTF ..." convention.
+const TAR_TBAR_SIDE_MAP: Record<TarTbarResult["side"], PrimeTrendResult["side"]> = {
+  TBAR: "TAR ENTRY",
+  "REAR ENTRY": "PBAR ENTRY",
+  "REAR RE-ENTER": "PBAR RE-ENTER",
+  BAR2: "TAR2",
+};
+const TAR_TBAR_EXIT_TYPE_MAP: Record<string, string> = {
+  "TAR SL": "DTF TAR SL (wipes ENTRY)",
+  "TAR SL + TBAR SL": "DTF TAR SL + DTF TAR ENTRY SL",
+  "TBAR SL": "DTF TAR ENTRY SL",
+  "PRIME TREND SL": "DTF TAR 2 SL",
+};
+function translateTarTbarRow(r: TarTbarResult): { side: PrimeTrendResult["side"]; exitType: string } {
+  return { side: TAR_TBAR_SIDE_MAP[r.side], exitType: TAR_TBAR_EXIT_TYPE_MAP[r.exitType] ?? r.exitType };
+}
+
 class BarLevelState {
-  tag: BarTag;
   mode: BarMode;
   level: number;
   doorOpen = false;
@@ -305,8 +313,7 @@ class BarLevelState {
   nestedHH = 0;
   nestedHHDate: string | null = null;
 
-  constructor(level: number, topRefFloor: number | null, tag: BarTag = "BAR") {
-    this.tag = tag;
+  constructor(level: number, topRefFloor: number | null) {
     this.level = level;
     this.topRef = topRefFloor ?? 0;
     this.mode = topRefFloor === null ? "SEEK_BAR" : "SEEK_LEVEL_ENTRY";
@@ -452,7 +459,7 @@ function stepBarLevel(
         // deferred for now: entry-only scope, no promotion). Exit price
         // is BAR's own tracked reference low either way.
         s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
-        const exitType = entrySlNow ? `DTF ${s.tag} SL + DTF ${s.tag} ENTRY SL` : `DTF ${s.tag} SL (wipes ENTRY)`;
+        const exitType = entrySlNow ? "DTF BAR SL + DTF BAR ENTRY SL" : "DTF BAR SL (wipes ENTRY)";
         closed = { exitType, exitPrice: s.barRefLow };
         s.mode = "SEEK_REACTIVATION";
         s.nestedMode = "NONE";
@@ -463,7 +470,7 @@ function stepBarLevel(
         // background. Races BAR ENTRY's own direct reactivation against
         // BAR's own (now decisive, if it comes first) SL -- see
         // SEEK_BAR_ENTRY_REACTIVATION below.
-        closed = { exitType: `DTF ${s.tag} ENTRY SL`, exitPrice: s.barEntryRefLow };
+        closed = { exitType: "DTF BAR ENTRY SL", exitPrice: s.barEntryRefLow };
         s.mode = "SEEK_BAR_ENTRY_REACTIVATION";
         s.nestedMode = "NONE";
         break;
@@ -862,9 +869,9 @@ export const DTF_SL_EXIT_TYPES = new Set([
   "DTF BAR ENTRY SL",
   "DTF BAR SL (wipes ENTRY)",
   "DTF BAR SL + DTF BAR ENTRY SL",
-  "DTF PBAR ENTRY SL",
-  "DTF PBAR SL (wipes ENTRY)",
-  "DTF PBAR SL + DTF PBAR ENTRY SL",
+  "DTF TAR ENTRY SL",
+  "DTF TAR SL (wipes ENTRY)",
+  "DTF TAR SL + DTF TAR ENTRY SL",
 ]);
 
 /** The WTF engine's own native "BAR(" milestone (lib/tzEngineWtf.ts's
@@ -872,14 +879,14 @@ export const DTF_SL_EXIT_TYPES = new Set([
  * instance's own branch (matched by the WTF engine's own label
  * convention, `${letter}.${n}` -- lib/tzEngineWtf.ts's `nextBarLabel`),
  * within this instance's own window. This is the "WTF BAR" trigger for
- * the PBAR/PBAR ENTRY racing track below (Type 1 of the "3 types of bar
- * theory") -- the identical WTF BAR milestone lib/tarTbar.ts's own
- * TAR/TBAR anchors on, just scoped here to one specific instance rather
- * than scanned globally across the whole WTF series. Dates only (not
- * resolved to a pid) -- by construction every "BAR(" label under this
- * letter belongs to this instance's own branch for as long as that
- * branch is alive (branch letters never get reused while still alive --
- * see the branch-letter-recycling note on WtfInstance above). */
+ * the DTF TAR/TAR ENTRY track below -- the identical WTF BAR milestone
+ * lib/tarTbar.ts's own TAR/TBAR anchors on, just scoped here to one
+ * specific instance rather than scanned globally across the whole WTF
+ * series. Dates only (not resolved to a pid) -- by construction every
+ * "BAR(" label under this letter belongs to this instance's own branch
+ * for as long as that branch is alive (branch letters never get reused
+ * while still alive -- see the branch-letter-recycling note on
+ * WtfInstance above). */
 function wtfBarFormationDatesForLetter(
   wtfTrace: WtfTraceEntry[],
   letter: string,
@@ -896,15 +903,14 @@ function wtfBarFormationDatesForLetter(
 }
 
 /** Merges the WTF anchor's own terminal failure label onto the last
- * (non-nested) row of ONE specific track ("BAR" or "PBAR") -- the two
- * racing tracks are interleaved in `rows` in whatever order they
- * actually closed, so each track's own trailing row must be found and
- * merged independently rather than assuming the array's last entry
- * overall belongs to the track that deserves the merge. */
-function mergeTrailingWtfSl(rows: PrimeTrendResult[], tag: BarTag, label: string | null) {
+ * (non-nested) row among the given `sides` -- the BAR/BAR ENTRY ladder's
+ * rows and the TAR/TBAR track's rows (reused from lib/tarTbar.ts) are
+ * interleaved in `rows` in whatever order they actually closed, so each
+ * track's own trailing row must be found and merged independently rather
+ * than assuming the array's last entry overall belongs to the track that
+ * deserves the merge. */
+function mergeTrailingWtfSl(rows: PrimeTrendResult[], sides: PrimeTrendResult["side"][], label: string | null) {
   if (label === null) return;
-  const sides: PrimeTrendResult["side"][] =
-    tag === "BAR" ? ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER"] : ["PBAR ENTRY", "PBAR REAR ENTRY", "PBAR REAR RE-ENTER"];
   for (let r = rows.length - 1; r >= 0; r--) {
     if (!sides.includes(rows[r].side)) continue;
     if (DTF_SL_EXIT_TYPES.has(rows[r].exitType)) {
@@ -938,7 +944,8 @@ function simulateDtfAll(
   dtfDays: Day[],
   wtfTrace: WtfTraceEntry[],
   wtfDates: string[],
-  inst: WtfInstance
+  inst: WtfInstance,
+  tarTbar: { results: TarTbarResult[]; live: TarTbarLiveStatus[] }
 ): [PrimeTrendResult[], PrimeTrendLiveStatus | null] {
   const checkpoints = wtfCheckpoints(wtfTrace, inst.family, inst.letter, inst.formationDate, inst.endDate);
 
@@ -959,35 +966,30 @@ function simulateDtfAll(
   let barState: BarLevelState | null = null;
   const rows: PrimeTrendResult[] = [];
 
-  // --- WTF PBAR / DTF PBAR / PBAR ENTRY -- Type 1 of the "3 types of bar
-  // theory": whenever this instance's OWN WTF-side RED1->RED2->BAR1
-  // cascade (lib/tzEngineWtf.ts) produces its own BAR milestone WHILE DTF
-  // TZ BUY (Stage 1) is NOT currently active, that's a second,
-  // independent route to the same "PRIME TREND confirmed" goal -- races
-  // the BAR/BAR ENTRY ladder using the IDENTICAL RED-gated mechanics
-  // (same BarLevelState/stepBarLevel, tagged "PBAR"), confirmed
-  // rule-for-rule identical to BAR/BAR ENTRY. (Checking "TZ BUY not
-  // active" alone is sufficient -- BAR ENTRY can only ever be active
-  // while TZ BUY is active too, see simulateDtfAll's own TZ-BUY-wipes-
-  // BAR-structure handling just above.) Triggers at most once per
-  // instance -- the first qualifying WTF BAR, i.e. the first one (first
-  // formation, or a later reform after the WTF side's own BAR SL) that
-  // occurs while DTF TZ BUY isn't active -- then runs on its own for the
-  // rest of this instance's own window.
+  // --- DTF TAR / TAR ENTRY (escalating to PBAR / PBAR ENTRY) -- reuses
+  // lib/tarTbar.ts's own TAR/TBAR engine as-is (see that module's header,
+  // and this module's own header comment above). Gate for starting this
+  // track at a given qualifying WTF BAR (this instance's own branch):
+  // DTF BAR ENTRY must NOT be currently active right then -- nothing
+  // else about DTF TZ BUY/BAR's own state matters. Checked independently
+  // at EVERY qualifying WTF BAR under this letter, not just the first.
   //
-  // It's a genuine RACE, not two tracks running forever in parallel:
-  // once PBAR reaches an active tier (PBAR or PBAR ENTRY), DTF TZ BUY's
-  // own reactivation is blocked outright (see the Stage 1 reactivation
-  // branch below) -- the race is decided, TZ BUY (and so the whole
-  // BAR/BAR ENTRY ladder, which only exists while TZ BUY is active)
-  // stays dormant for as long as PBAR remains in an active tier. If PBAR
-  // later drops back out of an active tier (its own SL, now seeking its
-  // own reformation/reactivation), TZ BUY's reactivation watch resumes
-  // in the meantime, same shape as TZ ENGINE's own BAR-SL2 race between a
-  // brand new cycle reaching TZ BUY and REAR forming.
-  const pbarCandidateDates = wtfBarFormationDatesForLetter(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
-  let pbarCandidateIdx = 0;
-  let pbarState: BarLevelState | null = null;
+  // TAR/TBAR's own results were already fully computed up front (see
+  // computePrimeTrend/computePrimeTrendLive) -- no day-by-day
+  // re-simulation needed here, just: for each qualifying WTF BAR where
+  // the gate holds, splice that window's already-resolved rows straight
+  // into this instance's own output, relabeled to PRIME TREND's names.
+  const tarCandidateDates = wtfBarFormationDatesForLetter(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
+  let tarCandidateIdx = 0;
+  let lastAdoptedTarCandidateDate: string | null = null;
+  // Date ranges (across every TAR/PBAR window adopted so far) during
+  // which a confirmed entry (TAR ENTRY / PBAR ENTRY / PBAR RE-ENTER) was
+  // or is open -- while DTF TZ BUY's own reactivation watch is live
+  // (Stage 1 inactive), a reactivation breakout occurring inside one of
+  // these ranges is blocked: that race is already decided in TAR/PBAR's
+  // favor, same rule as before (see the Stage 1 reactivation branch
+  // below). `to === null` means still open as of the data's last day.
+  const tarEntryActiveRanges: { from: string; to: string | null }[] = [];
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
   // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
@@ -1077,16 +1079,16 @@ function simulateDtfAll(
       }
     } else {
       const frozenRef = s1.frozenRef as number;
-      // While PBAR/PBAR ENTRY (the WTF-BAR-triggered racing track below)
-      // is in an active tier, TZ BUY cannot reactivate -- that race is
-      // already decided in PBAR's favor. The reference high still climbs
-      // quietly underneath so that if PBAR later drops back out of an
-      // active tier (into its own SEEK/waiting modes), TZ BUY's
-      // reactivation watch resumes from an accurate reference rather than
-      // a stale pre-PBAR one.
-      const pbarCurrentlyActive =
-        pbarState !== null && (pbarState.mode === "BAR_ACTIVE" || pbarState.mode === "BAR_ENTRY_ACTIVE");
-      if (!pbarCurrentlyActive && breakoutShape(prev, cur, frozenRef)) {
+      // While a TAR ENTRY / PBAR ENTRY / PBAR RE-ENTER is currently open
+      // (see tarEntryActiveRanges above), TZ BUY cannot reactivate --
+      // that race is already decided in TAR/PBAR's favor. The reference
+      // high still climbs quietly underneath so that once that entry
+      // closes, TZ BUY's reactivation watch resumes from an accurate
+      // reference rather than a stale pre-TAR one.
+      const tarEntryActiveNow = tarEntryActiveRanges.some(
+        (r) => cur.date >= r.from && (r.to === null || cur.date <= r.to)
+      );
+      if (!tarEntryActiveNow && breakoutShape(prev, cur, frozenRef)) {
         s1 = new Stage(cur.h, cur.l);
         s1Since = cur.date;
         s1ActivationPrice = cur.h;
@@ -1103,7 +1105,7 @@ function simulateDtfAll(
       if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
         pushRow(
           barState.level,
-          sideForBarLevel(barState.level, "BAR"),
+          sideForBarLevel(barState.level),
           barState.rowEntryDate,
           barState.rowEntryPrice as number,
           "DTF TZ BUY SL (wipes ENTRY)",
@@ -1117,7 +1119,7 @@ function simulateDtfAll(
     }
     // --- TZ BUY's own (re)formation starts a brand new BAR/BAR ENTRY window ---
     if (!wasS1Active && isS1Active) {
-      barState = new BarLevelState(0, null, "BAR");
+      barState = new BarLevelState(0, null);
     }
 
     // --- BAR / BAR ENTRY ladder, only while TZ BUY is active ---
@@ -1130,7 +1132,7 @@ function simulateDtfAll(
       if (closed) {
         pushRow(
           barState.level,
-          sideForBarLevel(barState.level, "BAR"),
+          sideForBarLevel(barState.level),
           barState.rowEntryDate as string,
           barState.rowEntryPrice as number,
           closed.exitType,
@@ -1155,52 +1157,28 @@ function simulateDtfAll(
       }
     }
 
-    // --- WTF PBAR / DTF PBAR / PBAR ENTRY racing track -- triggers once,
-    // on the first WTF BAR formation (for this instance's own branch)
-    // that occurs while DTF TZ BUY is NOT currently active. (BAR ENTRY
-    // can only ever be active while TZ BUY is active too -- barState is
-    // created exactly on TZ BUY's own (re)formation and wiped exactly on
-    // its own SL -- so "no active TZ BUY" already implies "no active BAR
-    // ENTRY either"; no separate check is needed.) Once PBAR reaches an
-    // active tier it blocks TZ BUY's own reactivation in turn (see the
-    // Stage 1 reactivation branch above) -- the race is then decided.
-    while (pbarState === null && pbarCandidateIdx < pbarCandidateDates.length && cur.date > pbarCandidateDates[pbarCandidateIdx]) {
-      const qualifies = !isS1Active;
-      pbarCandidateIdx += 1;
-      if (qualifies) pbarState = new BarLevelState(0, null, "PBAR");
-    }
-    if (pbarState !== null) {
-      const { opened, closed, nestedClosed } = stepBarLevel(pbarState, prev, cur);
-      if (opened) {
-        pbarState.rowEntryDate = cur.date;
-        pbarState.rowEntryPrice = opened.price;
+    // --- DTF TAR / TAR ENTRY (escalating to PBAR / PBAR ENTRY) -- gate
+    // checked at every qualifying WTF BAR under this letter: DTF BAR
+    // ENTRY must not be currently active right then. On a pass, splice
+    // in that window's already-resolved lib/tarTbar.ts rows wholesale.
+    while (tarCandidateIdx < tarCandidateDates.length && cur.date > tarCandidateDates[tarCandidateIdx]) {
+      const candidateDate = tarCandidateDates[tarCandidateIdx];
+      const barEntryActive = barState !== null && barState.mode === "BAR_ENTRY_ACTIVE";
+      tarCandidateIdx += 1;
+      if (barEntryActive) continue;
+      lastAdoptedTarCandidateDate = candidateDate;
+      for (const r of tarTbar.results) {
+        if (!r.wtfLabel.startsWith(`${inst.letter}.`) || r.wtfFormationDate !== candidateDate) continue;
+        const t = translateTarTbarRow(r);
+        pushRow(r.level, t.side, r.entryDate, r.entryPrice, t.exitType, r.exitDate, r.exitPrice as number, r.highestHigh ?? 0, r.highestHighDate);
+        if (t.side === "TAR ENTRY" || t.side === "PBAR ENTRY" || t.side === "PBAR RE-ENTER") {
+          tarEntryActiveRanges.push({ from: r.entryDate, to: r.exitDate });
+        }
       }
-      if (closed) {
-        pushRow(
-          pbarState.level,
-          sideForBarLevel(pbarState.level, "PBAR"),
-          pbarState.rowEntryDate as string,
-          pbarState.rowEntryPrice as number,
-          closed.exitType,
-          cur.date,
-          closed.exitPrice,
-          pbarState.rowHH,
-          pbarState.rowHHDate
-        );
-      }
-      if (nestedClosed) {
-        pushRow(
-          pbarState.level,
-          "PBAR2",
-          nestedClosed.entryDate,
-          nestedClosed.entryPrice,
-          "DTF PBAR 2 SL",
-          cur.date,
-          nestedClosed.exitPrice,
-          nestedClosed.hh,
-          nestedClosed.hhDate
-        );
-      }
+      const liveEntry = tarTbar.live.find(
+        (l) => l.wtfLabel.startsWith(`${inst.letter}.`) && l.wtfFormationDate === candidateDate && (l.side === "TBAR" || l.side === "REAR ENTRY" || l.side === "REAR RE-ENTER")
+      );
+      if (liveEntry) tarEntryActiveRanges.push({ from: liveEntry.since, to: null });
     }
 
     i += 1;
@@ -1213,7 +1191,7 @@ function simulateDtfAll(
     const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
     pushRow(
       barState.level,
-      sideForBarLevel(barState.level, "BAR"),
+      sideForBarLevel(barState.level),
       barState.rowEntryDate,
       barState.rowEntryPrice as number,
       exitType,
@@ -1223,21 +1201,32 @@ function simulateDtfAll(
       barState.rowHHDate
     );
   }
-  // Same "still open" handling for the PBAR racing track, independently --
+  // Same "still open" handling for the TAR/PBAR track, independently --
   // it may well still be open even when the BAR track above has already
-  // closed out (or vice versa), since neither track depends on the other.
-  if (pbarState !== null && pbarState.mode === "BAR_ENTRY_ACTIVE" && pbarState.rowEntryDate !== null) {
+  // closed out (or vice versa), since neither track depends on the
+  // other. Sourced from lib/tarTbar.ts's own `live` entry for whichever
+  // candidate WTF BAR was most recently adopted (if any, and if it's
+  // still the latest/open one -- tarTbar.ts's own `live` only ever
+  // carries an entry for a window whose WTF BAR itself hasn't SL'd/been
+  // superseded yet).
+  const tarLive =
+    lastAdoptedTarCandidateDate !== null
+      ? tarTbar.live.find((l) => l.wtfLabel.startsWith(`${inst.letter}.`) && l.wtfFormationDate === lastAdoptedTarCandidateDate)
+      : undefined;
+  const tarEntryLiveNow = tarLive !== undefined && (tarLive.side === "TBAR" || tarLive.side === "REAR ENTRY" || tarLive.side === "REAR RE-ENTER");
+  if (tarEntryLiveNow) {
+    const tarLiveEntry = tarLive as TarTbarLiveStatus;
     const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
     pushRow(
-      pbarState.level,
-      sideForBarLevel(pbarState.level, "PBAR"),
-      pbarState.rowEntryDate,
-      pbarState.rowEntryPrice as number,
+      tarLiveEntry.level,
+      tarLiveEntry.side === "TBAR" ? "TAR ENTRY" : tarLiveEntry.side === "REAR ENTRY" ? "PBAR ENTRY" : "PBAR RE-ENTER",
+      tarLiveEntry.since,
+      tarLiveEntry.activationPrice,
       exitType,
       inst.endDate,
       inst.endPrice as number,
-      pbarState.rowHH,
-      pbarState.rowHHDate
+      tarLiveEntry.highestHigh ?? 0,
+      tarLiveEntry.highestHighDate
     );
   }
 
@@ -1245,15 +1234,15 @@ function simulateDtfAll(
   // the instance's own later WTF-side failure, when that cycle closed on
   // a DTF-side SL and the WTF anchor itself independently failed
   // afterward with no further DTF reactivation in between -- done
-  // separately per track (BAR, PBAR) since the two tracks' rows are
+  // separately per track (BAR, TAR/PBAR) since the two tracks' rows are
   // interleaved in `rows` in whatever order they actually closed. Nested
-  // BAR2/PBAR2 rows are skipped -- they never end their outer row, so
+  // BAR2/TAR2 rows are skipped -- they never end their outer row, so
   // they're never the merge target. Earlier rows are never touched --
   // each is already followed by a captured reactivation, so the WTF side
   // hadn't actually failed yet at that point.
   const wtfLabel = wtfSlLabel(inst.endEvent);
-  mergeTrailingWtfSl(rows, "BAR", wtfLabel);
-  mergeTrailingWtfSl(rows, "PBAR", wtfLabel);
+  mergeTrailingWtfSl(rows, ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER"], wtfLabel);
+  mergeTrailingWtfSl(rows, ["TAR ENTRY", "PBAR ENTRY", "PBAR RE-ENTER"], wtfLabel);
 
   const stage1Active = s1 !== null && s1.active;
   // BAR (tier 1) currently active -- the main ladder's own pre-escalation
@@ -1263,12 +1252,14 @@ function simulateDtfAll(
   // currently active" -- a bare BAR alone (pre-escalation) is never
   // surfaced here, same filter rule as the historical trade log.
   const stage2Active = barState !== null && barState.mode === "BAR_ENTRY_ACTIVE";
-  // PBAR's own tier-1 equivalent of barActive.
-  const pbarTier1Active = pbarState !== null && pbarState.mode === "BAR_ACTIVE";
-  // PBAR's own equivalent -- "PBAR ENTRY (or PBAR REAR ENTRY / PBAR REAR
-  // RE-ENTER) is currently active". Independent of stage1Active/
-  // stage2Active -- the PBAR track doesn't depend on Stage 1 at all.
-  const pbarActive = pbarState !== null && pbarState.mode === "BAR_ENTRY_ACTIVE";
+  // TAR/PBAR's own tier-1 equivalent of barActive -- "TAR" itself, or
+  // "PBAR" (tarTbar.ts's "REAR") one level up.
+  const pbarTier1Active = tarLive !== undefined && (tarLive.side === "TAR" || tarLive.side === "REAR");
+  // TAR/PBAR's own equivalent of stage2Active -- "TAR ENTRY (or PBAR
+  // ENTRY / PBAR RE-ENTER) is currently active". Independent of
+  // stage1Active/stage2Active -- this track doesn't depend on Stage 1
+  // from the point it starts.
+  const pbarActive = tarEntryLiveNow;
   const live: PrimeTrendLiveStatus = {
     family: inst.family,
     letter: inst.letter,
@@ -1291,17 +1282,17 @@ function simulateDtfAll(
     stage2HighestHigh: stage2Active ? ((barState as BarLevelState).rowHHDate ? (barState as BarLevelState).rowHH : null) : null,
     stage2HighestHighDate: stage2Active ? (barState as BarLevelState).rowHHDate : null,
     pbarTier1Active,
-    pbarTier1Since: pbarTier1Active ? (pbarState as BarLevelState).barFormationDate : null,
-    pbarTier1ActivationPrice: pbarTier1Active ? (pbarState as BarLevelState).barActivationPrice : null,
-    pbarTier1StopLoss: pbarTier1Active ? (pbarState as BarLevelState).barRefLow : null,
-    pbarTier1HighestHigh: pbarTier1Active ? (pbarState as BarLevelState).barRefHigh : null,
-    pbarTier1HighestHighDate: pbarTier1Active ? (pbarState as BarLevelState).barRefHighDate : null,
+    pbarTier1Since: pbarTier1Active ? (tarLive as TarTbarLiveStatus).since : null,
+    pbarTier1ActivationPrice: pbarTier1Active ? (tarLive as TarTbarLiveStatus).activationPrice : null,
+    pbarTier1StopLoss: pbarTier1Active ? (tarLive as TarTbarLiveStatus).stopLoss : null,
+    pbarTier1HighestHigh: pbarTier1Active ? (tarLive as TarTbarLiveStatus).highestHigh : null,
+    pbarTier1HighestHighDate: pbarTier1Active ? (tarLive as TarTbarLiveStatus).highestHighDate : null,
     pbarActive,
-    pbarSince: pbarActive ? (pbarState as BarLevelState).rowEntryDate : null,
-    pbarActivationPrice: pbarActive ? (pbarState as BarLevelState).rowEntryPrice : null,
-    pbarStopLoss: pbarActive ? (pbarState as BarLevelState).barEntryRefLow : null,
-    pbarHighestHigh: pbarActive ? ((pbarState as BarLevelState).rowHHDate ? (pbarState as BarLevelState).rowHH : null) : null,
-    pbarHighestHighDate: pbarActive ? (pbarState as BarLevelState).rowHHDate : null,
+    pbarSince: pbarActive ? (tarLive as TarTbarLiveStatus).since : null,
+    pbarActivationPrice: pbarActive ? (tarLive as TarTbarLiveStatus).activationPrice : null,
+    pbarStopLoss: pbarActive ? (tarLive as TarTbarLiveStatus).stopLoss : null,
+    pbarHighestHigh: pbarActive ? (tarLive as TarTbarLiveStatus).highestHigh : null,
+    pbarHighestHighDate: pbarActive ? (tarLive as TarTbarLiveStatus).highestHighDate : null,
   };
 
   return [rows, live];
@@ -1338,10 +1329,11 @@ export function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
  * filter rule (see PRIME_TREND_RULEBOOK.md). */
 export function computePrimeTrend(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): PrimeTrendResult[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
+  const tarTbar = computeTarTbar(wtfRows, dtfRows);
 
   const results: PrimeTrendResult[] = [];
   for (const inst of instances) {
-    const [rows] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
+    const [rows] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst, tarTbar);
     results.push(...rows);
   }
   return results;
@@ -1364,11 +1356,12 @@ export function computePrimeTrend(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): Prime
  * DTF side but the WTF anchor itself hasn't failed yet) is omitted. */
 export function computePrimeTrendLive(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): PrimeTrendLiveStatus[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
+  const tarTbar = computeTarTbar(wtfRows, dtfRows);
 
   const liveStatuses: PrimeTrendLiveStatus[] = [];
   for (const inst of instances) {
     if (inst.endEvent !== null) continue; // this instance already failed on the WTF side -- not "right now"
-    const [, live] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
+    const [, live] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst, tarTbar);
     if (live !== null && (live.stage1Active || live.stage2Active || live.pbarTier1Active || live.pbarActive)) {
       liveStatuses.push(live);
     }
