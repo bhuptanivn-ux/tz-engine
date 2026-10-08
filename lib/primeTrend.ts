@@ -40,8 +40,11 @@
 // racing the BAR/BAR ENTRY ladder above. This instance's own WTF-side
 // RED1->RED2->BAR1 cascade (lib/tzEngineWtf.ts, run on WEEKLY candles --
 // the same "BAR(label)" milestone lib/tarTbar.ts's TAR/TBAR anchors on)
-// produces its own BAR, WHILE DTF's own BAR/BAR ENTRY ladder hasn't yet
-// confirmed BAR ENTRY (any level, any time since Stage 1 first formed).
+// produces its own BAR, WHILE DTF TZ BUY (Stage 1) is NOT currently
+// active. (BAR ENTRY can only ever be active while TZ BUY is active too
+// -- barState is created exactly on TZ BUY's own (re)formation and wiped
+// exactly on its own SL -- so "no active TZ BUY" already implies "no
+// active BAR ENTRY either"; there's no separate tier-2 check to make.)
 // At that point DTF starts seeking its OWN RED1 (or RED1-RED2) and its
 // own BAR -> BAR ENTRY cascade, using the IDENTICAL BarLevelState/
 // stepBarLevel mechanics as BAR/BAR ENTRY (same continuous RED1->RED2
@@ -53,20 +56,20 @@
 //
 // Triggers AT MOST ONCE per instance -- the first WTF BAR (first
 // formation, or a later reform after the WTF side's own BAR SL) that
-// occurs while DTF still hasn't confirmed tier 2 -- then runs entirely on
-// its own, for the rest of this instance's own window, completely
-// decoupled from Stage 1's own active/SL bookkeeping (same shape as
-// lib/tarTbar.ts's own TAR/TBAR, which has no DTF TZ BUY dependency at
-// all). DTF starts watching from the day after that WTF BAR's own
-// formation date -- same "day after formation" convention tarTbar.ts
-// uses.
+// occurs while DTF TZ BUY isn't currently active. DTF starts watching
+// from the day after that WTF BAR's own formation date -- same "day
+// after formation" convention tarTbar.ts uses.
 //
-// Neither racing track (BAR/BAR ENTRY, PBAR/PBAR ENTRY) ever cancels the
-// other: both keep running in parallel, dormant, for the rest of the
-// instance's window, and each can independently produce its own
-// confirmed entries -- "whichever completes first" decides which one is
-// PRIME TREND's first confirmed entry for this instance, not which one
-// gets to exist at all.
+// It's then a RACE against DTF TZ BUY's own reactivation (above its own
+// frozen reference high, same as always): whichever confirms first wins.
+// Once PBAR reaches an active tier (PBAR itself, or PBAR ENTRY), TZ BUY's
+// reactivation breakout is blocked outright -- that race is decided, TZ
+// BUY stays dormant for as long as PBAR remains in an active tier (same
+// shape as TZ ENGINE's own BAR-SL2 race between a brand new cycle
+// reaching TZ BUY and REAR forming -- only one side of a race actually
+// gets to occur). If PBAR later drops back out of an active tier (its
+// own SL, seeking its own reformation/reactivation), TZ BUY's
+// reactivation watch resumes normally in the meantime.
 //
 // WTF BAR itself needs no separate name here -- it's the same WTF-native
 // "BAR(label)" milestone in every one of the 3 types (Type 2: WTF BAR
@@ -89,9 +92,9 @@ export interface PrimeTrendResult {
   // than replacing it. The "PBAR..." variants are the WTF-BAR-triggered
   // racing track (Type 1 of the "3 types of bar theory" -- see the PBAR
   // section below): structurally identical tiers/rules, just anchored on
-  // WTF's own BAR milestone instead of DTF TZ BUY, and run entirely in
-  // parallel with the BAR/BAR ENTRY track above -- neither cancels the
-  // other, both can independently produce their own confirmed entries.
+  // WTF's own BAR milestone instead of DTF TZ BUY -- it's a race against
+  // the BAR/BAR ENTRY track above (whichever reaches an active tier
+  // first wins; see the PBAR section for the exact exclusivity rule).
   level: number;
   side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "PBAR ENTRY" | "PBAR REAR ENTRY" | "PBAR REAR RE-ENTER" | "PBAR2";
   entryDate: string;
@@ -958,26 +961,33 @@ function simulateDtfAll(
 
   // --- WTF PBAR / DTF PBAR / PBAR ENTRY -- Type 1 of the "3 types of bar
   // theory": whenever this instance's OWN WTF-side RED1->RED2->BAR1
-  // cascade (lib/tzEngineWtf.ts) produces its own BAR milestone WHILE
-  // DTF's own BAR/BAR ENTRY ladder above hasn't yet confirmed BAR ENTRY
-  // (any level), that's a second, independent route to the same "PRIME
-  // TREND confirmed" goal -- races the BAR/BAR ENTRY ladder using the
-  // IDENTICAL RED-gated mechanics (same BarLevelState/stepBarLevel,
-  // tagged "PBAR"), confirmed rule-for-rule identical to BAR/BAR ENTRY.
-  // Triggers at most once per instance -- the first qualifying WTF BAR,
-  // i.e. the first one (first formation, or a later reform after the WTF
-  // side's own BAR SL) that occurs while DTF still hasn't confirmed tier
-  // 2 -- then runs entirely on its own for the rest of this instance's
-  // own window, completely decoupled from Stage 1's active/SL bookkeeping
-  // (same shape as lib/tarTbar.ts's own TAR/TBAR, which anchors purely on
-  // the WTF BAR milestone too, with no DTF TZ BUY dependency at all).
-  // Neither racing track ever cancels the other -- both keep running in
-  // parallel, dormant, and can each independently produce their own
-  // confirmed entries, now or later.
+  // cascade (lib/tzEngineWtf.ts) produces its own BAR milestone WHILE DTF
+  // TZ BUY (Stage 1) is NOT currently active, that's a second,
+  // independent route to the same "PRIME TREND confirmed" goal -- races
+  // the BAR/BAR ENTRY ladder using the IDENTICAL RED-gated mechanics
+  // (same BarLevelState/stepBarLevel, tagged "PBAR"), confirmed
+  // rule-for-rule identical to BAR/BAR ENTRY. (Checking "TZ BUY not
+  // active" alone is sufficient -- BAR ENTRY can only ever be active
+  // while TZ BUY is active too, see simulateDtfAll's own TZ-BUY-wipes-
+  // BAR-structure handling just above.) Triggers at most once per
+  // instance -- the first qualifying WTF BAR, i.e. the first one (first
+  // formation, or a later reform after the WTF side's own BAR SL) that
+  // occurs while DTF TZ BUY isn't active -- then runs on its own for the
+  // rest of this instance's own window.
+  //
+  // It's a genuine RACE, not two tracks running forever in parallel:
+  // once PBAR reaches an active tier (PBAR or PBAR ENTRY), DTF TZ BUY's
+  // own reactivation is blocked outright (see the Stage 1 reactivation
+  // branch below) -- the race is decided, TZ BUY (and so the whole
+  // BAR/BAR ENTRY ladder, which only exists while TZ BUY is active)
+  // stays dormant for as long as PBAR remains in an active tier. If PBAR
+  // later drops back out of an active tier (its own SL, now seeking its
+  // own reformation/reactivation), TZ BUY's reactivation watch resumes
+  // in the meantime, same shape as TZ ENGINE's own BAR-SL2 race between a
+  // brand new cycle reaching TZ BUY and REAR forming.
   const pbarCandidateDates = wtfBarFormationDatesForLetter(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
   let pbarCandidateIdx = 0;
   let pbarState: BarLevelState | null = null;
-  let dtfTier2EverConfirmed = false;
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
   // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
@@ -1067,7 +1077,16 @@ function simulateDtfAll(
       }
     } else {
       const frozenRef = s1.frozenRef as number;
-      if (breakoutShape(prev, cur, frozenRef)) {
+      // While PBAR/PBAR ENTRY (the WTF-BAR-triggered racing track below)
+      // is in an active tier, TZ BUY cannot reactivate -- that race is
+      // already decided in PBAR's favor. The reference high still climbs
+      // quietly underneath so that if PBAR later drops back out of an
+      // active tier (into its own SEEK/waiting modes), TZ BUY's
+      // reactivation watch resumes from an accurate reference rather than
+      // a stale pre-PBAR one.
+      const pbarCurrentlyActive =
+        pbarState !== null && (pbarState.mode === "BAR_ACTIVE" || pbarState.mode === "BAR_ENTRY_ACTIVE");
+      if (!pbarCurrentlyActive && breakoutShape(prev, cur, frozenRef)) {
         s1 = new Stage(cur.h, cur.l);
         s1Since = cur.date;
         s1ActivationPrice = cur.h;
@@ -1107,7 +1126,6 @@ function simulateDtfAll(
       if (opened) {
         barState.rowEntryDate = cur.date;
         barState.rowEntryPrice = opened.price;
-        dtfTier2EverConfirmed = true;
       }
       if (closed) {
         pushRow(
@@ -1139,10 +1157,15 @@ function simulateDtfAll(
 
     // --- WTF PBAR / DTF PBAR / PBAR ENTRY racing track -- triggers once,
     // on the first WTF BAR formation (for this instance's own branch)
-    // that occurs while DTF tier 2 still hasn't confirmed; independent of
-    // Stage 1's own active/SL state from then on. ---
+    // that occurs while DTF TZ BUY is NOT currently active. (BAR ENTRY
+    // can only ever be active while TZ BUY is active too -- barState is
+    // created exactly on TZ BUY's own (re)formation and wiped exactly on
+    // its own SL -- so "no active TZ BUY" already implies "no active BAR
+    // ENTRY either"; no separate check is needed.) Once PBAR reaches an
+    // active tier it blocks TZ BUY's own reactivation in turn (see the
+    // Stage 1 reactivation branch above) -- the race is then decided.
     while (pbarState === null && pbarCandidateIdx < pbarCandidateDates.length && cur.date > pbarCandidateDates[pbarCandidateIdx]) {
-      const qualifies = !dtfTier2EverConfirmed;
+      const qualifies = !isS1Active;
       pbarCandidateIdx += 1;
       if (qualifies) pbarState = new BarLevelState(0, null, "PBAR");
     }
