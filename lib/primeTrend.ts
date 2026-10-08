@@ -204,26 +204,19 @@ export function slShape(cur: Day, refLow: number): boolean {
 // never reported as a PRIME TREND entry, same filter rule as before, now
 // applied one tier later.
 //
-// DECISIVE BAR SL -> REAR (corrected, simpler rule than TAR/TBAR's own
-// two-strike SL2): whenever BAR's own level fails while BAR ENTRY is (or
-// was) escalated under it -- BAR ENTRY cannot outlive BAR, since it's an
-// escalation of BAR; "BAR SL" always means BAR ENTRY is gone too,
-// whether both breach the same candle (combined) or BAR ENTRY's own
-// (tighter) stop breached first and BAR's own (looser) stop gives way
-// later -- the outcome depends on THIS SPECIFIC BAR INSTANCE's own
-// formation gate, evaluated fresh at the moment THIS BAR formed (not a
-// permanent, window-wide value -- each new BAR instance, however it
-// came to form, gets its own fresh gate reading):
-//   - this BAR formed under a complete RED1-RED2 gate -> no new cycle at
-//     all, ever (not even once) -- straight to REAR, forming above the
-//     highest high reached under this structure (BAR ENTRY's own, or a
-//     nested BAR1's own, whichever is higher).
-//   - this BAR formed under bare RED1 only -> direct reform remains
-//     possible, a fresh BAR -> BAR ENTRY cycle (same shape as any other
-//     reform). That fresh cycle's own gate is then evaluated fresh at
-//     ITS OWN formation, same rule recursing.
-// (Clean BAR ENTRY SL -- BAR independently still valid, not decisive --
-// is a separate case below, forking on door status instead.)
+// DECISIVE BAR SL (entry-only scope -- REAR deferred for now): whenever
+// BAR's own level fails while BAR ENTRY is (or was) escalated under it
+// -- BAR ENTRY cannot outlive BAR, since it's an escalation of BAR;
+// "BAR SL" always means BAR ENTRY is gone too, whether both breach the
+// same candle (combined) or BAR ENTRY's own (tighter) stop breached
+// first and BAR's own (looser) stop gives way later (sequential, via
+// SEEK_BAR_ENTRY_REACTIVATION below). Either way, a fresh BAR reforms
+// directly -- above the BAR ENTRY reference high this structure
+// reached, not unrestricted the way a pre-escalation BAR SL is -- then
+// escalates to BAR ENTRY again the ordinary way, on its own later
+// breakout. (Clean BAR ENTRY SL -- BAR independently still valid, not
+// decisive -- is a separate case below: BAR ENTRY itself reactivates
+// directly, racing against BAR's own SL turning decisive instead.)
 class BarRedGate {
   constructor(public refHigh: number, public refLow: number) {}
 }
@@ -241,7 +234,13 @@ function isBarRed1Shape(prev: Day, cur: Day): boolean {
   return cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l;
 }
 
-type BarMode = "SEEK_LEVEL_ENTRY" | "SEEK_BAR" | "BAR_ACTIVE" | "BAR_ENTRY_ACTIVE" | "SEEK_REACTIVATION";
+type BarMode =
+  | "SEEK_LEVEL_ENTRY"
+  | "SEEK_BAR"
+  | "BAR_ACTIVE"
+  | "BAR_ENTRY_ACTIVE"
+  | "SEEK_BAR_ENTRY_REACTIVATION"
+  | "SEEK_REACTIVATION";
 
 // "BAR" is the DTF-TZ-BUY-anchored track; "PBAR" is the WTF-BAR-triggered
 // racing track (see the PBAR section below) -- identical mechanics,
@@ -274,12 +273,6 @@ class BarLevelState {
   nestedDoorOpen = false;
   red: BarRedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves -- unlocks BAR-seeking permanently
-  // This specific BAR instance's own formation gate -- re-evaluated fresh
-  // every time a new BAR forms (not a permanent, once-set window value).
-  // Decides what a later decisive BAR SL does: straight to REAR if this
-  // BAR formed under RED1-RED2, direct reform if it formed under bare
-  // RED1. Null only before any BAR has formed yet at this level.
-  thisBarGate: "RED1" | "RED1-RED2" | null = null;
   topRef: number;
 
   barRefHigh = 0;
@@ -319,13 +312,35 @@ class BarLevelState {
 
 /** Advances one BAR/BAR ENTRY level by one candle -- see lib/tarTbar.ts's
  * `stepLevel` for the closely-related mechanics this mirrors (that
- * file's own module docstring documents the shared derivation; this
- * module's own docstring above documents the corrected REAR rule).
- * `opened`/`closed` are this level's own BAR ENTRY/REAR ENTRY/REAR
- * RE-ENTER row lifecycle, `nestedClosed` is the nested BAR1->BAR2
- * cycle's own row (gets its own visible row, overlapping this level's
- * own row), and `promoted` means a decisive BAR SL on a BAR instance
- * that formed under RED1-RED2 requires escalating to REAR. */
+ * file's own module docstring documents the shared derivation).
+ * `opened`/`closed` are this level's own BAR ENTRY row lifecycle;
+ * `nestedClosed` is the nested BAR1->BAR2 cycle's own row (gets its own
+ * visible row, overlapping this level's own row).
+ *
+ * REAR is deferred for now (entry-only scope) -- a decisive BAR SL
+ * (BAR's own SL, which always wipes BAR ENTRY with it) always reforms
+ * directly, never escalates. Confirmed event chains, DTF-side only:
+ *   TZ BUY -> TZ BUY SL -> TZ BUY (reactivates above TZ BUY's own
+ *     highest reference high -- unchanged Stage 1 behavior).
+ *   BAR -> BAR SL (pre-escalation, never reached BAR ENTRY) -> BAR
+ *     (unrestricted -- a plain day-over-day breakout, no reference to
+ *     clear first; "it can occur immediately").
+ *   BAR -> BAR ENTRY -> BAR ENTRY SL (clean -- BAR itself not also
+ *     breached) -> BAR ENTRY (direct, single breakout above BAR
+ *     ENTRY's own frozen reference high -- see
+ *     SEEK_BAR_ENTRY_REACTIVATION below). While waiting, BAR's own
+ *     reference stays alive in the background; if BAR's own SL
+ *     triggers first instead, that's the decisive case below.
+ *   BAR -> BAR ENTRY -> BAR ENTRY SL -> BAR SL (combined same candle,
+ *     or BAR ENTRY SL first then BAR SL follows later -- either way,
+ *     once BAR itself is also gone) -> BAR (reforms above the
+ *     *BAR ENTRY* reference high, not unrestricted like the
+ *     pre-escalation case -- see SEEK_REACTIVATION below) -> BAR ENTRY
+ *     (ordinary escalation above this new BAR's own reference high).
+ * Every "reference high" above is the running highest high reached
+ * since that tier's own formation/reactivation, continuously updated by
+ * quiet-climb tracking -- never just the literal high on the day it
+ * first formed. */
 function stepBarLevel(
   s: BarLevelState,
   prev: Day,
@@ -334,19 +349,17 @@ function stepBarLevel(
   opened: { price: number } | null;
   closed: { exitType: string; exitPrice: number } | null;
   nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null;
-  promoted: boolean;
 } {
   let opened: { price: number } | null = null;
   let closed: { exitType: string; exitPrice: number } | null = null;
   let nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null = null;
-  let promoted = false;
 
   if (s.mode === "SEEK_LEVEL_ENTRY") {
     if (breakoutShape(prev, cur, s.topRef)) {
       s.topRef = Math.max(s.topRef, cur.h);
       s.mode = "SEEK_BAR";
     }
-    return { opened, closed, nestedClosed, promoted };
+    return { opened, closed, nestedClosed };
   }
 
   // --- the one continuous RED1->RED2 tracker, independent of BAR/BAR ENTRY state ---
@@ -375,9 +388,6 @@ function stepBarLevel(
         s.barActivationPrice = cur.h;
         s.barFormationDate = cur.date;
         s.barRefHighDate = cur.date;
-        // This BAR's own gate, read fresh at its own formation moment --
-        // not a permanent window-wide value.
-        s.thisBarGate = s.doorOpen ? "RED1-RED2" : "RED1";
         s.mode = "BAR_ACTIVE";
       }
       break;
@@ -433,28 +443,25 @@ function stepBarLevel(
         // BAR ENTRY is an escalation of BAR, it cannot outlive it --
         // whether both breach the same candle (combined) or BAR ENTRY's
         // own tighter stop already breached first and BAR's own looser
-        // stop gives way later (sequential). Either way, the outcome
-        // depends only on THIS BAR instance's own formation gate (read
-        // fresh at its own formation, not a permanent window value):
-        // RED1-RED2 -> no new cycle at all, straight to REAR; bare RED1
-        // -> direct reform remains possible. Exit price is BAR's own
-        // tracked reference low either way.
+        // stop gives way later (sequential, via SEEK_BAR_ENTRY_
+        // REACTIVATION below). Reforms via SEEK_REACTIVATION -- above
+        // the BAR ENTRY reference high, not unrestricted (REAR is
+        // deferred for now: entry-only scope, no promotion). Exit price
+        // is BAR's own tracked reference low either way.
         s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
         const exitType = entrySlNow ? `DTF ${s.tag} SL + DTF ${s.tag} ENTRY SL` : `DTF ${s.tag} SL (wipes ENTRY)`;
         closed = { exitType, exitPrice: s.barRefLow };
-        if (s.thisBarGate === "RED1-RED2") {
-          promoted = true; // caller replaces this level's state entirely
-        } else {
-          s.mode = "SEEK_BAR";
-        }
+        s.mode = "SEEK_REACTIVATION";
         s.nestedMode = "NONE";
         break;
       }
       if (entrySlNow) {
-        // Exit price is BAR ENTRY's own tracked reference low.
-        s.topRef = Math.max(s.topRef, s.barEntryRefHigh);
+        // Clean: BAR itself not also breached -- stays alive in the
+        // background. Races BAR ENTRY's own direct reactivation against
+        // BAR's own (now decisive, if it comes first) SL -- see
+        // SEEK_BAR_ENTRY_REACTIVATION below.
         closed = { exitType: `DTF ${s.tag} ENTRY SL`, exitPrice: s.barEntryRefLow };
-        s.mode = s.doorOpen ? "SEEK_BAR" : "SEEK_REACTIVATION";
+        s.mode = "SEEK_BAR_ENTRY_REACTIVATION";
         s.nestedMode = "NONE";
         break;
       }
@@ -509,6 +516,42 @@ function stepBarLevel(
       }
       break;
     }
+    case "SEEK_BAR_ENTRY_REACTIVATION": {
+      // Clean BAR ENTRY SL's own aftermath -- a race between two
+      // outcomes, whichever breaks first:
+      //   (a) price reclaims BAR ENTRY's own frozen reference high (as
+      //       it stood at the moment of that SL -- not updated further
+      //       while waiting here, same as any other closed tier) ->
+      //       BAR ENTRY reactivates DIRECTLY, a single breakout, no
+      //       intermediate BAR reform step.
+      //   (b) BAR's own reference low (kept alive/tracked in the
+      //       background, exactly as if nothing had happened to it)
+      //       breaks first instead -> NOW decisive, same as a combined
+      //       BAR SL + BAR ENTRY SL -- falls through to the ordinary
+      //       SEEK_REACTIVATION path (reforms above the BAR ENTRY
+      //       reference high, not unrestricted).
+      if (breakoutShape(prev, cur, s.barEntryRefHigh)) {
+        const entryPrice = s.barEntryRefHigh + THRESH;
+        s.barEntryRefHigh = cur.h;
+        s.barEntryRefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "BAR_ENTRY_ACTIVE";
+        opened = { price: entryPrice };
+        break;
+      }
+      const barSlNow = slShape(cur, s.barRefLow);
+      if (!barSlNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) {
+        s.barRefHigh = cur.h;
+        s.barRefHighDate = cur.date;
+      }
+      if (!barSlNow && cur.l < s.barRefLow) s.barRefLow = cur.l;
+      if (barSlNow) {
+        s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
+        s.mode = "SEEK_REACTIVATION";
+      }
+      break;
+    }
     case "SEEK_REACTIVATION": {
       // Reactivation reforms BAR alone -- BAR and BAR ENTRY can never
       // form on the same candle (only an SL/exit can be a combined
@@ -523,8 +566,6 @@ function stepBarLevel(
         s.barActivationPrice = cur.h;
         s.barFormationDate = cur.date;
         s.barRefHighDate = cur.date;
-        // This BAR's own gate, read fresh at its own formation moment.
-        s.thisBarGate = s.doorOpen ? "RED1-RED2" : "RED1";
         s.mode = "BAR_ACTIVE";
       } else if (cur.h > s.topRef) {
         s.topRef = cur.h;
@@ -533,7 +574,7 @@ function stepBarLevel(
     }
   }
 
-  return { opened, closed, nestedClosed, promoted };
+  return { opened, closed, nestedClosed };
 }
 
 // --------------------------------------------------------------------
@@ -1062,7 +1103,7 @@ function simulateDtfAll(
 
     // --- BAR / BAR ENTRY ladder, only while TZ BUY is active ---
     if (isS1Active && barState !== null) {
-      const { opened, closed, nestedClosed, promoted } = stepBarLevel(barState, prev, cur);
+      const { opened, closed, nestedClosed } = stepBarLevel(barState, prev, cur);
       if (opened) {
         barState.rowEntryDate = cur.date;
         barState.rowEntryPrice = opened.price;
@@ -1094,9 +1135,6 @@ function simulateDtfAll(
           nestedClosed.hhDate
         );
       }
-      if (promoted) {
-        barState = new BarLevelState(barState.level + 1, barState.topRef, "BAR");
-      }
     }
 
     // --- WTF PBAR / DTF PBAR / PBAR ENTRY racing track -- triggers once,
@@ -1109,7 +1147,7 @@ function simulateDtfAll(
       if (qualifies) pbarState = new BarLevelState(0, null, "PBAR");
     }
     if (pbarState !== null) {
-      const { opened, closed, nestedClosed, promoted } = stepBarLevel(pbarState, prev, cur);
+      const { opened, closed, nestedClosed } = stepBarLevel(pbarState, prev, cur);
       if (opened) {
         pbarState.rowEntryDate = cur.date;
         pbarState.rowEntryPrice = opened.price;
@@ -1139,9 +1177,6 @@ function simulateDtfAll(
           nestedClosed.hh,
           nestedClosed.hhDate
         );
-      }
-      if (promoted) {
-        pbarState = new BarLevelState(pbarState.level + 1, pbarState.topRef, "PBAR");
       }
     }
 
