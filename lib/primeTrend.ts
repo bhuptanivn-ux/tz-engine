@@ -103,7 +103,7 @@ export interface PrimeTrendResult {
   // always 0 for now (its escalation past a decisive SL is deferred, see
   // that section).
   level: number;
-  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "PBAR ENTRY" | "TAR ENTRY" | "BAR1 ENTRY";
+  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "PBAR ENTRY" | "TAR ENTRY" | "BAR 1 - BAR 2";
   entryDate: string;
   entryPrice: number;
   exitType: string;
@@ -1141,13 +1141,13 @@ function stepBar1Level(
 
       if (bar1SlNow) {
         s.topRef = Math.max(s.bar1RefHigh, s.bar2RefHigh);
-        const exitType = entrySlNow ? "DTF BAR1 SL + DTF BAR2 SL" : "DTF BAR1 SL (wipes BAR2)";
+        const exitType = entrySlNow ? "DTF BAR 1 SL + DTF BAR 2 SL" : "DTF BAR 1 SL (wipes BAR 2)";
         closed = { exitType, exitPrice: s.bar1RefLow };
         s.mode = "SEEK_REACTIVATION";
         break;
       }
       if (entrySlNow) {
-        closed = { exitType: "DTF BAR2 SL", exitPrice: s.bar2RefLow };
+        closed = { exitType: "DTF BAR 2 SL", exitPrice: s.bar2RefLow };
         s.frozenBar2RefHigh = s.bar2RefHigh;
         s.mode = "SEEK_BAR2_REACTIVATION";
         break;
@@ -1484,9 +1484,9 @@ export const DTF_SL_EXIT_TYPES = new Set([
   "DTF TAR ENTRY SL",
   "DTF TAR SL (wipes ENTRY)",
   "DTF TAR SL + DTF TAR ENTRY SL",
-  "DTF BAR2 SL",
-  "DTF BAR1 SL (wipes BAR2)",
-  "DTF BAR1 SL + DTF BAR2 SL",
+  "DTF BAR 2 SL",
+  "DTF BAR 1 SL (wipes BAR 2)",
+  "DTF BAR 1 SL + DTF BAR 2 SL",
 ]);
 
 interface WtfBarWindow {
@@ -1922,7 +1922,7 @@ function simulateDtfAll(
           pbarWindows[pbarWindowIdx].endReason === "BAR SL" ? "WTF BAR SL (wipes ENTRY)" : "WTF BAR reform (wipes ENTRY)";
         pushRow(
           0,
-          "BAR1 ENTRY",
+          "BAR 1 - BAR 2",
           bar1State.rowEntryDate,
           bar1State.rowEntryPrice as number,
           windowExitType,
@@ -1980,38 +1980,44 @@ function simulateDtfAll(
       }
     }
 
-    // --- BAR THEORY: TAR/TAR ENTRY and the nested BAR1/BAR2 cascade ----
+    // --- BAR THEORY: TAR/TAR ENTRY and the nested BAR 1 - BAR 2 cascade ----
     // Only runs once sarFired -- reuses the same pbarWindows/pbarWindowIdx/
     // wtfBarRefHigh as PBAR above (identical "WTF BAR active" windowing;
     // wiped at the same window boundaries, see the while-loop above).
     if (sarFired && pbarWindowIdx < pbarWindows.length) {
       const w = pbarWindows[pbarWindowIdx];
       if (cur.date > w.formationDate && (w.endDate === null || cur.date <= w.endDate)) {
-        if (tarState === null) tarState = new TarLevelState();
+        // TAR stays live only until BAR 1 - BAR 2 unlocks -- confirmed:
+        // once the nested cascade takes over, TAR goes permanently
+        // dormant for the rest of this window (not a parallel track).
+        const bar12AlreadyUnlocked = tarSlEverHappened && bar12RedEverConfirmed;
+        if (!bar12AlreadyUnlocked) {
+          if (tarState === null) tarState = new TarLevelState();
 
-        const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
-        if (tarResult.opened) {
-          tarState.rowEntryDate = cur.date;
-          tarState.rowEntryPrice = tarResult.opened.price;
+          const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
+          if (tarResult.opened) {
+            tarState.rowEntryDate = cur.date;
+            tarState.rowEntryPrice = tarResult.opened.price;
+          }
+          if (tarResult.closed) {
+            pushRow(
+              0,
+              "TAR ENTRY",
+              tarState.rowEntryDate as string,
+              tarState.rowEntryPrice as number,
+              tarResult.closed.exitType,
+              cur.date,
+              tarResult.closed.exitPrice,
+              tarState.rowHH,
+              tarState.rowHHDate
+            );
+          }
+          if (tarResult.tarSlNow) tarSlEverHappened = true;
         }
-        if (tarResult.closed) {
-          pushRow(
-            0,
-            "TAR ENTRY",
-            tarState.rowEntryDate as string,
-            tarState.rowEntryPrice as number,
-            tarResult.closed.exitType,
-            cur.date,
-            tarResult.closed.exitPrice,
-            tarState.rowHH,
-            tarState.rowHHDate
-          );
-        }
-        if (tarResult.tarSlNow) tarSlEverHappened = true;
 
         // The nested cascade's own continuous RED1->RED2 tracker --
         // independent of TAR's own state, same shape as everywhere else
-        // in this file -- half of BAR1/BAR2's unlock gate.
+        // in this file -- half of BAR 1 - BAR 2's unlock gate.
         if (bar12Red === null) {
           if (isBarRed1Shape(prev, cur)) bar12Red = new BarRedGate(cur.h, cur.l);
         } else {
@@ -2024,8 +2030,32 @@ function simulateDtfAll(
           }
         }
 
-        // BAR1/BAR2 only unlocks once BOTH halves of the gate have fired
-        // at least once in this window -- "without TAR SL, no BAR1-BAR2."
+        // BAR 1 - BAR 2 only unlocks once BOTH halves of the gate have
+        // fired at least once in this window -- "without TAR SL, no
+        // BAR 1 - BAR 2." The MOMENT it unlocks, TAR goes dormant -- force-
+        // close any TAR ENTRY still open at that exact instant first,
+        // since TAR itself won't be stepped again above from here on.
+        if (!bar12AlreadyUnlocked && tarSlEverHappened && bar12RedEverConfirmed) {
+          if (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
+            pushRow(
+              0,
+              "TAR ENTRY",
+              tarState.rowEntryDate,
+              tarState.rowEntryPrice as number,
+              "BAR 1 - BAR 2 unlocked (wipes TAR ENTRY)",
+              cur.date,
+              tarState.tarEntryRefLow,
+              tarState.rowHH,
+              tarState.rowHHDate
+            );
+          }
+          // TAR is now permanently dormant for the rest of this window --
+          // discard it outright so the later window-boundary/"still open"
+          // code never mistakes its stale mode/rowEntryDate for a still-
+          // live entry and double-closes it.
+          tarState = null;
+        }
+
         if (tarSlEverHappened && bar12RedEverConfirmed) {
           if (bar1State === null) bar1State = new Bar1LevelState();
           const { opened, closed } = stepBar1Level(bar1State, prev, cur);
@@ -2036,7 +2066,7 @@ function simulateDtfAll(
           if (closed) {
             pushRow(
               0,
-              "BAR1 ENTRY",
+              "BAR 1 - BAR 2",
               bar1State.rowEntryDate as string,
               bar1State.rowEntryPrice as number,
               closed.exitType,
@@ -2167,7 +2197,7 @@ function simulateDtfAll(
     const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
     pushRow(
       0,
-      "BAR1 ENTRY",
+      "BAR 1 - BAR 2",
       bar1State.rowEntryDate,
       bar1State.rowEntryPrice as number,
       exitType,
@@ -2192,7 +2222,7 @@ function simulateDtfAll(
   mergeTrailingWtfSl(rows, ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER"], wtfLabel);
   mergeTrailingWtfSl(rows, ["PBAR ENTRY"], wtfLabel);
   mergeTrailingWtfSl(rows, ["TAR ENTRY"], wtfLabel);
-  mergeTrailingWtfSl(rows, ["BAR1 ENTRY"], wtfLabel);
+  mergeTrailingWtfSl(rows, ["BAR 1 - BAR 2"], wtfLabel);
 
   const stage1Active = s1 !== null && s1.active;
   // BAR (tier 1) currently active -- the main ladder's own pre-escalation
