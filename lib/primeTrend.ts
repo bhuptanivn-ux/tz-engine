@@ -1212,6 +1212,26 @@ function wtfBarWindowsForLetter(
   return windows;
 }
 
+interface Red2Event {
+  date: string;
+  refLow: number;
+}
+
+/** Every WTF-native "RED2(letter)" confirmation for this instance's own
+ * letter -- the recurring SAR anchor. Each fresh RED2 re-arms a brand
+ * new SAR watch, seeded at that confirming candle's own Low, superseding
+ * any earlier watch that never fired (confirmed: SAR is recurring, not
+ * one-time -- re-armed by every fresh WTF RED1->RED2 cycle). */
+function red2EventsForLetter(wtfTrace: WtfTraceEntry[], letter: string, formationDate: string, endDate: string): Red2Event[] {
+  const label = `RED2(${letter})`;
+  const events: Red2Event[] = [];
+  for (const { day, events: evs } of wtfTrace) {
+    if (day.date <= formationDate || day.date > endDate) continue;
+    if (evs.includes(label)) events.push({ date: day.date, refLow: day.l });
+  }
+  return events;
+}
+
 /** Merges the WTF anchor's own terminal failure label onto the last
  * (non-nested) row among the given `sides` -- the BAR/BAR ENTRY ladder's
  * rows and the PBAR/PBAR ENTRY ladder's rows are interleaved in `rows`
@@ -1299,6 +1319,25 @@ function simulateDtfAll(
   // every time pbarWindowIdx moves to a new window.
   let wtfBarRefHigh = 0;
   let wtfBarRefHighWindowIdx = -1;
+
+  // DTF SAR -- a recurring kill-switch on the whole PRIME TREND (BAR
+  // ENTRY and PBAR ENTRY alike), independent of the WTF anchor's own
+  // life (inst.endEvent/BAR SL2 below is a separate, WTF-side exit).
+  // Each fresh WTF RED1->RED2 (red2EventsForLetter) re-arms sarRefLow at
+  // that RED2's own confirming Low, which then ratchets further down on
+  // later DTF days' own new lows ("RED2 LL") until a decisive breach
+  // (gap>=THRESH, close<=ref) fires SAR -- closing whatever is open and
+  // permanently freezing BAR/PBAR tracking for the rest of this
+  // instance: per spec, reactivation past a SAR exit is only through
+  // BAR theory (TAR/BAR1-BAR2), not a fresh ordinary BAR/PBAR cycle --
+  // BAR theory itself is not yet implemented, so this instance simply
+  // goes dormant from here, same honest "nothing more to report" as any
+  // other not-yet-modeled reactivation path.
+  const red2Events = red2EventsForLetter(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
+  let red2EventIdx = 0;
+  let sarRefLow: number | null = null;
+  let sarFired = false;
+  let sarExitDate: string | null = null;
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
   // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
@@ -1429,12 +1468,12 @@ function simulateDtfAll(
       barState = null;
     }
     // --- TZ BUY's own (re)formation starts a brand new BAR/BAR ENTRY window ---
-    if (!wasS1Active && isS1Active) {
+    if (!wasS1Active && isS1Active && !sarFired) {
       barState = new BarLevelState(0, null);
     }
 
     // --- BAR / BAR ENTRY ladder, only while TZ BUY is active ---
-    if (isS1Active && barState !== null) {
+    if (isS1Active && barState !== null && !sarFired) {
       const { opened, closed, nestedClosed } = stepBarLevel(barState, prev, cur);
       if (opened) {
         barState.rowEntryDate = cur.date;
@@ -1507,7 +1546,7 @@ function simulateDtfAll(
 
     // Start a fresh structure once we're inside a qualifying window,
     // nothing is currently running, and DTF BAR ENTRY is inactive.
-    if (pbarState === null && pbarWindowIdx < pbarWindows.length) {
+    if (pbarState === null && pbarWindowIdx < pbarWindows.length && !sarFired) {
       const w = pbarWindows[pbarWindowIdx];
       if (cur.date > w.formationDate && (w.endDate === null || cur.date <= w.endDate) && !barEntryActiveNow) {
         pbarState = new PbarLevelState();
@@ -1542,6 +1581,58 @@ function simulateDtfAll(
           pbarState.rowHH,
           pbarState.rowHHDate
         );
+      }
+    }
+
+    // --- DTF SAR -- recurring kill-switch, independent of BAR/PBAR state ---
+    // Re-arm on every fresh WTF RED2, superseding any earlier, never-fired
+    // watch. RED2's own refLow is that WHOLE WTF week's own Low -- not
+    // knowable in full until the week closes -- so arming must wait until
+    // we're into the NEXT WTF week, not merely the day after RED2's own
+    // week-start date (which would seed the real, eventual low days before
+    // it actually happened, a look-ahead bug of the same shape Path 1's
+    // wtfBarRefHigh had before).
+    while (
+      red2EventIdx < red2Events.length &&
+      cur.date > red2Events[red2EventIdx].date &&
+      containingWeekStart(wtfDates, cur.date) !== red2Events[red2EventIdx].date
+    ) {
+      sarRefLow = red2Events[red2EventIdx].refLow;
+      red2EventIdx += 1;
+    }
+    if (!sarFired && sarRefLow !== null) {
+      if (slShape(cur, sarRefLow)) {
+        sarFired = true;
+        if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
+          pushRow(
+            barState.level,
+            sideForBarLevel(barState.level),
+            barState.rowEntryDate,
+            barState.rowEntryPrice as number,
+            "DTF SAR",
+            cur.date,
+            sarRefLow,
+            barState.rowHH,
+            barState.rowHHDate
+          );
+        }
+        barState = null;
+        if (pbarState !== null && pbarState.mode === "PBAR_ENTRY_ACTIVE" && pbarState.rowEntryDate !== null) {
+          pushRow(
+            0,
+            "PBAR ENTRY",
+            pbarState.rowEntryDate,
+            pbarState.rowEntryPrice as number,
+            "DTF SAR",
+            cur.date,
+            sarRefLow,
+            pbarState.rowHH,
+            pbarState.rowHHDate
+          );
+        }
+        pbarState = null;
+      } else if (cur.l < sarRefLow) {
+        sarRefLow = cur.l;
       }
     }
 
