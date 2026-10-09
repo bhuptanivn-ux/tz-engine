@@ -2090,7 +2090,13 @@ function simulateDtfAll(
       sarRefLow = red2Events[red2EventIdx].refLow;
       red2EventIdx += 1;
     }
-    if (!sarFired && sarRefLow !== null) {
+    // SAR itself is recurring: it must keep re-arming and firing on EVERY
+    // qualifying RED2, not just the first ever -- `sarFired` below is a
+    // SEPARATE, permanent flag (gates the ordinary BAR/PBAR ladder from
+    // ever resuming once SAR has fired at all, per "reactivation past a
+    // SAR exit is only through BAR theory"); it must never also gate
+    // whether SAR itself can fire again.
+    if (sarRefLow !== null) {
       if (slShape(cur, sarRefLow)) {
         sarFired = true;
         if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
@@ -2121,6 +2127,44 @@ function simulateDtfAll(
           );
         }
         pbarState = null;
+        // A later SAR can equally well land on an open BAR-theory position
+        // (TAR ENTRY or BAR 1 - BAR 2) instead of the ordinary ladder --
+        // close whichever is open, then reset BAR theory's own within-
+        // window gate-tracking outright: a fresh SAR re-arms everything,
+        // same as a brand new post-SAR WTF BAR window would.
+        if (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
+          pushRow(
+            0,
+            "TAR ENTRY",
+            tarState.rowEntryDate,
+            tarState.rowEntryPrice as number,
+            "DTF SAR",
+            cur.date,
+            sarRefLow,
+            tarState.rowHH,
+            tarState.rowHHDate
+          );
+        }
+        if (bar1State !== null && bar1State.mode === "BAR2_ACTIVE" && bar1State.rowEntryDate !== null) {
+          pushRow(
+            0,
+            "BAR 1 - BAR 2",
+            bar1State.rowEntryDate,
+            bar1State.rowEntryPrice as number,
+            "DTF SAR",
+            cur.date,
+            sarRefLow,
+            bar1State.rowHH,
+            bar1State.rowHHDate
+          );
+        }
+        tarState = null;
+        bar1State = null;
+        tarSlEverHappened = false;
+        bar12Red = null;
+        bar12RedEverConfirmed = false;
+        // Spent -- must re-arm from a FRESH RED2 before firing again.
+        sarRefLow = null;
       } else if (cur.l < sarRefLow) {
         sarRefLow = cur.l;
       }
@@ -2202,21 +2246,24 @@ function simulateDtfAll(
     );
   }
 
-  // Merge each track's own last OUTER (non-nested) row's exit type with
-  // the instance's own later WTF-side failure, when that cycle closed on
-  // a DTF-side SL and the WTF anchor itself independently failed
-  // afterward with no further DTF reactivation in between -- done
-  // separately per track (BAR, PBAR, TAR, BAR1) since each track's rows
-  // are interleaved in `rows` in whatever order they actually closed.
-  // Nested BAR2 rows are skipped -- they never end their outer row, so
-  // they're never the merge target. Earlier rows are never touched --
-  // each is already followed by a captured reactivation, so the WTF side
-  // hadn't actually failed yet at that point.
+  // Merge the GLOBAL last outer (non-nested) row's exit type -- across
+  // every track combined, not per track -- with the instance's own later
+  // WTF-side failure, when that cycle closed on a DTF-side SL and the
+  // WTF anchor itself independently failed afterward with no further
+  // DTF reactivation in between, on ANY track. All four tracks' rows
+  // must be checked together here: BAR/PBAR are mutually exclusive but
+  // can still alternate over an instance's life, and TAR/BAR 1 - BAR 2
+  // run in parallel once BAR theory starts -- merging per track
+  // independently would wrongly stamp an earlier track's own last row
+  // even when a LATER row on a different track shows real reactivation
+  // happened afterward (confirmed real-data bug: DIXON's B instance had
+  // a TAR ENTRY SL on 08/05/25 wrongly merged with the instance's
+  // eventual BAR SL2, when a BAR 1 - BAR 2 cycle on 16/05/25 -- a
+  // different track -- was the actual last word). Nested BAR2 rows are
+  // skipped -- they never end their outer row, so they're never the
+  // merge target.
   const wtfLabel = wtfSlLabel(inst.endEvent);
-  mergeTrailingWtfSl(rows, ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER"], wtfLabel);
-  mergeTrailingWtfSl(rows, ["PBAR ENTRY"], wtfLabel);
-  mergeTrailingWtfSl(rows, ["TAR ENTRY"], wtfLabel);
-  mergeTrailingWtfSl(rows, ["BAR 1 - BAR 2"], wtfLabel);
+  mergeTrailingWtfSl(rows, ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER", "PBAR ENTRY", "TAR ENTRY", "BAR 1 - BAR 2"], wtfLabel);
 
   const stage1Active = s1 !== null && s1.active;
   // BAR (tier 1) currently active -- the main ladder's own pre-escalation
