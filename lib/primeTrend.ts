@@ -1000,6 +1000,10 @@ function stepTarLevel(
         break;
       }
       if (entrySlNow) {
+        // A clean TAR ENTRY SL (TAR itself survives) also counts toward
+        // BAR 1 - BAR 2's "TAR SL" gate requirement, same as a decisive
+        // (bare or combined) TAR SL above.
+        tarSlNow = true;
         closed = { exitType: "DTF TAR ENTRY SL", exitPrice: s.tarEntryRefLow };
         s.frozenEntryRefHigh = s.tarEntryRefHigh;
         s.mode = "SEEK_TAR_ENTRY_REACTIVATION";
