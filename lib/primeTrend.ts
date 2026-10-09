@@ -587,14 +587,48 @@ function stepBarLevel(
 // directly -- unlike BAR ENTRY's own clean-SL handling.
 // --------------------------------------------------------------------
 
-type PbarMode = "SEEK_PBAR" | "PBAR_ACTIVE" | "PBAR_ENTRY_ACTIVE" | "SEEK_REACTIVATION";
+type PbarMode =
+  | "SEEK_PBAR"
+  | "PBAR_ACTIVE"
+  | "PBAR_ENTRY_ACTIVE"
+  | "SEEK_PBAR_ENTRY_REACTIVATION"
+  | "SEEK_REACTIVATION";
+
+// How the CURRENTLY living PBAR (tier 1, or tier 1+2) was itself most
+// recently formed -- NONE (Path 1: straight breakout above the WTF BAR's
+// own reference high, no RED at all), RED1 (Path 2: a single RED), or
+// RED1_RED2 (Path 3: the fast lane itself, a completed RED1->RED2).
+// Confirmed: a combined PBAR SL's own fast-lane eligibility depends on
+// this -- birthed on RED1_RED2 already means the strongest trigger is
+// already spent, no further shortcut available; birthed on RED1 needs a
+// FRESH RED1->RED2 (stronger than what birthed it) to fast-lane again;
+// birthed on NONE is the weakest, so either a fresh RED1 or RED1->RED2
+// fast-lanes it. Resets to NONE on every gated (non-fast-lane) reform, so
+// the next instance's own fast-lane eligibility starts fresh.
+type PbarBirthTier = "NONE" | "RED1" | "RED1_RED2";
 
 class PbarLevelState {
   mode: PbarMode = "SEEK_PBAR";
-  doorOpen = false;
-  red: BarRedGate | null = null;
+  // Path 1 is spent once per window -- confirmed: once used to form
+  // PBAR, every later reform falls onto the ordinary RED-gated/ladder-
+  // position rules below, never back to re-clearing the WTF BAR high
+  // again.
+  pathOneUsed = false;
   everSawRed1 = false;
+  red: BarRedGate | null = null;
+  // Set when a full RED1->RED2 confirms; CONSUMED (reset to false) the
+  // moment it's actually used to justify a fast-lane formation or
+  // reactivation -- the fast lane is one-time-per-use, not a standing
+  // privilege, so a stale completed cycle from long ago must not keep
+  // re-granting it forever.
+  doorOpen = false;
+  birthTier: PbarBirthTier = "NONE";
   topRef = 0;
+  // Which reactivation this SEEK_REACTIVATION cycle is for -- decides the
+  // fast-lane eligibility rule (BARE has no birth-tier restriction at
+  // all: any RED1/RED1->RED2 around the SL fast-lanes it; COMBINED
+  // applies the birthTier rule above).
+  reactivationKind: "BARE" | "COMBINED" | null = null;
 
   pbarRefHigh = 0;
   pbarRefLow = 0;
@@ -603,6 +637,13 @@ class PbarLevelState {
   pbarRefHighDate: string | null = null;
   pbarEntryRefHigh = 0;
   pbarEntryRefLow = 0;
+  // PBAR ENTRY's own frozen reference high at the moment of a CLEAN PBAR
+  // ENTRY SL (PBAR itself not also breached) -- the direct-reclaim target
+  // while SEEK_PBAR_ENTRY_REACTIVATION races it against PBAR's own
+  // (still-tracked-in-background) SL turning decisive instead. No fast
+  // lane here, ever: PBAR ENTRY can only validate above its own
+  // reference high.
+  frozenEntryRefHigh = 0;
 
   rowEntryDate: string | null = null;
   rowEntryPrice: number | null = null;
@@ -610,27 +651,38 @@ class PbarLevelState {
   rowHHDate: string | null = null;
 }
 
-/** Advances the PBAR/PBAR ENTRY ladder by one candle. Confirmed event
- * chains (verified against real COCHINSHIP.NS data):
- *   WTF BAR -> DTF RED1 (or RED1-RED2) -> PBAR -> PBAR ENTRY (ordinary
- *     tier1->tier2 escalation, once seeking unlocks).
- *   PBAR -> PBAR SL (bare, pre-escalation) -> PBAR (unrestricted -- a
- *     plain day-over-day breakout, no reference to clear first).
- *   PBAR -> PBAR ENTRY -> PBAR ENTRY SL (clean -- PBAR itself not also
- *     breached) -> PBAR (reforms ALONE first -- immediately/unrestricted
- *     if the door is already open, gated above the running top
- *     reference otherwise; PBAR ENTRY only escalates again later, on a
- *     later candle, via the ordinary tier1->tier2 path).
- *   PBAR -> PBAR ENTRY -> PBAR SL (decisive -- PBAR's own reference also
- *     breached, wiping PBAR ENTRY with it, whether combined same-candle
- *     or PBAR ENTRY SL first then PBAR SL follows) -> PBAR (reforms
- *     gated above the PBAR ENTRY reference high -- the
- *     full-RED1-RED2-gated escalation past this decisive case is
- *     deferred for now, same as BAR/BAR ENTRY's own deferred REAR). */
+/** Advances the PBAR/PBAR ENTRY ladder by one candle. Three independent
+ * ways in (all just "PBAR", never a separate name):
+ *   Path 1: straight breakout above the WTF BAR's own reference high
+ *     (`wtfBarRefHigh`), no RED needed -- spent once per window.
+ *   Path 2: one RED (or a completed RED1->RED2) -> plain breakout above
+ *     yesterday's high.
+ *   Path 3 (the fast lane): a prior PBAR/PBAR ENTRY SL, then a fresh
+ *     RED1 (or RED1->RED2) around that SL -> plain breakout, bypassing
+ *     the gated reference-high reform below.
+ * PBAR ENTRY always escalates above PBAR's own reference high, on a
+ * later candle -- never the same candle as PBAR, whichever path formed
+ * it.
+ *
+ * Reactivation:
+ *   Clean PBAR ENTRY SL (PBAR survives): ONE rule, no race, no fast lane
+ *     -- PBAR ENTRY reactivates directly above its own frozen reference
+ *     high (SEEK_PBAR_ENTRY_REACTIVATION), racing only against PBAR's
+ *     own still-tracked-in-background SL turning this into a combined
+ *     failure instead.
+ *   Bare PBAR SL (never reached PBAR ENTRY): gated above PBAR's own
+ *     reference high, UNLESS a RED1/RED1->RED2 is in play around the SL,
+ *     which fast-lanes it to the plain previous-day breakout instead.
+ *   Combined SL (PBAR + PBAR ENTRY both wiped): gated above PBAR ENTRY's
+ *     reference high by default. Fast lane depends on how THIS instance
+ *     was itself born (see PbarBirthTier) -- already spent (RED1_RED2
+ *     birth) means no shortcut; RED1 birth needs a fresh RED1->RED2;
+ *     NONE (Path 1) birth takes either. */
 function stepPbarLevel(
   s: PbarLevelState,
   prev: Day,
-  cur: Day
+  cur: Day,
+  wtfBarRefHigh: number
 ): {
   opened: { price: number } | null;
   closed: { exitType: string; exitPrice: number } | null;
@@ -654,23 +706,36 @@ function stepPbarLevel(
     }
   }
 
+  const formPbar = (tier: PbarBirthTier) => {
+    s.pbarRefHigh = cur.h;
+    s.pbarRefLow = cur.l;
+    s.pbarActivationPrice = cur.h;
+    s.pbarFormationDate = cur.date;
+    s.pbarRefHighDate = cur.date;
+    s.birthTier = tier;
+    s.mode = "PBAR_ACTIVE";
+  };
+
   switch (s.mode) {
     case "SEEK_PBAR": {
+      // Path 1.
+      if (!s.pathOneUsed && breakoutShape(prev, cur, wtfBarRefHigh)) {
+        formPbar("NONE");
+        s.pathOneUsed = true;
+        break;
+      }
+      // Path 2.
       if (!s.everSawRed1) break;
       if (breakoutShape(prev, cur, prev.h)) {
-        s.pbarRefHigh = cur.h;
-        s.pbarRefLow = cur.l;
-        s.pbarActivationPrice = cur.h;
-        s.pbarFormationDate = cur.date;
-        s.pbarRefHighDate = cur.date;
-        s.mode = "PBAR_ACTIVE";
+        const tier: PbarBirthTier = s.doorOpen ? "RED1_RED2" : "RED1";
+        if (s.doorOpen) s.doorOpen = false;
+        formPbar(tier);
       }
       break;
     }
     case "PBAR_ACTIVE": {
       if (breakoutShape(prev, cur, s.pbarRefHigh)) {
         const entryPrice = s.pbarRefHigh + THRESH;
-        s.topRef = Math.max(s.topRef, cur.h);
         s.pbarEntryRefHigh = cur.h;
         s.pbarEntryRefLow = cur.l;
         s.rowHH = cur.h;
@@ -686,8 +751,9 @@ function stepPbarLevel(
       }
       if (!slNow && cur.l < s.pbarRefLow) s.pbarRefLow = cur.l;
       if (slNow) {
-        s.topRef = Math.max(s.topRef, s.pbarRefHigh);
-        s.mode = "SEEK_PBAR"; // pre-escalation SL: always unrestricted, no gate needed again
+        s.topRef = s.pbarRefHigh;
+        s.reactivationKind = "BARE";
+        s.mode = "SEEK_REACTIVATION";
       }
       break;
     }
@@ -707,31 +773,82 @@ function stepPbarLevel(
       if (!entrySlNow && cur.l < s.pbarEntryRefLow) s.pbarEntryRefLow = cur.l;
 
       if (pbarSlNow) {
-        s.topRef = Math.max(s.topRef, s.pbarRefHigh, s.pbarEntryRefHigh);
+        s.topRef = Math.max(s.pbarRefHigh, s.pbarEntryRefHigh);
+        s.reactivationKind = "COMBINED";
         const exitType = entrySlNow ? "DTF PBAR SL + DTF PBAR ENTRY SL" : "DTF PBAR SL (wipes ENTRY)";
         closed = { exitType, exitPrice: s.pbarRefLow };
         s.mode = "SEEK_REACTIVATION";
         break;
       }
       if (entrySlNow) {
+        // Clean: PBAR itself not also breached -- stays alive in the
+        // background. Races PBAR ENTRY's own direct reactivation against
+        // PBAR's own (now decisive, if it comes first) SL -- see
+        // SEEK_PBAR_ENTRY_REACTIVATION below. No fast lane here, ever.
         closed = { exitType: "DTF PBAR ENTRY SL", exitPrice: s.pbarEntryRefLow };
-        s.mode = s.doorOpen ? "SEEK_PBAR" : "SEEK_REACTIVATION";
+        s.frozenEntryRefHigh = s.pbarEntryRefHigh;
+        s.mode = "SEEK_PBAR_ENTRY_REACTIVATION";
         break;
       }
       break;
     }
+    case "SEEK_PBAR_ENTRY_REACTIVATION": {
+      if (breakoutShape(prev, cur, s.frozenEntryRefHigh)) {
+        const entryPrice = s.frozenEntryRefHigh + THRESH;
+        s.pbarEntryRefHigh = cur.h;
+        s.pbarEntryRefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "PBAR_ENTRY_ACTIVE";
+        opened = { price: entryPrice };
+        break;
+      }
+      const barSlNow = slShape(cur, s.pbarRefLow);
+      if (!barSlNow && cur.h > s.pbarRefHigh && cur.h - s.pbarRefHigh >= ANY) {
+        s.pbarRefHigh = cur.h;
+        s.pbarRefHighDate = cur.date;
+      }
+      if (!barSlNow && cur.l < s.pbarRefLow) s.pbarRefLow = cur.l;
+      if (barSlNow) {
+        // Decisive now, same as a combined PBAR SL + PBAR ENTRY SL --
+        // falls through to the ordinary gated reactivation path, no new
+        // row (the clean ENTRY SL's own row was already pushed above).
+        s.topRef = Math.max(s.pbarRefHigh, s.frozenEntryRefHigh);
+        s.reactivationKind = "COMBINED";
+        s.mode = "SEEK_REACTIVATION";
+      }
+      break;
+    }
     case "SEEK_REACTIVATION": {
+      // Fast lane: a RED1 still open, or a completed RED1->RED2, around
+      // this SL can unlock the plain previous-day breakout instead of
+      // waiting to clear the gated reference high -- eligibility depends
+      // on what's being reactivated (BARE: no restriction) and, for a
+      // COMBINED failure, on this instance's own birthTier.
+      const red1Open = s.red !== null;
+      let fastLaneUnlocked: boolean;
+      if (s.reactivationKind === "BARE") {
+        fastLaneUnlocked = red1Open || s.doorOpen;
+      } else if (s.birthTier === "RED1_RED2") {
+        fastLaneUnlocked = false; // strongest trigger already spent
+      } else if (s.birthTier === "RED1") {
+        fastLaneUnlocked = s.doorOpen; // needs a FRESH, stronger RED1->RED2
+      } else {
+        fastLaneUnlocked = red1Open || s.doorOpen; // NONE (Path 1) birth: either suffices
+      }
+
+      if (fastLaneUnlocked && breakoutShape(prev, cur, prev.h)) {
+        const tier: PbarBirthTier = s.doorOpen ? "RED1_RED2" : "RED1";
+        if (s.doorOpen) s.doorOpen = false;
+        formPbar(tier);
+        break;
+      }
       if (breakoutShape(prev, cur, s.topRef)) {
         s.topRef = Math.max(s.topRef, cur.h);
-        s.pbarRefHigh = cur.h;
-        s.pbarRefLow = cur.l;
-        s.pbarActivationPrice = cur.h;
-        s.pbarFormationDate = cur.date;
-        s.pbarRefHighDate = cur.date;
-        s.mode = "PBAR_ACTIVE";
-      } else if (cur.h > s.topRef) {
-        s.topRef = cur.h;
+        formPbar("NONE");
+        break;
       }
+      if (cur.h > s.topRef) s.topRef = cur.h;
       break;
     }
   }
@@ -1030,6 +1147,18 @@ interface WtfBarWindow {
   formationDate: string;
   endDate: string | null;
   endReason: "BAR SL" | "new BAR" | null;
+  // The WTF BAR's own reference high AT FORMATION (that week's own known
+  // High) -- the seed for DTF PBAR's own "Path 1" trigger (a straight
+  // breakout above the WTF BAR's reference high, no RED required). Only
+  // a seed, not the whole running value: a weekly-bar lookup climbs in
+  // WEEKLY jumps and, worse, every day's own High is itself one of the
+  // inputs to ITS OWN week's high, so "today's High > this week's own
+  // running high" is structurally near-impossible intra-week -- same
+  // look-ahead trap preS1Ref above was built to avoid. The caller
+  // (simulateDtfAll) instead climbs this seed quietly on each later
+  // DAY'S own High directly, exactly like preS1Ref, never waiting for a
+  // further WTF week to close first.
+  formationHigh: number;
 }
 
 /** The WTF engine's own native "BAR(" milestone (lib/tzEngineWtf.ts's
@@ -1075,9 +1204,10 @@ function wtfBarWindowsForLetter(
     const f = formations[i];
     const next = formations[i + 1] ?? null;
     const matchingSl = sls.find((sl) => sl > f && (next === null || sl < next));
-    if (matchingSl) windows.push({ formationDate: f, endDate: matchingSl, endReason: "BAR SL" });
-    else if (next) windows.push({ formationDate: f, endDate: next, endReason: "new BAR" });
-    else windows.push({ formationDate: f, endDate: null, endReason: null });
+    const end = matchingSl ?? next;
+    const endReason: WtfBarWindow["endReason"] = matchingSl ? "BAR SL" : next ? "new BAR" : null;
+    const formationHigh = wtfTrace.find(({ day }) => day.date === f)?.day.h ?? 0;
+    windows.push({ formationDate: f, endDate: end ?? null, endReason, formationHigh });
   }
   return windows;
 }
@@ -1162,6 +1292,13 @@ function simulateDtfAll(
   const pbarWindows = wtfBarWindowsForLetter(wtfTrace, inst.letter, inst.formationDate, inst.endDate);
   let pbarWindowIdx = 0;
   let pbarState: PbarLevelState | null = null;
+  // DTF PBAR's own "Path 1" anchor -- the WTF BAR's reference high,
+  // seeded at this window's own formationHigh and then climbing quietly
+  // on each later DAY's own High directly (see WtfBarWindow's own
+  // comment for why: same look-ahead trap preS1Ref avoids). Reseeded
+  // every time pbarWindowIdx moves to a new window.
+  let wtfBarRefHigh = 0;
+  let wtfBarRefHighWindowIdx = -1;
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
   // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
@@ -1258,7 +1395,10 @@ function simulateDtfAll(
       // watch resumes from an accurate reference rather than a stale
       // pre-PBAR one.
       const pbarCurrentlyActive =
-        pbarState !== null && (pbarState.mode === "PBAR_ACTIVE" || pbarState.mode === "PBAR_ENTRY_ACTIVE");
+        pbarState !== null &&
+        (pbarState.mode === "PBAR_ACTIVE" ||
+          pbarState.mode === "PBAR_ENTRY_ACTIVE" ||
+          pbarState.mode === "SEEK_PBAR_ENTRY_REACTIVATION");
       if (!pbarCurrentlyActive && breakoutShape(prev, cur, frozenRef)) {
         s1 = new Stage(cur.h, cur.l);
         s1Since = cur.date;
@@ -1374,8 +1514,18 @@ function simulateDtfAll(
       }
     }
 
+    // wtfBarRefHigh's own reseed on every window change -- gated on the
+    // same "day after formation" start as pbarState itself, otherwise
+    // the seed would pick up price action from long before this window
+    // (and its own WTF BAR) even existed.
+    const inPbarWindow = pbarWindowIdx < pbarWindows.length && cur.date > pbarWindows[pbarWindowIdx].formationDate;
+    if (inPbarWindow && wtfBarRefHighWindowIdx !== pbarWindowIdx) {
+      wtfBarRefHigh = pbarWindows[pbarWindowIdx].formationHigh;
+      wtfBarRefHighWindowIdx = pbarWindowIdx;
+    }
+
     if (pbarState !== null) {
-      const { opened, closed } = stepPbarLevel(pbarState, prev, cur);
+      const { opened, closed } = stepPbarLevel(pbarState, prev, cur, wtfBarRefHigh);
       if (opened) {
         pbarState.rowEntryDate = cur.date;
         pbarState.rowEntryPrice = opened.price;
@@ -1394,6 +1544,13 @@ function simulateDtfAll(
         );
       }
     }
+
+    // Only climb wtfBarRefHigh AFTER today's own Path 1 breakout check has
+    // already run against the STALE (pre-today) value -- same ordering
+    // preS1Ref uses, otherwise today's own High would always already be
+    // baked into the reference it's being compared against, making the
+    // breakout structurally impossible.
+    if (inPbarWindow && cur.h > wtfBarRefHigh) wtfBarRefHigh = cur.h;
 
     i += 1;
   }
