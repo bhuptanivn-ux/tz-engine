@@ -1987,11 +1987,23 @@ function simulateDtfAll(
     if (sarFired && pbarWindowIdx < pbarWindows.length) {
       const w = pbarWindows[pbarWindowIdx];
       if (cur.date > w.formationDate && (w.endDate === null || cur.date <= w.endDate)) {
-        // TAR stays live only until BAR 1 - BAR 2 unlocks -- confirmed:
-        // once the nested cascade takes over, TAR goes permanently
-        // dormant for the rest of this window (not a parallel track).
+        // TAR keeps seeking new formations only UNTIL BAR 1 - BAR 2's own
+        // gate unlocks -- but confirmed: unlocking does NOT force-close
+        // an already-open TAR ENTRY (or a clean-SL reclaim race already
+        // in progress) -- "after TAR ENTRY, only TAR ENTRY SL can wipe
+        // out its entry [or later a fresh SAR]." So once unlocked, TAR
+        // only keeps running if it was already in one of those two LIVE
+        // modes at that exact moment; the instant it drops out of both
+        // (closes for good, or was never live to begin with), it goes
+        // permanently dormant for the rest of this window -- no new TAR
+        // formation or reactivation ever starts again, regardless of
+        // later price action (confirmed: price recrossing TAR's own
+        // reference high afterward does NOT reactivate it or interrupt
+        // BAR 1 - BAR 2).
         const bar12AlreadyUnlocked = tarSlEverHappened && bar12RedEverConfirmed;
-        if (!bar12AlreadyUnlocked) {
+        const tarIsLive =
+          tarState !== null && (tarState.mode === "TAR_ENTRY_ACTIVE" || tarState.mode === "SEEK_TAR_ENTRY_REACTIVATION");
+        if (!bar12AlreadyUnlocked || tarIsLive) {
           if (tarState === null) tarState = new TarLevelState();
 
           const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
@@ -2013,6 +2025,14 @@ function simulateDtfAll(
             );
           }
           if (tarResult.tarSlNow) tarSlEverHappened = true;
+
+          // The gate may have just unlocked (or already was) -- once so,
+          // discard tarState the moment it's no longer in a live mode,
+          // so it can never seek or reactivate again.
+          if (tarSlEverHappened && bar12RedEverConfirmed) {
+            const stillLive = tarState.mode === "TAR_ENTRY_ACTIVE" || tarState.mode === "SEEK_TAR_ENTRY_REACTIVATION";
+            if (!stillLive) tarState = null;
+          }
         }
 
         // The nested cascade's own continuous RED1->RED2 tracker --
@@ -2028,32 +2048,6 @@ function simulateDtfAll(
           } else if (result === "invalid") {
             bar12Red = null;
           }
-        }
-
-        // BAR 1 - BAR 2 only unlocks once BOTH halves of the gate have
-        // fired at least once in this window -- "without TAR SL, no
-        // BAR 1 - BAR 2." The MOMENT it unlocks, TAR goes dormant -- force-
-        // close any TAR ENTRY still open at that exact instant first,
-        // since TAR itself won't be stepped again above from here on.
-        if (!bar12AlreadyUnlocked && tarSlEverHappened && bar12RedEverConfirmed) {
-          if (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
-            pushRow(
-              0,
-              "TAR ENTRY",
-              tarState.rowEntryDate,
-              tarState.rowEntryPrice as number,
-              "BAR 1 - BAR 2 unlocked (wipes TAR ENTRY)",
-              cur.date,
-              tarState.tarEntryRefLow,
-              tarState.rowHH,
-              tarState.rowHHDate
-            );
-          }
-          // TAR is now permanently dormant for the rest of this window --
-          // discard it outright so the later window-boundary/"still open"
-          // code never mistakes its stale mode/rowEntryDate for a still-
-          // live entry and double-closes it.
-          tarState = null;
         }
 
         if (tarSlEverHappened && bar12RedEverConfirmed) {
