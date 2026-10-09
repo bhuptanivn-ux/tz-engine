@@ -1849,19 +1849,13 @@ function simulateDtfAll(
           barState.rowHHDate
         );
       }
-      if (nestedClosed) {
-        pushRow(
-          barState.level,
-          "BAR2",
-          nestedClosed.entryDate,
-          nestedClosed.entryPrice,
-          "DTF BAR 2 SL",
-          cur.date,
-          nestedClosed.exitPrice,
-          nestedClosed.hh,
-          nestedClosed.hhDate
-        );
-      }
+      // Nested daily BAR1->BAR2 (inside an already-active BAR ENTRY) is
+      // kept running internally but deliberately not surfaced as its own
+      // row right now -- confirmed: suppress it everywhere it could
+      // occur (BAR ENTRY today; TAR ENTRY, BAR 1 - BAR 2, PBAR ENTRY if
+      // any of them ever gain the same nested mechanism later), not just
+      // here.
+      void nestedClosed;
     }
 
     // --- DTF PBAR / PBAR ENTRY --------------------------------------
