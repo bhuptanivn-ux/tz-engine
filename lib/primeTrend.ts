@@ -103,7 +103,7 @@ export interface PrimeTrendResult {
   // always 0 for now (its escalation past a decisive SL is deferred, see
   // that section).
   level: number;
-  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "PBAR ENTRY";
+  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "PBAR ENTRY" | "TAR ENTRY" | "BAR1 ENTRY";
   entryDate: string;
   entryPrice: number;
   exitType: string;
@@ -857,6 +857,346 @@ function stepPbarLevel(
 }
 
 // --------------------------------------------------------------------
+// BAR THEORY -- TAR / TAR ENTRY and the nested BAR1 / BAR2 cascade.
+// Anchored on a WTF BAR that forms AFTER a DTF SAR exit (see simulateDtfAll's
+// own `sarFired`/pbarWindows reuse below) -- this is PRIME TREND's own
+// reactivation path past a SAR exit, confirmed as the ONLY way back in
+// (an ordinary fresh BAR/PBAR cycle does not reactivate a SAR-exited
+// instance). Scoped to "WTF BAR active" windows exactly like PBAR's own
+// (reuses the identical wtfBarWindowsForLetter/pbarWindows, wiped at the
+// same window boundaries, same continuous-WTF-BAR-active precondition).
+//
+// TAR / TAR ENTRY -- structurally the Path-1-only shape of PBAR (straight
+// breakout above the WTF BAR's own reference high, no RED needed -- same
+// `wtfBarRefHigh` anchor PBAR's own Path 1 uses), but with ONE confirmed
+// difference: TAR's own bare (pre-escalation) SL reforms GATED above
+// TAR's own reference high, never unrestricted.
+//   TAR -> TAR SL (bare) -> TAR (gated, above TAR's own reference high).
+//   TAR -> TAR ENTRY -> TAR ENTRY SL (clean) -> TAR ENTRY (direct, above
+//     its own frozen reference high -- races TAR's own background SL
+//     turning it decisive instead, same SEEK_*_ENTRY_REACTIVATION shape
+//     as everywhere else in this file).
+//   TAR -> TAR ENTRY -> TAR SL (combined) -> TAR (gated, above the TAR
+//     ENTRY reference high).
+//
+// BAR1 / BAR2 -- a SEPARATE nested cascade, gated on BOTH of (confirmed):
+// TAR SL having occurred at least once in this window (bare or combined
+// -- TAR ENTRY SL alone does not count, TAR itself must have failed), AND
+// a RED1->RED2 cycle having completed at least once in this window
+// (before, after, or alongside that TAR SL -- order doesn't matter, only
+// that both have happened). Neither condition alone unlocks it ("without
+// TAR SL, no BAR1-BAR2" -- confirmed). Once unlocked it runs for the rest
+// of the window, in PARALLEL with TAR's own ladder (TAR keeps reforming
+// per its own rules above; this is a second, independent track, same
+// parallel-tracks shape as BAR/BAR-ENTRY and PBAR/PBAR-ENTRY elsewhere in
+// this file). Once unlocked, BAR1 forms via a plain breakout (same shape
+// as PBAR's own RED-gated Path 2 entry) -- the one confirmed difference
+// from TAR: BAR1's own bare SL reforms UNRESTRICTED ("Immediately BAR1"),
+// not gated.
+//   BAR1 -> BAR1 SL (bare) -> BAR1 (unrestricted, plain breakout).
+//   BAR1 -> BAR2 -> BAR2 SL (clean) -> BAR2 (direct, above its own frozen
+//     reference high).
+//   BAR1 -> BAR2 -> BAR1 SL (combined) -> BAR1 (gated, above the BAR2
+//     reference high).
+
+type TarMode = "SEEK_TAR" | "TAR_ACTIVE" | "TAR_ENTRY_ACTIVE" | "SEEK_TAR_ENTRY_REACTIVATION" | "SEEK_REACTIVATION";
+
+class TarLevelState {
+  mode: TarMode = "SEEK_TAR";
+  topRef = 0;
+
+  tarRefHigh = 0;
+  tarRefLow = 0;
+  tarActivationPrice: number | null = null;
+  tarFormationDate: string | null = null;
+  tarRefHighDate: string | null = null;
+  tarEntryRefHigh = 0;
+  tarEntryRefLow = 0;
+  frozenEntryRefHigh = 0;
+
+  rowEntryDate: string | null = null;
+  rowEntryPrice: number | null = null;
+  rowHH = 0;
+  rowHHDate: string | null = null;
+}
+
+/** Advances TAR/TAR ENTRY by one candle. See the module section comment
+ * above for the confirmed formation/reactivation rules. */
+function stepTarLevel(
+  s: TarLevelState,
+  prev: Day,
+  cur: Day,
+  wtfBarRefHigh: number
+): {
+  opened: { price: number } | null;
+  closed: { exitType: string; exitPrice: number } | null;
+  tarSlNow: boolean;
+} {
+  let opened: { price: number } | null = null;
+  let closed: { exitType: string; exitPrice: number } | null = null;
+  let tarSlNow = false;
+
+  switch (s.mode) {
+    case "SEEK_TAR": {
+      if (breakoutShape(prev, cur, wtfBarRefHigh)) {
+        s.tarRefHigh = cur.h;
+        s.tarRefLow = cur.l;
+        s.tarActivationPrice = cur.h;
+        s.tarFormationDate = cur.date;
+        s.tarRefHighDate = cur.date;
+        s.mode = "TAR_ACTIVE";
+      }
+      break;
+    }
+    case "TAR_ACTIVE": {
+      if (breakoutShape(prev, cur, s.tarRefHigh)) {
+        const entryPrice = s.tarRefHigh + THRESH;
+        s.tarEntryRefHigh = cur.h;
+        s.tarEntryRefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "TAR_ENTRY_ACTIVE";
+        opened = { price: entryPrice };
+        break;
+      }
+      const slNow = slShape(cur, s.tarRefLow);
+      if (!slNow && cur.h > s.tarRefHigh && cur.h - s.tarRefHigh >= ANY) {
+        s.tarRefHigh = cur.h;
+        s.tarRefHighDate = cur.date;
+      }
+      if (!slNow && cur.l < s.tarRefLow) s.tarRefLow = cur.l;
+      if (slNow) {
+        // Bare, pre-escalation SL -- no row (nothing was ever reported
+        // as open), same Filter-rule convention as BAR/PBAR's own bare
+        // tier-1 SL. tarSlNow still fires: it's half of BAR1/BAR2's own
+        // unlock gate regardless of whether TAR ever escalated.
+        tarSlNow = true;
+        s.topRef = s.tarRefHigh;
+        s.mode = "SEEK_REACTIVATION"; // gated, never unrestricted for TAR
+      }
+      break;
+    }
+    case "TAR_ENTRY_ACTIVE": {
+      if (cur.h > s.rowHH) {
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+      }
+      const tarSlDecisive = slShape(cur, s.tarRefLow);
+      const entrySlNow = slShape(cur, s.tarEntryRefLow);
+      if (!tarSlDecisive && cur.h > s.tarRefHigh && cur.h - s.tarRefHigh >= ANY) {
+        s.tarRefHigh = cur.h;
+        s.tarRefHighDate = cur.date;
+      }
+      if (!tarSlDecisive && cur.l < s.tarRefLow) s.tarRefLow = cur.l;
+      if (!entrySlNow && cur.h > s.tarEntryRefHigh && cur.h - s.tarEntryRefHigh >= ANY) s.tarEntryRefHigh = cur.h;
+      if (!entrySlNow && cur.l < s.tarEntryRefLow) s.tarEntryRefLow = cur.l;
+
+      if (tarSlDecisive) {
+        tarSlNow = true;
+        s.topRef = Math.max(s.tarRefHigh, s.tarEntryRefHigh);
+        const exitType = entrySlNow ? "DTF TAR SL + DTF TAR ENTRY SL" : "DTF TAR SL (wipes ENTRY)";
+        closed = { exitType, exitPrice: s.tarRefLow };
+        s.mode = "SEEK_REACTIVATION";
+        break;
+      }
+      if (entrySlNow) {
+        closed = { exitType: "DTF TAR ENTRY SL", exitPrice: s.tarEntryRefLow };
+        s.frozenEntryRefHigh = s.tarEntryRefHigh;
+        s.mode = "SEEK_TAR_ENTRY_REACTIVATION";
+        break;
+      }
+      break;
+    }
+    case "SEEK_TAR_ENTRY_REACTIVATION": {
+      if (breakoutShape(prev, cur, s.frozenEntryRefHigh)) {
+        const entryPrice = s.frozenEntryRefHigh + THRESH;
+        s.tarEntryRefHigh = cur.h;
+        s.tarEntryRefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "TAR_ENTRY_ACTIVE";
+        opened = { price: entryPrice };
+        break;
+      }
+      const bgSlNow = slShape(cur, s.tarRefLow);
+      if (!bgSlNow && cur.h > s.tarRefHigh && cur.h - s.tarRefHigh >= ANY) {
+        s.tarRefHigh = cur.h;
+        s.tarRefHighDate = cur.date;
+      }
+      if (!bgSlNow && cur.l < s.tarRefLow) s.tarRefLow = cur.l;
+      if (bgSlNow) {
+        tarSlNow = true;
+        s.topRef = Math.max(s.tarRefHigh, s.frozenEntryRefHigh);
+        s.mode = "SEEK_REACTIVATION";
+      }
+      break;
+    }
+    case "SEEK_REACTIVATION": {
+      if (breakoutShape(prev, cur, s.topRef)) {
+        s.topRef = Math.max(s.topRef, cur.h);
+        s.tarRefHigh = cur.h;
+        s.tarRefLow = cur.l;
+        s.tarActivationPrice = cur.h;
+        s.tarFormationDate = cur.date;
+        s.tarRefHighDate = cur.date;
+        s.mode = "TAR_ACTIVE";
+      } else if (cur.h > s.topRef) {
+        s.topRef = cur.h;
+      }
+      break;
+    }
+  }
+
+  return { opened, closed, tarSlNow };
+}
+
+type Bar1Mode = "SEEK_BAR1" | "BAR1_ACTIVE" | "BAR2_ACTIVE" | "SEEK_BAR2_REACTIVATION" | "SEEK_REACTIVATION";
+
+class Bar1LevelState {
+  mode: Bar1Mode = "SEEK_BAR1";
+  topRef = 0;
+
+  bar1RefHigh = 0;
+  bar1RefLow = 0;
+  bar1ActivationPrice: number | null = null;
+  bar1FormationDate: string | null = null;
+  bar1RefHighDate: string | null = null;
+  bar2RefHigh = 0;
+  bar2RefLow = 0;
+  frozenBar2RefHigh = 0;
+
+  rowEntryDate: string | null = null;
+  rowEntryPrice: number | null = null;
+  rowHH = 0;
+  rowHHDate: string | null = null;
+}
+
+/** Advances the nested BAR1/BAR2 cascade by one candle -- only ever
+ * called once this window's own gate (TAR SL ever + RED1->RED2 ever,
+ * tracked by the caller) has unlocked. See the module section comment
+ * above for the confirmed formation/reactivation rules -- same shape as
+ * stepTarLevel except BAR1's own bare SL is unrestricted, not gated. */
+function stepBar1Level(
+  s: Bar1LevelState,
+  prev: Day,
+  cur: Day
+): {
+  opened: { price: number } | null;
+  closed: { exitType: string; exitPrice: number } | null;
+} {
+  let opened: { price: number } | null = null;
+  let closed: { exitType: string; exitPrice: number } | null = null;
+
+  switch (s.mode) {
+    case "SEEK_BAR1": {
+      if (breakoutShape(prev, cur, prev.h)) {
+        s.bar1RefHigh = cur.h;
+        s.bar1RefLow = cur.l;
+        s.bar1ActivationPrice = cur.h;
+        s.bar1FormationDate = cur.date;
+        s.bar1RefHighDate = cur.date;
+        s.mode = "BAR1_ACTIVE";
+      }
+      break;
+    }
+    case "BAR1_ACTIVE": {
+      if (breakoutShape(prev, cur, s.bar1RefHigh)) {
+        const entryPrice = s.bar1RefHigh + THRESH;
+        s.bar2RefHigh = cur.h;
+        s.bar2RefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "BAR2_ACTIVE";
+        opened = { price: entryPrice };
+        break;
+      }
+      const slNow = slShape(cur, s.bar1RefLow);
+      if (!slNow && cur.h > s.bar1RefHigh && cur.h - s.bar1RefHigh >= ANY) {
+        s.bar1RefHigh = cur.h;
+        s.bar1RefHighDate = cur.date;
+      }
+      if (!slNow && cur.l < s.bar1RefLow) s.bar1RefLow = cur.l;
+      if (slNow) {
+        // Bare, pre-escalation SL -- no row, same Filter-rule convention
+        // as everywhere else; reforms unrestricted ("Immediately BAR1").
+        s.topRef = s.bar1RefHigh;
+        s.mode = "SEEK_BAR1";
+      }
+      break;
+    }
+    case "BAR2_ACTIVE": {
+      if (cur.h > s.rowHH) {
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+      }
+      const bar1SlNow = slShape(cur, s.bar1RefLow);
+      const entrySlNow = slShape(cur, s.bar2RefLow);
+      if (!bar1SlNow && cur.h > s.bar1RefHigh && cur.h - s.bar1RefHigh >= ANY) {
+        s.bar1RefHigh = cur.h;
+        s.bar1RefHighDate = cur.date;
+      }
+      if (!bar1SlNow && cur.l < s.bar1RefLow) s.bar1RefLow = cur.l;
+      if (!entrySlNow && cur.h > s.bar2RefHigh && cur.h - s.bar2RefHigh >= ANY) s.bar2RefHigh = cur.h;
+      if (!entrySlNow && cur.l < s.bar2RefLow) s.bar2RefLow = cur.l;
+
+      if (bar1SlNow) {
+        s.topRef = Math.max(s.bar1RefHigh, s.bar2RefHigh);
+        const exitType = entrySlNow ? "DTF BAR1 SL + DTF BAR2 SL" : "DTF BAR1 SL (wipes BAR2)";
+        closed = { exitType, exitPrice: s.bar1RefLow };
+        s.mode = "SEEK_REACTIVATION";
+        break;
+      }
+      if (entrySlNow) {
+        closed = { exitType: "DTF BAR2 SL", exitPrice: s.bar2RefLow };
+        s.frozenBar2RefHigh = s.bar2RefHigh;
+        s.mode = "SEEK_BAR2_REACTIVATION";
+        break;
+      }
+      break;
+    }
+    case "SEEK_BAR2_REACTIVATION": {
+      if (breakoutShape(prev, cur, s.frozenBar2RefHigh)) {
+        const entryPrice = s.frozenBar2RefHigh + THRESH;
+        s.bar2RefHigh = cur.h;
+        s.bar2RefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "BAR2_ACTIVE";
+        opened = { price: entryPrice };
+        break;
+      }
+      const bgSlNow = slShape(cur, s.bar1RefLow);
+      if (!bgSlNow && cur.h > s.bar1RefHigh && cur.h - s.bar1RefHigh >= ANY) {
+        s.bar1RefHigh = cur.h;
+        s.bar1RefHighDate = cur.date;
+      }
+      if (!bgSlNow && cur.l < s.bar1RefLow) s.bar1RefLow = cur.l;
+      if (bgSlNow) {
+        s.topRef = Math.max(s.bar1RefHigh, s.frozenBar2RefHigh);
+        s.mode = "SEEK_REACTIVATION";
+      }
+      break;
+    }
+    case "SEEK_REACTIVATION": {
+      if (breakoutShape(prev, cur, s.topRef)) {
+        s.topRef = Math.max(s.topRef, cur.h);
+        s.bar1RefHigh = cur.h;
+        s.bar1RefLow = cur.l;
+        s.bar1ActivationPrice = cur.h;
+        s.bar1FormationDate = cur.date;
+        s.bar1RefHighDate = cur.date;
+        s.mode = "BAR1_ACTIVE";
+      } else if (cur.h > s.topRef) {
+        s.topRef = cur.h;
+      }
+      break;
+    }
+  }
+
+  return { opened, closed };
+}
+
+// --------------------------------------------------------------------
 // Step 1: run TZEngine once over the WTF series. Alongside the ordinary
 // event trace, snapshot every branch's own "2"-tier ref_low BEFORE each
 // candle is processed, for EACH of the three anchor families, plus which
@@ -1141,6 +1481,12 @@ export const DTF_SL_EXIT_TYPES = new Set([
   "DTF PBAR ENTRY SL",
   "DTF PBAR SL (wipes ENTRY)",
   "DTF PBAR SL + DTF PBAR ENTRY SL",
+  "DTF TAR ENTRY SL",
+  "DTF TAR SL (wipes ENTRY)",
+  "DTF TAR SL + DTF TAR ENTRY SL",
+  "DTF BAR2 SL",
+  "DTF BAR1 SL (wipes BAR2)",
+  "DTF BAR1 SL + DTF BAR2 SL",
 ]);
 
 interface WtfBarWindow {
@@ -1337,7 +1683,18 @@ function simulateDtfAll(
   let red2EventIdx = 0;
   let sarRefLow: number | null = null;
   let sarFired = false;
-  let sarExitDate: string | null = null;
+
+  // BAR THEORY -- TAR/TAR ENTRY and the nested BAR1/BAR2 cascade (see the
+  // module section comment above). Reuses pbarWindows/pbarWindowIdx/
+  // wtfBarRefHigh verbatim (identical "WTF BAR active" windowing as
+  // PBAR), but only ever runs once sarFired -- before that, PBAR owns
+  // this same window set. Wiped at the same window boundaries PBAR's own
+  // ladder is (below), including the gate-tracking fields.
+  let tarState: TarLevelState | null = null;
+  let bar1State: Bar1LevelState | null = null;
+  let tarSlEverHappened = false;
+  let bar12Red: BarRedGate | null = null;
+  let bar12RedEverConfirmed = false;
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
   // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
@@ -1541,6 +1898,45 @@ function simulateDtfAll(
         );
       }
       pbarState = null;
+      // BAR theory's own structures and gate-tracking are wiped at the
+      // exact same WTF-BAR-window boundary -- same "does not carry over
+      // accumulated gate state across the boundary" rule PBAR's own
+      // ladder already confirmed.
+      if (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
+        const windowExitType =
+          pbarWindows[pbarWindowIdx].endReason === "BAR SL" ? "WTF BAR SL (wipes ENTRY)" : "WTF BAR reform (wipes ENTRY)";
+        pushRow(
+          0,
+          "TAR ENTRY",
+          tarState.rowEntryDate,
+          tarState.rowEntryPrice as number,
+          windowExitType,
+          pbarWindows[pbarWindowIdx].endDate as string,
+          tarState.tarEntryRefLow,
+          tarState.rowHH,
+          tarState.rowHHDate
+        );
+      }
+      if (bar1State !== null && bar1State.mode === "BAR2_ACTIVE" && bar1State.rowEntryDate !== null) {
+        const windowExitType =
+          pbarWindows[pbarWindowIdx].endReason === "BAR SL" ? "WTF BAR SL (wipes ENTRY)" : "WTF BAR reform (wipes ENTRY)";
+        pushRow(
+          0,
+          "BAR1 ENTRY",
+          bar1State.rowEntryDate,
+          bar1State.rowEntryPrice as number,
+          windowExitType,
+          pbarWindows[pbarWindowIdx].endDate as string,
+          bar1State.bar2RefLow,
+          bar1State.rowHH,
+          bar1State.rowHHDate
+        );
+      }
+      tarState = null;
+      bar1State = null;
+      tarSlEverHappened = false;
+      bar12Red = null;
+      bar12RedEverConfirmed = false;
       pbarWindowIdx += 1;
     }
 
@@ -1581,6 +1977,76 @@ function simulateDtfAll(
           pbarState.rowHH,
           pbarState.rowHHDate
         );
+      }
+    }
+
+    // --- BAR THEORY: TAR/TAR ENTRY and the nested BAR1/BAR2 cascade ----
+    // Only runs once sarFired -- reuses the same pbarWindows/pbarWindowIdx/
+    // wtfBarRefHigh as PBAR above (identical "WTF BAR active" windowing;
+    // wiped at the same window boundaries, see the while-loop above).
+    if (sarFired && pbarWindowIdx < pbarWindows.length) {
+      const w = pbarWindows[pbarWindowIdx];
+      if (cur.date > w.formationDate && (w.endDate === null || cur.date <= w.endDate)) {
+        if (tarState === null) tarState = new TarLevelState();
+
+        const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
+        if (tarResult.opened) {
+          tarState.rowEntryDate = cur.date;
+          tarState.rowEntryPrice = tarResult.opened.price;
+        }
+        if (tarResult.closed) {
+          pushRow(
+            0,
+            "TAR ENTRY",
+            tarState.rowEntryDate as string,
+            tarState.rowEntryPrice as number,
+            tarResult.closed.exitType,
+            cur.date,
+            tarResult.closed.exitPrice,
+            tarState.rowHH,
+            tarState.rowHHDate
+          );
+        }
+        if (tarResult.tarSlNow) tarSlEverHappened = true;
+
+        // The nested cascade's own continuous RED1->RED2 tracker --
+        // independent of TAR's own state, same shape as everywhere else
+        // in this file -- half of BAR1/BAR2's unlock gate.
+        if (bar12Red === null) {
+          if (isBarRed1Shape(prev, cur)) bar12Red = new BarRedGate(cur.h, cur.l);
+        } else {
+          const result = stepBarRed(bar12Red, prev, cur);
+          if (result === "confirmed") {
+            bar12Red = null;
+            bar12RedEverConfirmed = true;
+          } else if (result === "invalid") {
+            bar12Red = null;
+          }
+        }
+
+        // BAR1/BAR2 only unlocks once BOTH halves of the gate have fired
+        // at least once in this window -- "without TAR SL, no BAR1-BAR2."
+        if (tarSlEverHappened && bar12RedEverConfirmed) {
+          if (bar1State === null) bar1State = new Bar1LevelState();
+          const { opened, closed } = stepBar1Level(bar1State, prev, cur);
+          if (opened) {
+            bar1State.rowEntryDate = cur.date;
+            bar1State.rowEntryPrice = opened.price;
+          }
+          if (closed) {
+            pushRow(
+              0,
+              "BAR1 ENTRY",
+              bar1State.rowEntryDate as string,
+              bar1State.rowEntryPrice as number,
+              closed.exitType,
+              cur.date,
+              closed.exitPrice,
+              bar1State.rowHH,
+              bar1State.rowHHDate
+            );
+          }
+        }
       }
     }
 
@@ -1680,20 +2146,53 @@ function simulateDtfAll(
       pbarState.rowHHDate
     );
   }
+  // Same "still open" handling for BAR theory's own two tracks (TAR,
+  // BAR1/BAR2) -- only ever non-null once sarFired, same independence
+  // between tracks as above.
+  if (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
+    const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
+    pushRow(
+      0,
+      "TAR ENTRY",
+      tarState.rowEntryDate,
+      tarState.rowEntryPrice as number,
+      exitType,
+      inst.endDate,
+      inst.endPrice as number,
+      tarState.rowHH,
+      tarState.rowHHDate
+    );
+  }
+  if (bar1State !== null && bar1State.mode === "BAR2_ACTIVE" && bar1State.rowEntryDate !== null) {
+    const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
+    pushRow(
+      0,
+      "BAR1 ENTRY",
+      bar1State.rowEntryDate,
+      bar1State.rowEntryPrice as number,
+      exitType,
+      inst.endDate,
+      inst.endPrice as number,
+      bar1State.rowHH,
+      bar1State.rowHHDate
+    );
+  }
 
   // Merge each track's own last OUTER (non-nested) row's exit type with
   // the instance's own later WTF-side failure, when that cycle closed on
   // a DTF-side SL and the WTF anchor itself independently failed
   // afterward with no further DTF reactivation in between -- done
-  // separately per track (BAR, PBAR) since the two tracks' rows are
-  // interleaved in `rows` in whatever order they actually closed. Nested
-  // BAR2 rows are skipped -- they never end their outer row, so they're
-  // never the merge target. Earlier rows are never touched -- each is
-  // already followed by a captured reactivation, so the WTF side hadn't
-  // actually failed yet at that point.
+  // separately per track (BAR, PBAR, TAR, BAR1) since each track's rows
+  // are interleaved in `rows` in whatever order they actually closed.
+  // Nested BAR2 rows are skipped -- they never end their outer row, so
+  // they're never the merge target. Earlier rows are never touched --
+  // each is already followed by a captured reactivation, so the WTF side
+  // hadn't actually failed yet at that point.
   const wtfLabel = wtfSlLabel(inst.endEvent);
   mergeTrailingWtfSl(rows, ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER"], wtfLabel);
   mergeTrailingWtfSl(rows, ["PBAR ENTRY"], wtfLabel);
+  mergeTrailingWtfSl(rows, ["TAR ENTRY"], wtfLabel);
+  mergeTrailingWtfSl(rows, ["BAR1 ENTRY"], wtfLabel);
 
   const stage1Active = s1 !== null && s1.active;
   // BAR (tier 1) currently active -- the main ladder's own pre-escalation
