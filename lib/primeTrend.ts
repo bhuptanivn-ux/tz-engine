@@ -1059,6 +1059,13 @@ type Bar1Mode = "SEEK_BAR1" | "BAR1_ACTIVE" | "BAR2_ACTIVE" | "SEEK_BAR2_REACTIV
 class Bar1LevelState {
   mode: Bar1Mode = "SEEK_BAR1";
   topRef = 0;
+  // Set true the first time a combined SL establishes "the original
+  // gate" (topRef). From then on topRef ratchets with every high
+  // reached in ANY mode, and even BAR1's own unrestricted ("Immediately
+  // BAR1") bare-SL reform must clear it -- not just the prior day's
+  // high -- so a reform can never fire below a high this window already
+  // proved it could reach.
+  gateEstablished = false;
 
   bar1RefHigh = 0;
   bar1RefLow = 0;
@@ -1093,7 +1100,8 @@ function stepBar1Level(
 
   switch (s.mode) {
     case "SEEK_BAR1": {
-      if (breakoutShape(prev, cur, prev.h)) {
+      const floor = s.gateEstablished ? Math.max(prev.h, s.topRef) : prev.h;
+      if (breakoutShape(prev, cur, floor)) {
         s.bar1RefHigh = cur.h;
         s.bar1RefLow = cur.l;
         s.bar1ActivationPrice = cur.h;
@@ -1122,8 +1130,9 @@ function stepBar1Level(
       if (!slNow && cur.l < s.bar1RefLow) s.bar1RefLow = cur.l;
       if (slNow) {
         // Bare, pre-escalation SL -- no row, same Filter-rule convention
-        // as everywhere else; reforms unrestricted ("Immediately BAR1").
-        s.topRef = s.bar1RefHigh;
+        // as everywhere else; reforms immediately, but (once the
+        // original gate is established) never below the running topRef
+        // -- see the end-of-function ratchet.
         s.mode = "SEEK_BAR1";
       }
       break;
@@ -1144,7 +1153,8 @@ function stepBar1Level(
       if (!entrySlNow && cur.l < s.bar2RefLow) s.bar2RefLow = cur.l;
 
       if (bar1SlNow) {
-        s.topRef = Math.max(s.bar1RefHigh, s.bar2RefHigh);
+        s.topRef = Math.max(s.topRef, s.bar1RefHigh, s.bar2RefHigh);
+        s.gateEstablished = true;
         const exitType = entrySlNow ? "DTF BAR 1 SL + DTF BAR 2 SL" : "DTF BAR 1 SL (wipes BAR 2)";
         closed = { exitType, exitPrice: s.bar1RefLow };
         s.mode = "SEEK_REACTIVATION";
@@ -1176,26 +1186,30 @@ function stepBar1Level(
       }
       if (!bgSlNow && cur.l < s.bar1RefLow) s.bar1RefLow = cur.l;
       if (bgSlNow) {
-        s.topRef = Math.max(s.bar1RefHigh, s.frozenBar2RefHigh);
+        s.topRef = Math.max(s.topRef, s.bar1RefHigh, s.frozenBar2RefHigh);
+        s.gateEstablished = true;
         s.mode = "SEEK_REACTIVATION";
       }
       break;
     }
     case "SEEK_REACTIVATION": {
       if (breakoutShape(prev, cur, s.topRef)) {
-        s.topRef = Math.max(s.topRef, cur.h);
         s.bar1RefHigh = cur.h;
         s.bar1RefLow = cur.l;
         s.bar1ActivationPrice = cur.h;
         s.bar1FormationDate = cur.date;
         s.bar1RefHighDate = cur.date;
         s.mode = "BAR1_ACTIVE";
-      } else if (cur.h > s.topRef) {
-        s.topRef = cur.h;
       }
       break;
     }
   }
+
+  // Once the original gate is established, topRef ratchets with every
+  // high reached since, in ANY mode -- it's checked against using the
+  // value as of the START of this candle (above), then updated here for
+  // the next one.
+  if (s.gateEstablished && cur.h > s.topRef) s.topRef = cur.h;
 
   return { opened, closed };
 }
