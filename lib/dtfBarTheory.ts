@@ -161,6 +161,12 @@ export class Cycle {
 
 type BarHost = TzBuy | Rear;
 
+/** One event, attributed to the cycle (Cycle.seq) that produced it. */
+export interface TaggedEvent {
+  seq: number;
+  text: string;
+}
+
 // ---------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------
@@ -169,14 +175,29 @@ export class DtfBarTheoryEngine {
   cycles: Cycle[] = [];
   private seq = 0;
 
+  /** Advances one day and returns that day's events as plain text, merged
+   * across every active cycle. Lossy when two cycles coincidentally emit
+   * identical text on the same day -- reporting layers should use
+   * processTagged() instead. */
   process(prev: Day, cur: Day): string[] {
-    const ev: string[] = [];
+    return this.processTagged(prev, cur).map((e) => e.text);
+  }
+
+  /** Same as process(), but each event carries the `seq` of the cycle that
+   * produced it. During a TZ BUY SL2 race two cycles run concurrently (the
+   * dying one's REAR and the fresh sibling), and their nested BAR lineages
+   * can independently emit identical text on the same day (e.g. both reach
+   * "BAR2(1)"), so a reporting layer must scope rows by `seq`, never by
+   * matching event text alone. */
+  processTagged(prev: Day, cur: Day): TaggedEvent[] {
+    const ev: TaggedEvent[] = [];
 
     // Advance every still-active cycle. Normally there is at most one;
     // during a TZ BUY SL2 race there can be exactly two -- the dying
     // cycle (seeking REAR) and a fresh one (seeking its own TZ BUY).
     for (const cyc of this.cycles) {
-      if (cyc.active) ev.push(...this.evalCycle(cyc, prev, cur));
+      if (!cyc.active) continue;
+      for (const text of this.evalCycle(cyc, prev, cur)) ev.push({ seq: cyc.seq, text });
     }
 
     // A fresh cycle may spawn whenever nothing is blocking it: either no
@@ -188,7 +209,7 @@ export class DtfBarTheoryEngine {
       this.seq += 1;
       const fresh = new Cycle(this.seq, cur.h, cur.l);
       this.cycles.push(fresh);
-      ev.push("TZ GREEN");
+      ev.push({ seq: fresh.seq, text: "TZ GREEN" });
     }
 
     return ev;
@@ -625,6 +646,20 @@ export function computeDtfBarTheoryEvents(rows: HistoryRowLike[]): Map<string, s
   for (let i = 1; i < days.length; i++) {
     const events = engine.process(days[i - 1], days[i]);
     if (events.length > 0) map.set(days[i].date, events.join(", "));
+  }
+  return map;
+}
+
+/** Same as computeDtfBarTheoryEvents, but keeps each event's originating
+ * cycle `seq` (see DtfBarTheoryEngine.processTagged). Only days with at
+ * least one event are present. */
+export function computeDtfBarTheoryTaggedEvents(rows: HistoryRowLike[]): Map<string, TaggedEvent[]> {
+  const days = toDays(rows);
+  const engine = new DtfBarTheoryEngine();
+  const map = new Map<string, TaggedEvent[]>();
+  for (let i = 1; i < days.length; i++) {
+    const events = engine.processTagged(days[i - 1], days[i]);
+    if (events.length > 0) map.set(days[i].date, events);
   }
   return map;
 }
