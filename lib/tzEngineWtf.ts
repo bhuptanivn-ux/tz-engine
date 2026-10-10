@@ -407,6 +407,25 @@ export class TZEngine {
     return `${labelId}.${n}`;
   }
 
+  /** The newest lineage for "who's newest" purposes -- NOT necessarily
+   * the literal last array element. A lineage that never escalated past
+   * BAR 1 and then hit its own bare SL (bar2 === null, sl !== null) is a
+   * permanent dead end that can sit at the tail of buy.barLineages for
+   * many candles (it's only ever swept by the opportunistic fresh-BAR
+   * cleanup). Real-data bug (ETERNAL.NS D.10/D.11): such a dead end must
+   * not shadow a still-live lineage sitting right behind it as "not
+   * newest" -- confirmed, a bare BAR SL opens the door for that lineage
+   * to reform under its own label the moment it recovers, same as if
+   * the dead end had already been pruned.
+   */
+  private newestLiveLineage(lineages: BarLineage[]): BarLineage | null {
+    for (let i = lineages.length - 1; i >= 0; i--) {
+      const l = lineages[i];
+      if (!(l.bar2 === null && l.sl !== null)) return l;
+    }
+    return null;
+  }
+
   process(prev: Day, cur: Day): string[] {
     const perBranchEvents = new Map<number, string[]>();
     const milestoneAchievers: [ParentCycle, boolean][] = [];
@@ -815,7 +834,7 @@ export class TZEngine {
     const preTodayRearRef = buy.rear !== null ? buy.rear.refHigh : null;
     const preTodayRreRef = buy.rearReenter !== null ? buy.rearReenter.refHigh : null;
 
-    const newestLin = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    const newestLin = this.newestLiveLineage(buy.barLineages);
     if (newestLin !== null && !this.barHhSuppressedToday(buy, newestLin, prev, cur)) {
       const linHhEv = this.evalBarLineageHh(buy, newestLin, prev, cur);
       if (newestLin.bar2 === null) {
@@ -1494,7 +1513,7 @@ export class TZEngine {
     const lineageObjs = new Map<string, BarLineage>();
     const preEv: string[] = [];
 
-    const newestForRed1 = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    const newestForRed1 = this.newestLiveLineage(buy.barLineages);
 
     if (rearWinner === null) {
       for (const lin of Array.from(buy.barLineages)) {
@@ -1520,7 +1539,20 @@ export class TZEngine {
             const red1Preexisting = buy.red1 !== null && buy.red1.active;
             if (red1Preexisting) {
               linEv.push(...this.evalRed1Generic(pc, buy, lin, prev, cur));
-            } else if (!lin.red2Ever) {
+            } else {
+              // Real-data bug (MAZDOCK.NS A.2): `red2Ever` has no other
+              // reader in this file -- its only purpose was ever this
+              // gate, meant to say "this lineage already had its own
+              // RED1->RED2, let a fresh new lineage take the next one
+              // instead." That assumption breaks when this lineage never
+              // dies (stays alive, still the newest, for years) -- no
+              // fresh lineage ever gets a turn, so the gate just
+              // permanently stops ANY further RED1(label) for this whole
+              // branch the moment this one lineage's door first opens.
+              // Confirmed: a still-alive lineage must keep re-arming its
+              // own top-level RED1 for as many independent pullback
+              // cycles as actually occur over its life, same as every
+              // other continuous RED1->RED2 tracker in this codebase.
               linEv.push(...this.attachFreshRed1(pc, buy, lin, prev, cur));
             }
           }
@@ -1561,7 +1593,7 @@ export class TZEngine {
           // same label; a non-newest lineage just gets marked invalidated
           // and stops being tracked (see the sl.invalidated short-circuit
           // above, and the survivor filter above this function's own loop).
-          const isNewest = lin === buy.barLineages[buy.barLineages.length - 1];
+          const isNewest = lin === this.newestLiveLineage(buy.barLineages);
           if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
             linEv.push(`INVALID BAR SL(${lin.label})`);
             buy.barHighPool = Math.max(buy.barHighPool, cur.h);
@@ -1653,18 +1685,30 @@ export class TZEngine {
       return ev;
     }
 
-    const newest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    // A bare (bar2-null) lineage's own SL is "dead enough to reform"
-    // here on every timeframe, weekly included -- confirmed: "every BAR
-    // will be considered as the BASE BAR unless there is BAR 1 - BAR 2 -
-    // BAR SL - BAR SL 2." REAR already gets first crack at every candle
-    // via the chain-wide anchor check above (which returns early when it
-    // wins), so this plain reform is a genuinely parallel, lower-
-    // priority path -- it only ever fires on a candle where REAR itself
-    // did NOT also qualify -- not a shortcut that starves REAR out the
-    // way an earlier, narrower version of this flag prevented (back when
-    // REAR had no path of its own for a bare lineage at all).
-    const newestIsDead = newest === null || (newest.sl !== null && !newest.sl.sl2);
+    // Real-data bug (MAZDOCK.NS): this must be the LITERAL newest entry
+    // (the most recent BAR attempt), not newestLiveLineage()'s own
+    // filtered answer -- that filter deliberately skips a dead,
+    // never-escalated lineage to fall back to an OLDER sibling for
+    // labeling purposes (which lineage counts as "the" active one), but
+    // reusing it here asks a different question entirely: "did the most
+    // recent attempt just fail." When the most recent attempt (e.g.
+    // A.3) dies with a bare SL while an OLDER sibling (A.2) is still
+    // alive underneath it, newestLiveLineage() falls back to A.2 -- not
+    // dead -- and this check wrongly concluded nothing had failed,
+    // permanently blocking the next fresh BAR from ever forming (A.2
+    // never dies on its own to unblock it). A bare (bar2-null) lineage's
+    // own SL is "dead enough to reform" here on every timeframe, weekly
+    // included -- confirmed: "every BAR will be considered as the BASE
+    // BAR unless there is BAR 1 - BAR 2 - BAR SL - BAR SL 2." REAR
+    // already gets first crack at every candle via the chain-wide
+    // anchor check above (which returns early when it wins), so this
+    // plain reform is a genuinely parallel, lower-priority path -- it
+    // only ever fires on a candle where REAR itself did NOT also
+    // qualify -- not a shortcut that starves REAR out the way an
+    // earlier, narrower version of this flag prevented (back when REAR
+    // had no path of its own for a bare lineage at all).
+    const literalNewest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
+    const newestIsDead = literalNewest === null || (literalNewest.sl !== null && !literalNewest.sl.sl2);
     const freshBarReady = newestIsDead || buy.barPending;
     if (!pc.dormant && !reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
       const surviving: BarLineage[] = [];
@@ -1743,7 +1787,11 @@ export class TZEngine {
     // REAR 2 exists, same as everywhere else in this engine).
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rear, prev, cur));
-    } else if (rear.rear2 !== null && !rear.rear2.slActive && !rear.red2Ever) {
+    } else if (rear.rear2 !== null && !rear.rear2.slActive) {
+      // Same MAZDOCK.NS fix as the BarLineage case above: `red2Ever`
+      // must not permanently block a fresh RED1 from re-arming on this
+      // same still-alive REAR 2 -- it only ever meant "already had one
+      // cycle," not "can never have another."
       ev.push(...this.attachFreshRed1(pc, buy, rear, prev, cur));
     }
     return ev;
@@ -1817,7 +1865,8 @@ export class TZEngine {
     const red1Preexisting = buy.red1 !== null && buy.red1.active;
     if (red1Preexisting) {
       ev.push(...this.evalRed1Generic(pc, buy, rre, prev, cur));
-    } else if (rre.rre2 !== null && !rre.rre2.slActive && !rre.red2Ever) {
+    } else if (rre.rre2 !== null && !rre.rre2.slActive) {
+      // Same MAZDOCK.NS fix as BarLineage/Rear above.
       ev.push(...this.attachFreshRed1(pc, buy, rre, prev, cur));
     }
     return ev;

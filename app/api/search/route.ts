@@ -19,7 +19,13 @@ export async function GET(req: NextRequest) {
 
   try {
     const results = await searchSymbols(q, regionParam || undefined);
-    return NextResponse.json({ results });
+    // Short window -- symbol search results for a given query string
+    // barely change, but it's still worth deduping repeat keystrokes/users
+    // typing the same thing within a few minutes.
+    return NextResponse.json(
+      { results },
+      { headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=3600" } }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Search failed";
     return NextResponse.json({ error: message }, { status: 502 });

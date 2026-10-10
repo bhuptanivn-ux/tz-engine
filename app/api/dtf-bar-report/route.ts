@@ -90,7 +90,10 @@ export async function GET(req: NextRequest) {
 
   const cached = await readDtfBarReportCache(segment, year, event, end, batchKey);
   if (cached) {
-    return NextResponse.json({ ...cached, total, offset, limit, cached: true });
+    return NextResponse.json(
+      { ...cached, total, offset, limit, cached: true },
+      { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+    );
   }
 
   const matches: DtfBarReportMatch[] = [];
@@ -123,5 +126,8 @@ export async function GET(req: NextRequest) {
   };
   await writeDtfBarReportCache(segment, year, event, end, batchKey, payload);
 
-  return NextResponse.json({ ...payload, total, offset, limit, cached: false });
+  return NextResponse.json(
+    { ...payload, total, offset, limit, cached: false },
+    { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+  );
 }
