@@ -103,7 +103,15 @@ export interface PrimeTrendResult {
   // always 0 for now (its escalation past a decisive SL is deferred, see
   // that section).
   level: number;
-  side: "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" | "BAR2" | "PBAR ENTRY" | "TAR ENTRY" | "BAR 1 - BAR 2";
+  side:
+    | "BAR ENTRY"
+    | "REAR ENTRY"
+    | "REAR RE-ENTER"
+    | "BAR2"
+    | "PBAR ENTRY"
+    | "TAR ENTRY"
+    | "BAR 1 - BAR 2"
+    | "INVALID SAR ENTRY";
   entryDate: string;
   entryPrice: number;
   exitType: string;
@@ -1215,6 +1223,161 @@ function stepBar1Level(
 }
 
 // --------------------------------------------------------------------
+// INVALID SAR / INVALID SAR ENTRY -- a modification to BAR THEORY's own
+// DTF SAR, confirmed against real data (PAYTM) rather than derived from
+// spec text. Once SAR fires, it is no longer necessarily a dead end:
+//
+//   SAR -> (SAR LL, quiet ratchet down) -> INVALID SAR -> (quiet climb) ->
+//   INVALID SAR ENTRY
+//
+// INVALID SAR: same shape as INVALID RED1 -- a candle that clears SAR's
+// own reference high (seeded at the SAR-firing candle's own High) by
+// >=0.20 pts with Close confirming at/above it. SAR's own reference LOW
+// ratchets down quietly in the meantime (SAR LL) on any new, non-decisive
+// lower low -- confirmed, no decisive-breach/"fresh SAR" path has been
+// exercised against real data yet, so none is implemented here.
+//
+// Once invalidated, a NEW reference starts at the invalidating candle's
+// own High (same "tier-1 initializes at cur.h" shape as BAR1/TAR) and
+// climbs quietly until a full breakoutShape confirms: that confirmation
+// is INVALID SAR ENTRY, a real reportable entry (price = ref + THRESH).
+//
+// Confirmed, VERIFIED exactly against PAYTM (two full cycles):
+//   SAR 2025-03-10 -> INVALID SAR 2025-03-11 (ref 694.95, the SAR day's
+//   own High) -> INVALID SAR ENTRY 2025-03-18 @720.50 (ref climbed
+//   718.95 -> 720.30, breakout 03-18).
+//   SAR 2025-09-29 -> SAR LL 2025-09-30 @1097.40 -> INVALID SAR
+//   2025-10-01 (ref 1145.00) -> INVALID SAR ENTRY 2025-10-03 @1152.10.
+//
+// Confirmed rules NOT yet exercised against real data (implemented here
+// as literally as stated, flagged for correction once a worked example
+// exercises them):
+//   - While INVALID SAR ENTRY is active (or seeking invalidation/entry --
+//     i.e. from the moment SAR fires), ordinary BAR THEORY (TAR ENTRY,
+//     BAR 1 - BAR 2) produces NO reported rows at all -- their own state
+//     machines keep running internally ("recording in the backend", for
+//     continuity into any future RED1->RED2->BAR cascade) but nothing is
+//     shown. Confirmed via PAYTM: the TAR ENTRY/BAR 1 - BAR 2 rows the
+//     unmodified engine computes inside either INVALID SAR ENTRY window
+//     are explicitly suppressed.
+//   - INVALID SAR ENTRY's own SL ("SAR ENTRY SL") -- confirmed exact
+//     match 2026-01-23 @1142.00 (the reference low, never ratcheted
+//     since entry since no pullback ever undercut it until that candle).
+//   - Reactivation after SAR ENTRY SL races three ways: above INVALID SAR
+//     ENTRY's own frozen reference high, or TAR forming, or BAR 2 (the
+//     nested cascade's own escalation) forming -- whichever occurs first.
+//     TAR THEORY's own suppression lifts during this race (that's the
+//     whole point of the race), and resumes if INVALID SAR ENTRY itself
+//     wins it.
+//   - SAR exits two ways: (1) INVALID SAR ENTRY's own SL, or (2) a fresh
+//     WTF RED2 re-arming and firing the ordinary recurring SAR again.
+//     Path (2), firing again, is "SAR 2" ONLY if NO invalidation occurred
+//     since the previous SAR fired; if one did, it's just a fresh SAR,
+//     and the whole INVALID-SAR cycle restarts from scratch. SAR 2 is
+//     PRIME TREND's own terminal exit -- confirmed: "NO SAR 2" for the
+//     2025-09-29 SAR specifically because 2025-03-11's INVALID SAR
+//     already happened in between. Post SAR 2, it is plain BAR THEORY
+//     for the rest of this instance -- no more of this layer.
+type InvalidSarMode = "SEEK_INVALID" | "SEEK_ENTRY" | "ENTRY_ACTIVE" | "SEEK_REACTIVATION";
+
+class InvalidSarState {
+  mode: InvalidSarMode = "SEEK_INVALID";
+  refHigh: number;
+  refLow: number;
+  frozenEntryRefHigh = 0;
+
+  rowEntryDate: string | null = null;
+  rowEntryPrice: number | null = null;
+  rowHH = 0;
+  rowHHDate: string | null = null;
+
+  constructor(refHigh: number, refLow: number) {
+    this.refHigh = refHigh;
+    this.refLow = refLow;
+  }
+}
+
+/** True while ordinary BAR THEORY (TAR ENTRY, BAR 1 - BAR 2) must be
+ * suppressed from the report -- every mode except the post-SL
+ * reactivation race, where TAR/BAR2 are explicitly allowed to race
+ * against INVALID SAR ENTRY's own reactivation. */
+function invalidSarSuppressesBarTheory(s: InvalidSarState | null): boolean {
+  return s !== null && s.mode !== "SEEK_REACTIVATION";
+}
+
+function stepInvalidSar(
+  s: InvalidSarState,
+  prev: Day,
+  cur: Day
+): {
+  invalidSarNow: boolean;
+  opened: { price: number } | null;
+  closed: { exitType: string; exitPrice: number } | null;
+} {
+  let invalidSarNow = false;
+  let opened: { price: number } | null = null;
+  let closed: { exitType: string; exitPrice: number } | null = null;
+
+  switch (s.mode) {
+    case "SEEK_INVALID": {
+      if (cur.h > s.refHigh && cur.h - s.refHigh >= THRESH - EPS && cur.c >= s.refHigh) {
+        invalidSarNow = true;
+        s.refHigh = cur.h;
+        s.refLow = cur.l;
+        s.mode = "SEEK_ENTRY";
+        break;
+      }
+      if (cur.h > s.refHigh) s.refHigh = cur.h;
+      if (cur.l < s.refLow) s.refLow = cur.l; // "SAR LL"
+      break;
+    }
+    case "SEEK_ENTRY": {
+      if (breakoutShape(prev, cur, s.refHigh)) {
+        const entryPrice = s.refHigh + THRESH;
+        s.refHigh = cur.h;
+        s.refLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "ENTRY_ACTIVE";
+        opened = { price: entryPrice };
+        break;
+      }
+      if (cur.h > s.refHigh) s.refHigh = cur.h;
+      break;
+    }
+    case "ENTRY_ACTIVE": {
+      if (cur.h > s.rowHH) {
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+      }
+      const slNow = slShape(cur, s.refLow);
+      if (!slNow && cur.h > s.refHigh && cur.h - s.refHigh >= ANY) s.refHigh = cur.h;
+      if (!slNow && cur.l < s.refLow) s.refLow = cur.l;
+      if (slNow) {
+        closed = { exitType: "SAR ENTRY SL", exitPrice: s.refLow };
+        s.frozenEntryRefHigh = s.refHigh;
+        s.mode = "SEEK_REACTIVATION";
+      }
+      break;
+    }
+    case "SEEK_REACTIVATION": {
+      if (breakoutShape(prev, cur, s.frozenEntryRefHigh)) {
+        const entryPrice = s.frozenEntryRefHigh + THRESH;
+        s.refHigh = cur.h;
+        s.refLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "ENTRY_ACTIVE";
+        opened = { price: entryPrice };
+      }
+      break;
+    }
+  }
+
+  return { invalidSarNow, opened, closed };
+}
+
+// --------------------------------------------------------------------
 // Step 1: run TZEngine once over the WTF series. Alongside the ordinary
 // event trace, snapshot every branch's own "2"-tier ref_low BEFORE each
 // candle is processed, for EACH of the three anchor families, plus which
@@ -1505,6 +1668,7 @@ export const DTF_SL_EXIT_TYPES = new Set([
   "DTF BAR 2 SL",
   "DTF BAR 1 SL (wipes BAR 2)",
   "DTF BAR 1 SL + DTF BAR 2 SL",
+  "SAR ENTRY SL",
 ]);
 
 interface WtfBarWindow {
@@ -1713,6 +1877,19 @@ function simulateDtfAll(
   let tarSlEverHappened = false;
   let bar12Red: BarRedGate | null = null;
   let bar12RedEverConfirmed = false;
+
+  // INVALID SAR / INVALID SAR ENTRY -- see the module section comment
+  // above stepInvalidSar. invalidSarState is non-null from the moment
+  // SAR fires until SAR 2 (or the instance itself) ends it; while it is
+  // non-null and not in the post-SL reactivation race, ordinary BAR
+  // THEORY (TAR ENTRY, BAR 1 - BAR 2) is suppressed from the report
+  // (invalidSarSuppressesBarTheory). anyInvalidationSinceLastSar decides,
+  // the next time SAR fires again, whether that firing is just a fresh
+  // SAR (an invalidation happened since the last one) or SAR 2 (none
+  // did) -- SAR 2 is PRIME TREND's own terminal exit for this mechanism.
+  let invalidSarState: InvalidSarState | null = null;
+  let anyInvalidationSinceLastSar = false;
+  let primeTrendEndedBySar2 = false;
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
   // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
@@ -2023,7 +2200,7 @@ function simulateDtfAll(
             tarState.rowEntryDate = cur.date;
             tarState.rowEntryPrice = tarResult.opened.price;
           }
-          if (tarResult.closed) {
+          if (tarResult.closed && !invalidSarSuppressesBarTheory(invalidSarState)) {
             pushRow(
               0,
               "TAR ENTRY",
@@ -2069,7 +2246,7 @@ function simulateDtfAll(
             bar1State.rowEntryDate = cur.date;
             bar1State.rowEntryPrice = opened.price;
           }
-          if (closed) {
+          if (closed && !invalidSarSuppressesBarTheory(invalidSarState)) {
             pushRow(
               0,
               "BAR 1 - BAR 2",
@@ -2083,6 +2260,31 @@ function simulateDtfAll(
             );
           }
         }
+      }
+    }
+
+    // --- INVALID SAR / INVALID SAR ENTRY -- see stepInvalidSar's own
+    // comment above. Only steps once SAR has fired at least once and
+    // PRIME TREND hasn't already ended via SAR 2.
+    if (invalidSarState !== null && !primeTrendEndedBySar2) {
+      const invalidSarResult = stepInvalidSar(invalidSarState, prev, cur);
+      if (invalidSarResult.invalidSarNow) anyInvalidationSinceLastSar = true;
+      if (invalidSarResult.opened) {
+        invalidSarState.rowEntryDate = cur.date;
+        invalidSarState.rowEntryPrice = invalidSarResult.opened.price;
+      }
+      if (invalidSarResult.closed) {
+        pushRow(
+          0,
+          "INVALID SAR ENTRY",
+          invalidSarState.rowEntryDate as string,
+          invalidSarState.rowEntryPrice as number,
+          invalidSarResult.closed.exitType,
+          cur.date,
+          invalidSarResult.closed.exitPrice,
+          invalidSarState.rowHH,
+          invalidSarState.rowHHDate
+        );
       }
     }
 
@@ -2110,6 +2312,10 @@ function simulateDtfAll(
     // whether SAR itself can fire again.
     if (sarRefLow !== null) {
       if (slShape(cur, sarRefLow)) {
+        // Captured BEFORE sarFired is overwritten below -- distinguishes
+        // the very first SAR ever (never "SAR 2") from a later one.
+        const sarFiredAlready = sarFired;
+        const barTheorySuppressed = invalidSarSuppressesBarTheory(invalidSarState);
         sarFired = true;
         if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
           pushRow(
@@ -2144,7 +2350,12 @@ function simulateDtfAll(
         // close whichever is open, then reset BAR theory's own within-
         // window gate-tracking outright: a fresh SAR re-arms everything,
         // same as a brand new post-SAR WTF BAR window would.
-        if (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
+        if (
+          !barTheorySuppressed &&
+          tarState !== null &&
+          tarState.mode === "TAR_ENTRY_ACTIVE" &&
+          tarState.rowEntryDate !== null
+        ) {
           pushRow(
             0,
             "TAR ENTRY",
@@ -2157,7 +2368,12 @@ function simulateDtfAll(
             tarState.rowHHDate
           );
         }
-        if (bar1State !== null && bar1State.mode === "BAR2_ACTIVE" && bar1State.rowEntryDate !== null) {
+        if (
+          !barTheorySuppressed &&
+          bar1State !== null &&
+          bar1State.mode === "BAR2_ACTIVE" &&
+          bar1State.rowEntryDate !== null
+        ) {
           pushRow(
             0,
             "BAR 1 - BAR 2",
@@ -2175,6 +2391,36 @@ function simulateDtfAll(
         tarSlEverHappened = false;
         bar12Red = null;
         bar12RedEverConfirmed = false;
+
+        // INVALID SAR ENTRY itself -- close any open row, then decide
+        // whether THIS SAR firing is "SAR 2" (terminal for this whole
+        // mechanism -- no invalidation happened since the last SAR) or
+        // just a fresh SAR (one did) that restarts the cycle.
+        if (!primeTrendEndedBySar2) {
+          if (invalidSarState !== null && invalidSarState.mode === "ENTRY_ACTIVE" && invalidSarState.rowEntryDate !== null) {
+            pushRow(
+              0,
+              "INVALID SAR ENTRY",
+              invalidSarState.rowEntryDate,
+              invalidSarState.rowEntryPrice as number,
+              "DTF SAR",
+              cur.date,
+              sarRefLow,
+              invalidSarState.rowHH,
+              invalidSarState.rowHHDate
+            );
+          }
+          if (sarFiredAlready && !anyInvalidationSinceLastSar) {
+            // SAR 2 -- PRIME TREND's own terminal exit for this
+            // mechanism. From here on it's plain BAR THEORY: no more
+            // suppression, no more re-seeding.
+            primeTrendEndedBySar2 = true;
+            invalidSarState = null;
+          } else {
+            invalidSarState = new InvalidSarState(cur.h, cur.l);
+            anyInvalidationSinceLastSar = false;
+          }
+        }
         // Spent -- must re-arm from a FRESH RED2 before firing again.
         sarRefLow = null;
       } else if (cur.l < sarRefLow) {
@@ -2228,8 +2474,11 @@ function simulateDtfAll(
   }
   // Same "still open" handling for BAR theory's own two tracks (TAR,
   // BAR1/BAR2) -- only ever non-null once sarFired, same independence
-  // between tracks as above.
-  if (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
+  // between tracks as above. Still suppressed from the report if
+  // INVALID SAR ENTRY was active (and never resolved) when the instance
+  // itself ended.
+  const barTheorySuppressedAtEnd = invalidSarSuppressesBarTheory(invalidSarState);
+  if (!barTheorySuppressedAtEnd && tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE" && tarState.rowEntryDate !== null) {
     const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
     pushRow(
       0,
@@ -2243,7 +2492,7 @@ function simulateDtfAll(
       tarState.rowHHDate
     );
   }
-  if (bar1State !== null && bar1State.mode === "BAR2_ACTIVE" && bar1State.rowEntryDate !== null) {
+  if (!barTheorySuppressedAtEnd && bar1State !== null && bar1State.mode === "BAR2_ACTIVE" && bar1State.rowEntryDate !== null) {
     const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
     pushRow(
       0,
@@ -2255,6 +2504,21 @@ function simulateDtfAll(
       inst.endPrice as number,
       bar1State.rowHH,
       bar1State.rowHHDate
+    );
+  }
+  // Same "still open" handling for INVALID SAR ENTRY itself.
+  if (invalidSarState !== null && invalidSarState.mode === "ENTRY_ACTIVE" && invalidSarState.rowEntryDate !== null) {
+    const exitType = inst.endEvent !== null ? inst.endEvent : "still open";
+    pushRow(
+      0,
+      "INVALID SAR ENTRY",
+      invalidSarState.rowEntryDate,
+      invalidSarState.rowEntryPrice as number,
+      exitType,
+      inst.endDate,
+      inst.endPrice as number,
+      invalidSarState.rowHH,
+      invalidSarState.rowHHDate
     );
   }
 
@@ -2275,7 +2539,11 @@ function simulateDtfAll(
   // skipped -- they never end their outer row, so they're never the
   // merge target.
   const wtfLabel = wtfSlLabel(inst.endEvent);
-  mergeTrailingWtfSl(rows, ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER", "PBAR ENTRY", "TAR ENTRY", "BAR 1 - BAR 2"], wtfLabel);
+  mergeTrailingWtfSl(
+    rows,
+    ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER", "PBAR ENTRY", "TAR ENTRY", "BAR 1 - BAR 2", "INVALID SAR ENTRY"],
+    wtfLabel
+  );
 
   const stage1Active = s1 !== null && s1.active;
   // BAR (tier 1) currently active -- the main ladder's own pre-escalation
