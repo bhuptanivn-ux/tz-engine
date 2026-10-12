@@ -1730,10 +1730,6 @@ interface WtfBarWindow {
   // DAY'S own High directly, exactly like preS1Ref, never waiting for a
   // further WTF week to close first.
   formationHigh: number;
-  // Same seed, Low side -- used to reseed INVALID SAR's own ladder
-  // (refHigh/refLow) back to SEEK_INVALID at this exact window boundary;
-  // see the INVALID SAR reset alongside wtfBarRefHigh's own reseed below.
-  formationLow: number;
 }
 
 /** The WTF engine's own native "BAR(" milestone (lib/tzEngineWtf.ts's
@@ -1781,10 +1777,8 @@ function wtfBarWindowsForLetter(
     const matchingSl = sls.find((sl) => sl > f && (next === null || sl < next));
     const end = matchingSl ?? next;
     const endReason: WtfBarWindow["endReason"] = matchingSl ? "BAR SL" : next ? "new BAR" : null;
-    const formationDay = wtfTrace.find(({ day }) => day.date === f)?.day;
-    const formationHigh = formationDay?.h ?? 0;
-    const formationLow = formationDay?.l ?? 0;
-    windows.push({ formationDate: f, endDate: end ?? null, endReason, formationHigh, formationLow });
+    const formationHigh = wtfTrace.find(({ day }) => day.date === f)?.day.h ?? 0;
+    windows.push({ formationDate: f, endDate: end ?? null, endReason, formationHigh });
   }
   return windows;
 }
@@ -1896,20 +1890,6 @@ function simulateDtfAll(
   // every time pbarWindowIdx moves to a new window.
   let wtfBarRefHigh = 0;
   let wtfBarRefHighWindowIdx = -1;
-
-  // Tracks whether invalidSarState has already been accounted for at the
-  // CURRENT pbarWindowIdx -- same lazy-reseed shape as wtfBarRefHigh's own
-  // tracker, so a fresh WTF BAR window fully resets the whole INVALID SAR
-  // ladder back to SEEK_INVALID, reseeded at that window's own
-  // formationHigh/formationLow. Also updated at the moment SAR itself
-  // seeds a brand new invalidSarState (that seed is the SAR-firing day's
-  // own cur.h/cur.l, not this window's -- must not be immediately
-  // overwritten by the very next window-boundary check). invalidSarEverArmed
-  // remembers that this instance's ladder has existed at all (SAR has
-  // fired at least once) -- a window boundary only reseeds a ladder that
-  // actually exists, and never once SAR 2 has ended the whole mechanism.
-  let invalidSarWindowIdx = -1;
-  let invalidSarEverArmed = false;
 
   // DTF SAR -- a recurring kill-switch on the whole PRIME TREND (BAR
   // ENTRY and PBAR ENTRY alike), independent of the WTF anchor's own
@@ -2189,31 +2169,6 @@ function simulateDtfAll(
       tarSlEverHappened = false;
       bar12Red = null;
       bar12RedEverConfirmed = false;
-
-      // A fresh WTF BAR formation (or its own confirmed SL) fully resets
-      // the whole INVALID SAR ladder too, same window-boundary wipe as
-      // PBAR/TAR/BAR1-BAR2 above -- confirmed via DIXON: 14/03/22 (WTF)
-      // BAR wipes out the still-running INVALID SAR SL/reform cycle
-      // outright, so 05/04/22's breakout is a fresh tier-1 "INVALID SAR"
-      // (paired with TAR), not a continuation of the pre-14/03 ladder.
-      if (invalidSarState !== null) {
-        if (invalidSarState.mode === "ENTRY_ACTIVE" && invalidSarState.rowEntryDate !== null) {
-          const windowExitType =
-            pbarWindows[pbarWindowIdx].endReason === "BAR SL" ? "WTF BAR SL (wipes ENTRY)" : "WTF BAR reform (wipes ENTRY)";
-          pushRow(
-            0,
-            "INVALID SAR ENTRY",
-            invalidSarState.rowEntryDate,
-            invalidSarState.rowEntryPrice as number,
-            windowExitType,
-            pbarWindows[pbarWindowIdx].endDate as string,
-            invalidSarState.refLow,
-            invalidSarState.rowHH,
-            invalidSarState.rowHHDate
-          );
-        }
-        invalidSarState = null;
-      }
       pbarWindowIdx += 1;
     }
 
@@ -2234,16 +2189,6 @@ function simulateDtfAll(
     if (inPbarWindow && wtfBarRefHighWindowIdx !== pbarWindowIdx) {
       wtfBarRefHigh = pbarWindows[pbarWindowIdx].formationHigh;
       wtfBarRefHighWindowIdx = pbarWindowIdx;
-    }
-
-    // INVALID SAR's own reseed at the same window boundary -- only once
-    // the ladder has ever been armed (SAR has fired at least once for
-    // this instance) and PRIME TREND hasn't already ended via SAR 2.
-    if (inPbarWindow && invalidSarWindowIdx !== pbarWindowIdx) {
-      if (invalidSarEverArmed && !primeTrendEndedBySar2) {
-        invalidSarState = new InvalidSarState(pbarWindows[pbarWindowIdx].formationHigh, pbarWindows[pbarWindowIdx].formationLow);
-      }
-      invalidSarWindowIdx = pbarWindowIdx;
     }
 
     if (pbarState !== null) {
@@ -2533,11 +2478,6 @@ function simulateDtfAll(
           } else {
             invalidSarState = new InvalidSarState(cur.h, cur.l);
             anyInvalidationSinceLastSar = false;
-            invalidSarEverArmed = true;
-            // This SAR firing's own seed (today's cur.h/cur.l) already
-            // accounts for the CURRENT pbarWindowIdx -- the lazy window-
-            // boundary reseed above must not immediately overwrite it.
-            invalidSarWindowIdx = pbarWindowIdx;
           }
         }
         // Spent -- must re-arm from a FRESH RED2 before firing again.
