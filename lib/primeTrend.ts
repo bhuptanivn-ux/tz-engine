@@ -2271,7 +2271,15 @@ function simulateDtfAll(
     // Only runs once sarFired -- reuses the same pbarWindows/pbarWindowIdx/
     // wtfBarRefHigh as PBAR above (identical "WTF BAR active" windowing;
     // wiped at the same window boundaries, see the while-loop above).
-    if (sarFired && pbarWindowIdx < pbarWindows.length) {
+    // ALSO requires sarRefLow === null -- a fresh RED2 re-arms sarRefLow
+    // (independent of sarFired's own permanent "ordinary BAR/PBAR is dead"
+    // meaning) and, until THAT specific sarRefLow actually fires, TAR,
+    // BAR 1 - BAR 2, and INVALID SAR ENTRY are all impossible -- confirmed
+    // via DIXON: 24/01/22 RED2 arms sarRefLow (armed from 31/01/22); no
+    // SAR fires from it until 18/02/22, so the whole stretch in between
+    // (including 2022-02-10) cannot produce a TAR/BAR1-BAR2/INVALID SAR
+    // row at all, whatever any EARLIER, already-spent SAR once unlocked.
+    if (sarFired && sarRefLow === null && pbarWindowIdx < pbarWindows.length) {
       const w = pbarWindows[pbarWindowIdx];
       if (cur.date > w.formationDate && (w.endDate === null || cur.date <= w.endDate)) {
         // TAR keeps seeking new formations only UNTIL BAR 1 - BAR 2's own
