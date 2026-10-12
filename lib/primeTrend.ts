@@ -1920,6 +1920,17 @@ function simulateDtfAll(
   let tarSlEverHappened = false;
   let bar12Red: BarRedGate | null = null;
   let bar12RedEverConfirmed = false;
+  // Once a TAR ENTRY SL has ever fired (clean or combined -- any closure
+  // of TAR_ENTRY_ACTIVE), TAR is permanently dormant for the rest of this
+  // window: no new TAR ENTRY can ever occur again, whatever price does
+  // later -- confirmed via KALYANKJIL: 2025-04-25's TAR ENTRY SL rules
+  // out the reactivation that would otherwise show on 2025-05-13.
+  // Likewise, once BAR 1 - BAR 2's own BAR2_ACTIVE has been reached and
+  // closed (clean "DTF BAR 2 SL" or combined "DTF BAR 1 SL + DTF BAR 2
+  // SL"), BAR 2 can never reactivate above its reference high again
+  // either -- same symmetric rule, one level up.
+  let tarEntrySlEverHappened = false;
+  let bar2EverClosed = false;
 
   // INVALID SAR / INVALID SAR ENTRY -- see the module section comment
   // above stepInvalidSar. invalidSarState is non-null from the moment
@@ -2167,8 +2178,10 @@ function simulateDtfAll(
       tarState = null;
       bar1State = null;
       tarSlEverHappened = false;
+      tarEntrySlEverHappened = false;
       bar12Red = null;
       bar12RedEverConfirmed = false;
+      bar2EverClosed = false;
       pbarWindowIdx += 1;
     }
 
@@ -2227,23 +2240,25 @@ function simulateDtfAll(
     if (sarFired && sarRefLow === null && pbarWindowIdx < pbarWindows.length) {
       const w = pbarWindows[pbarWindowIdx];
       if (cur.date > w.formationDate && (w.endDate === null || cur.date <= w.endDate)) {
-        // TAR keeps seeking new formations only UNTIL BAR 1 - BAR 2's own
-        // gate unlocks -- but confirmed: unlocking does NOT force-close
-        // an already-open TAR ENTRY (or a clean-SL reclaim race already
-        // in progress) -- "after TAR ENTRY, only TAR ENTRY SL can wipe
-        // out its entry [or later a fresh SAR]." So once unlocked, TAR
-        // only keeps running if it was already in one of those two LIVE
-        // modes at that exact moment; the instant it drops out of both
-        // (closes for good, or was never live to begin with), it goes
-        // permanently dormant for the rest of this window -- no new TAR
-        // formation or reactivation ever starts again, regardless of
-        // later price action (confirmed: price recrossing TAR's own
-        // reference high afterward does NOT reactivate it or interrupt
-        // BAR 1 - BAR 2).
-        const bar12AlreadyUnlocked = tarSlEverHappened && bar12RedEverConfirmed;
-        const tarIsLive =
-          tarState !== null && (tarState.mode === "TAR_ENTRY_ACTIVE" || tarState.mode === "SEEK_TAR_ENTRY_REACTIVATION");
-        if (!bar12AlreadyUnlocked || tarIsLive) {
+        // TAR keeps seeking new formations until EITHER of two things ends
+        // it for good, permanently, for the rest of this window -- no new
+        // TAR formation or reactivation ever starts again after, whatever
+        // price does later:
+        //   (1) a TAR ENTRY SL ever fires (clean or combined -- any
+        //       closure of TAR_ENTRY_ACTIVE) -- confirmed via KALYANKJIL:
+        //       2025-04-25's TAR ENTRY SL rules out the reactivation that
+        //       would otherwise show on 2025-05-13.
+        //   (2) BAR 1 - BAR 2 is currently ACTIVE (BAR2_ACTIVE) -- TAR
+        //       cannot jump in while it's running, confirmed via
+        //       KALYANKJIL: once BAR 1 - BAR 2 entered 2025-06-25, TAR
+        //       cannot reactivate above it (the 2025-07-02 row this would
+        //       otherwise produce is impossible).
+        // (BAR 1 - BAR 2's own unlock gate -- TAR SL ever + RED1->RED2
+        // ever -- is unaffected: a bare, pre-escalation TAR SL still
+        // counts toward it even once TAR itself has gone permanently
+        // dormant.)
+        const bar12CurrentlyActive = bar1State !== null && bar1State.mode === "BAR2_ACTIVE";
+        if (!tarEntrySlEverHappened && !bar12CurrentlyActive) {
           if (tarState === null) tarState = new TarLevelState();
 
           const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
@@ -2251,28 +2266,24 @@ function simulateDtfAll(
             tarState.rowEntryDate = cur.date;
             tarState.rowEntryPrice = tarResult.opened.price;
           }
-          if (tarResult.closed && !invalidSarSuppressesBarTheory(invalidSarState)) {
-            pushRow(
-              0,
-              "TAR ENTRY",
-              tarState.rowEntryDate as string,
-              tarState.rowEntryPrice as number,
-              tarResult.closed.exitType,
-              cur.date,
-              tarResult.closed.exitPrice,
-              tarState.rowHH,
-              tarState.rowHHDate
-            );
+          if (tarResult.closed) {
+            if (!invalidSarSuppressesBarTheory(invalidSarState)) {
+              pushRow(
+                0,
+                "TAR ENTRY",
+                tarState.rowEntryDate as string,
+                tarState.rowEntryPrice as number,
+                tarResult.closed.exitType,
+                cur.date,
+                tarResult.closed.exitPrice,
+                tarState.rowHH,
+                tarState.rowHHDate
+              );
+            }
+            tarEntrySlEverHappened = true;
+            tarState = null;
           }
           if (tarResult.tarSlNow) tarSlEverHappened = true;
-
-          // The gate may have just unlocked (or already was) -- once so,
-          // discard tarState the moment it's no longer in a live mode,
-          // so it can never seek or reactivate again.
-          if (tarSlEverHappened && bar12RedEverConfirmed) {
-            const stillLive = tarState.mode === "TAR_ENTRY_ACTIVE" || tarState.mode === "SEEK_TAR_ENTRY_REACTIVATION";
-            if (!stillLive) tarState = null;
-          }
         }
 
         // The nested cascade's own continuous RED1->RED2 tracker --
@@ -2290,25 +2301,34 @@ function simulateDtfAll(
           }
         }
 
-        if (tarSlEverHappened && bar12RedEverConfirmed) {
+        // Same symmetric rule one level up: once BAR 2 has been reached
+        // and closed (clean "DTF BAR 2 SL" or combined "DTF BAR 1 SL +
+        // DTF BAR 2 SL"), BAR 2 can never reactivate above its reference
+        // high again either -- permanently dormant for the rest of this
+        // window.
+        if (tarSlEverHappened && bar12RedEverConfirmed && !bar2EverClosed) {
           if (bar1State === null) bar1State = new Bar1LevelState();
           const { opened, closed } = stepBar1Level(bar1State, prev, cur);
           if (opened) {
             bar1State.rowEntryDate = cur.date;
             bar1State.rowEntryPrice = opened.price;
           }
-          if (closed && !invalidSarSuppressesBarTheory(invalidSarState)) {
-            pushRow(
-              0,
-              "BAR 1 - BAR 2",
-              bar1State.rowEntryDate as string,
-              bar1State.rowEntryPrice as number,
-              closed.exitType,
-              cur.date,
-              closed.exitPrice,
-              bar1State.rowHH,
-              bar1State.rowHHDate
-            );
+          if (closed) {
+            if (!invalidSarSuppressesBarTheory(invalidSarState)) {
+              pushRow(
+                0,
+                "BAR 1 - BAR 2",
+                bar1State.rowEntryDate as string,
+                bar1State.rowEntryPrice as number,
+                closed.exitType,
+                cur.date,
+                closed.exitPrice,
+                bar1State.rowHH,
+                bar1State.rowHHDate
+              );
+            }
+            bar2EverClosed = true;
+            bar1State = null;
           }
         }
       }
@@ -2448,8 +2468,10 @@ function simulateDtfAll(
         tarState = null;
         bar1State = null;
         tarSlEverHappened = false;
+        tarEntrySlEverHappened = false;
         bar12Red = null;
         bar12RedEverConfirmed = false;
+        bar2EverClosed = false;
 
         // INVALID SAR ENTRY itself -- close any open row, then decide
         // whether THIS SAR firing is "SAR 2" (terminal for this whole
