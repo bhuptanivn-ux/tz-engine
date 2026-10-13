@@ -1839,7 +1839,13 @@ function mergeTrailingWtfSl(rows: PrimeTrendResult[], sides: PrimeTrendResult["s
 /** Short label for an instance's own terminal WTF-side event, for the
  * merged "DTF SL - <WTF SL>" exit-type annotation -- null if the instance
  * never explicitly fails (still open, or collaterally terminated with no
- * event) within the data. */
+ * event) within the data. Deliberately excludes "BAR SL2(" -- that WTF-side
+ * instance-ending event ("BAR SL 2") is a different thing from the DTF-side
+ * nested cascade's own "BAR 2 SL" (or combined "BAR 1 SL + BAR 2 SL"), a
+ * big logic difference confirmed via DIXON: the BAR 1 - BAR 2 cycle's own
+ * exit on 2022-05-02 is a real, independently-dated, independently-priced
+ * DTF BAR 2 SL, a full week before the WTF anchor's own BAR SL 2 on
+ * 2022-05-09 -- merging the two into one label conflates them. */
 export function wtfSlLabel(endEvent: string | null): string | null {
   if (endEvent === null) return null;
   if (
@@ -1852,7 +1858,6 @@ export function wtfSlLabel(endEvent: string | null): string | null {
   ) {
     return endEvent.split("(")[0];
   }
-  if (endEvent.startsWith("BAR SL2(")) return "BAR SL 2";
   return null;
 }
 
