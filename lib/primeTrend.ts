@@ -792,8 +792,11 @@ function stepPbarLevel(
       if (pbarSlNow) {
         s.topRef = Math.max(s.pbarRefHigh, s.pbarEntryRefHigh);
         s.reactivationKind = "COMBINED";
+        // Exit price is ALWAYS PBAR ENTRY's own (tighter) reference, same
+        // as the clean case below, not PBAR's own wider one -- see the
+        // identical note on stepBarLevel's own BAR/BAR ENTRY pair.
         const exitType = entrySlNow ? "DTF PBAR SL + DTF PBAR ENTRY SL" : "DTF PBAR SL (wipes ENTRY)";
-        closed = { exitType, exitPrice: s.pbarRefLow };
+        closed = { exitType, exitPrice: s.pbarEntryRefLow - THRESH };
         s.mode = "SEEK_REACTIVATION";
         break;
       }
@@ -802,7 +805,7 @@ function stepPbarLevel(
         // background. Races PBAR ENTRY's own direct reactivation against
         // PBAR's own (now decisive, if it comes first) SL -- see
         // SEEK_PBAR_ENTRY_REACTIVATION below. No fast lane here, ever.
-        closed = { exitType: "DTF PBAR ENTRY SL", exitPrice: s.pbarEntryRefLow };
+        closed = { exitType: "DTF PBAR ENTRY SL", exitPrice: s.pbarEntryRefLow - THRESH };
         s.frozenEntryRefHigh = s.pbarEntryRefHigh;
         s.mode = "SEEK_PBAR_ENTRY_REACTIVATION";
         break;
