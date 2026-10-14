@@ -2274,18 +2274,26 @@ function simulateDtfAll(
         // dormant.)
         const bar12CurrentlyActive = bar1State !== null && bar1State.mode === "BAR2_ACTIVE";
         if (!tarEntrySlEverHappened && !bar12CurrentlyActive) {
-          // sarRefLow merely being ARMED (a RED2 has confirmed, but SAR
-          // has not actually fired from it) must never block TAR on its
-          // own -- that would be deciding today's formation based on
-          // what MIGHT happen later, a causality violation. Only an
-          // actual SAR firing (the recurring DTF-SAR block elsewhere)
-          // closes an open position; confirmed via COCHINSHIP: TAR forms
-          // 2024-12-02 and TAR ENTRY 2024-12-03 under the OHLC's own
-          // terms alone, even though RED2(B) 2024-11-18 had already
-          // armed (unfired) sarRefLow days earlier -- on 12-02/12-03,
-          // nothing has actually happened yet to stop it; that RED2
-          // later gets superseded by RED2(B) 2024-12-16 without ever
-          // firing at all.
+          // Eligibility to form is governed ENTIRELY by "WTF BAR active"
+          // (the pbarWindowIdx/formationDate/endDate check above) -- the
+          // same WTF-anchor-active precondition every DTF entry (BAR
+          // ENTRY, PBAR ENTRY, TAR ENTRY alike) requires: unless the
+          // governing WTF-level tier (TZ BUY 2 / BAR / REAR 2 / REAR
+          // ENTRY 2) is currently active, DTF cannot generate any entry
+          // at all. sarRefLow merely being ARMED (a RED2 confirmed, SAR
+          // not yet fired from it) is a completely different, DTF-level
+          // concern and must never additionally block formation -- that
+          // would decide today based on what MIGHT happen later.
+          // Confirmed via COCHINSHIP: TAR forms 2024-12-02 and TAR ENTRY
+          // 2024-12-03 purely on the OHLC's own terms, because BAR(B.2)
+          // (formed 2024-11-25, after the SAR exit) is still the active
+          // WTF anchor -- irrespective of RED2(B) 2024-11-18 having
+          // already armed (and never firing) sarRefLow in the
+          // background. Equally confirmed via DIXON: BAR 1 - BAR 2 forms
+          // 2022-02-10 under BAR(A.2) (formed 2021-08-30, still active --
+          // it has no "BAR SL(A.2)" of its own until 2022-05-02), with
+          // TAR SL already having happened and the DTF RED1->RED2
+          // tracker already confirmed -- same gate, same result.
           if (tarState === null) tarState = new TarLevelState();
 
           const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
@@ -2332,9 +2340,10 @@ function simulateDtfAll(
         // and closed (clean "DTF BAR 2 SL" or combined "DTF BAR 1 SL +
         // DTF BAR 2 SL"), BAR 2 can never reactivate above its reference
         // high again either -- permanently dormant for the rest of this
-        // window. Same causality note as TAR above: sarRefLow merely
-        // being armed (not yet fired) must never block a new BAR 1
-        // cycle from starting.
+        // window. Same "WTF BAR active" governs eligibility note as TAR
+        // above -- sarRefLow merely being armed (not yet fired) is a
+        // different, DTF-level concern and must never additionally block
+        // a new BAR 1 cycle from starting.
         if (tarSlEverHappened && bar12RedEverConfirmed && !bar2EverClosed) {
           if (bar1State === null) bar1State = new Bar1LevelState();
 
