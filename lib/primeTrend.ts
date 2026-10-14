@@ -2274,50 +2274,43 @@ function simulateDtfAll(
         // dormant.)
         const bar12CurrentlyActive = bar1State !== null && bar1State.mode === "BAR2_ACTIVE";
         if (!tarEntrySlEverHappened && !bar12CurrentlyActive) {
-          // A fresh RED2 re-arming sarRefLow blocks TAR from reaching any
-          // NEW tier-2 entry (forming fresh, or reactivating) while armed
-          // -- confirmed via DIXON: 24/01/22 RED2 arms sarRefLow from
-          // 31/01/22, no SAR fires from it until 18/02/22, so the
-          // spurious 2022-02-10 formation in that gap is impossible, even
-          // though the underlying tier-1 TarLevelState object may already
-          // have existed (seeking quietly) before the arming began.
-          // Once TAR ENTRY is ALREADY open (tier 2, TAR_ENTRY_ACTIVE)
-          // from before the arming, though, it keeps running --
-          // confirmed via COCHINSHIP: TAR ENTRY opened 2024-12-03 (before
-          // any RED2 had armed anything) keeps running and SL's normally
-          // on 2024-12-18, even though RED2(B) 2024-12-16 arms a fresh
-          // sarRefLow in between (it doesn't fire until 2024-12-23, after
-          // the SL already happened).
-          const tarAlreadyOpen = tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE";
-          if (sarRefLow === null || tarAlreadyOpen) {
-            if (tarState === null) tarState = new TarLevelState();
-          }
+          // sarRefLow merely being ARMED (a RED2 has confirmed, but SAR
+          // has not actually fired from it) must never block TAR on its
+          // own -- that would be deciding today's formation based on
+          // what MIGHT happen later, a causality violation. Only an
+          // actual SAR firing (the recurring DTF-SAR block elsewhere)
+          // closes an open position; confirmed via COCHINSHIP: TAR forms
+          // 2024-12-02 and TAR ENTRY 2024-12-03 under the OHLC's own
+          // terms alone, even though RED2(B) 2024-11-18 had already
+          // armed (unfired) sarRefLow days earlier -- on 12-02/12-03,
+          // nothing has actually happened yet to stop it; that RED2
+          // later gets superseded by RED2(B) 2024-12-16 without ever
+          // firing at all.
+          if (tarState === null) tarState = new TarLevelState();
 
-          if (tarState !== null && (sarRefLow === null || tarAlreadyOpen)) {
-            const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
-            if (tarResult.opened) {
-              tarState.rowEntryDate = cur.date;
-              tarState.rowEntryPrice = tarResult.opened.price;
-            }
-            if (tarResult.closed) {
-              if (!invalidSarSuppressesBarTheory(invalidSarState)) {
-                pushRow(
-                  0,
-                  "TAR ENTRY",
-                  tarState.rowEntryDate as string,
-                  tarState.rowEntryPrice as number,
-                  tarResult.closed.exitType,
-                  cur.date,
-                  tarResult.closed.exitPrice,
-                  tarState.rowHH,
-                  tarState.rowHHDate
-                );
-              }
-              tarEntrySlEverHappened = true;
-              tarState = null;
-            }
-            if (tarResult.tarSlNow) tarSlEverHappened = true;
+          const tarResult = stepTarLevel(tarState, prev, cur, wtfBarRefHigh);
+          if (tarResult.opened) {
+            tarState.rowEntryDate = cur.date;
+            tarState.rowEntryPrice = tarResult.opened.price;
           }
+          if (tarResult.closed) {
+            if (!invalidSarSuppressesBarTheory(invalidSarState)) {
+              pushRow(
+                0,
+                "TAR ENTRY",
+                tarState.rowEntryDate as string,
+                tarState.rowEntryPrice as number,
+                tarResult.closed.exitType,
+                cur.date,
+                tarResult.closed.exitPrice,
+                tarState.rowHH,
+                tarState.rowHHDate
+              );
+            }
+            tarEntrySlEverHappened = true;
+            tarState = null;
+          }
+          if (tarResult.tarSlNow) tarSlEverHappened = true;
         }
 
         // The nested cascade's own continuous RED1->RED2 tracker --
@@ -2339,38 +2332,33 @@ function simulateDtfAll(
         // and closed (clean "DTF BAR 2 SL" or combined "DTF BAR 1 SL +
         // DTF BAR 2 SL"), BAR 2 can never reactivate above its reference
         // high again either -- permanently dormant for the rest of this
-        // window. Same armed-sarRefLow treatment as TAR above: blocks a
-        // brand new BAR 1 cycle from starting, never interrupts one
-        // that's already running.
+        // window. Same causality note as TAR above: sarRefLow merely
+        // being armed (not yet fired) must never block a new BAR 1
+        // cycle from starting.
         if (tarSlEverHappened && bar12RedEverConfirmed && !bar2EverClosed) {
-          const bar2AlreadyOpen = bar1State !== null && bar1State.mode === "BAR2_ACTIVE";
-          if (sarRefLow === null || bar2AlreadyOpen) {
-            if (bar1State === null) bar1State = new Bar1LevelState();
-          }
+          if (bar1State === null) bar1State = new Bar1LevelState();
 
-          if (bar1State !== null && (sarRefLow === null || bar2AlreadyOpen)) {
-            const { opened, closed } = stepBar1Level(bar1State, prev, cur);
-            if (opened) {
-              bar1State.rowEntryDate = cur.date;
-              bar1State.rowEntryPrice = opened.price;
+          const { opened, closed } = stepBar1Level(bar1State, prev, cur);
+          if (opened) {
+            bar1State.rowEntryDate = cur.date;
+            bar1State.rowEntryPrice = opened.price;
+          }
+          if (closed) {
+            if (!invalidSarSuppressesBarTheory(invalidSarState)) {
+              pushRow(
+                0,
+                "BAR 1 - BAR 2",
+                bar1State.rowEntryDate as string,
+                bar1State.rowEntryPrice as number,
+                closed.exitType,
+                cur.date,
+                closed.exitPrice,
+                bar1State.rowHH,
+                bar1State.rowHHDate
+              );
             }
-            if (closed) {
-              if (!invalidSarSuppressesBarTheory(invalidSarState)) {
-                pushRow(
-                  0,
-                  "BAR 1 - BAR 2",
-                  bar1State.rowEntryDate as string,
-                  bar1State.rowEntryPrice as number,
-                  closed.exitType,
-                  cur.date,
-                  closed.exitPrice,
-                  bar1State.rowHH,
-                  bar1State.rowHHDate
-                );
-              }
-              bar2EverClosed = true;
-              bar1State = null;
-            }
+            bar2EverClosed = true;
+            bar1State = null;
           }
         }
       }
