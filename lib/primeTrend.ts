@@ -1824,26 +1824,97 @@ function wtfBarWindowsForLetter(
   formationDate: string,
   endDate: string
 ): WtfBarWindow[] {
-  const formPrefix = `BAR(${letter}.`;
-  const slPrefix = `BAR SL(${letter}.`;
-  const formations: string[] = [];
-  const sls: string[] = [];
+  // A "BAR(letter.N)" label only counts as a REAL formation -- one that
+  // supersedes whatever was governing before and reseeds the reference
+  // -- if it is actually backed by one of the three causal paths
+  // confirmed: (a)/(b) a genuine RED2(letter) confirmed since the last
+  // real formation (whatever it resolves to afterward, INVALID SAR/
+  // INVALID SAR ENTRY or SAR 2, doesn't matter here -- RED2 having
+  // fired at all is what matters), or (c) a reform of that SAME number
+  // after its OWN prior "BAR SL(letter.N)". A "BAR(" label that is
+  // neither -- the WTF engine's own RED1 getting invalidated (RED1 HH)
+  // before ever reaching RED2, which still throws off a "BAR(" label --
+  // is not a real formation and must be ignored outright, not treated
+  // as super ceding anything. Confirmed via COCHINSHIP: BAR(B.3) on
+  // 2025-04-15 is preceded by RED1(B) 04-01 -> RED1 LL(B) 04-07 ->
+  // RED1 HH(B) [invalidated, no RED2 ever confirmed] + BAR(B.3) same
+  // day -- not real. Ignoring it, BAR(B.2) (formed 2025-03-17, backed
+  // by its own prior BAR SL(B.2) reform) stays the sole governing
+  // window straight through to TAR's real 2025-04-29 formation,
+  // exactly as walked through by hand -- no gap. Confirmed via DIXON:
+  // BAR(A.2) on 2021-08-30 IS real (RED1(A) 07-26 -> RED1 LL(A) 08-09
+  // -> RED2(A) 08-16, genuinely confirmed) -- it legitimately
+  // supersedes BAR(A.1) (open since 2020-03-02, never itself SL'd),
+  // reseeding the reference down to A.2's own (lower) formation high,
+  // exactly as needed for the confirmed 2021-10-01 TAR ENTRY.
+  const formRe = new RegExp(`^BAR\\(${letter}\\.(\\d+)\\)$`);
+  const slRe = new RegExp(`^BAR SL\\(${letter}\\.(\\d+)\\)$`);
+  const red2Label = `RED2(${letter})`;
+
+  const windows: WtfBarWindow[] = [];
+  let currentN: number | null = null;
+  let currentFormationDate: string | null = null;
+  let currentFormationHigh = 0;
+  let sawRed2SinceLastRealFormation = false;
+  // The WTF engine REUSES number labels across unrelated instances (not
+  // a stable per-lineage identity) -- so "reform of its own prior SL"
+  // only counts if THIS is the very next "BAR(" event after that exact
+  // SL, with nothing else forming in between. A single most-recent
+  // value, not a historical set: confirmed via COCHINSHIP, where
+  // "BAR(B.3)" closed 2025-01-06 and the label "3" is reused again on
+  // 2025-04-15 for a wholly unrelated, non-real formation -- treating
+  // that as "reforming" the January one (a persistent per-number set
+  // would) is exactly the bug that let it wrongly supersede BAR(B.2).
+  let lastClosedN: number | null = null;
+  // Whether the MOST RECENT "BAR(letter.N)" occurrence for each number
+  // was itself validated real -- an SL for N only sets lastClosedN if
+  // N's latest formation was real. Without this, a SL on a number whose
+  // latest formation was spurious (e.g. the ignored 2025-04-15 one)
+  // would still look like a legitimate close, letting label reuse
+  // validate a LATER spurious reform of the same number (confirmed via
+  // COCHINSHIP: "BAR(B.3)" reappears 2025-05-12, again with no RED2
+  // backing it, and must be rejected again, not treated as reforming
+  // either the real December B.3 or the already-rejected April one).
+  const lastFormationWasReal = new Map<number, boolean>();
+
   for (const { day, events } of wtfTrace) {
     if (day.date <= formationDate || day.date > endDate) continue;
     for (const e of events) {
-      if (e.startsWith(formPrefix) && e.endsWith(")")) formations.push(day.date);
-      if (e.startsWith(slPrefix) && e.endsWith(")")) sls.push(day.date);
+      if (e === red2Label) {
+        sawRed2SinceLastRealFormation = true;
+        continue;
+      }
+      const fm = e.match(formRe);
+      if (fm) {
+        const n = Number(fm[1]);
+        const isReal = n === lastClosedN || sawRed2SinceLastRealFormation;
+        lastClosedN = null; // any "BAR(" event, real or not, consumes reform eligibility
+        lastFormationWasReal.set(n, isReal);
+        if (!isReal) continue; // spurious "BAR(" label -- ignore outright
+        if (currentN !== n && currentFormationDate !== null) {
+          windows.push({ formationDate: currentFormationDate, endDate: day.date, endReason: "new BAR", formationHigh: currentFormationHigh });
+        }
+        currentN = n;
+        currentFormationDate = day.date;
+        currentFormationHigh = day.h;
+        sawRed2SinceLastRealFormation = false;
+        continue;
+      }
+      const sm = e.match(slRe);
+      if (sm) {
+        const n = Number(sm[1]);
+        if (lastFormationWasReal.get(n)) lastClosedN = n;
+        if (currentN === n) {
+          windows.push({ formationDate: currentFormationDate as string, endDate: day.date, endReason: "BAR SL", formationHigh: currentFormationHigh });
+          currentN = null;
+          currentFormationDate = null;
+        }
+        continue;
+      }
     }
   }
-  const windows: WtfBarWindow[] = [];
-  for (let i = 0; i < formations.length; i++) {
-    const f = formations[i];
-    const next = formations[i + 1] ?? null;
-    const matchingSl = sls.find((sl) => sl > f && (next === null || sl < next));
-    const end = matchingSl ?? next;
-    const endReason: WtfBarWindow["endReason"] = matchingSl ? "BAR SL" : next ? "new BAR" : null;
-    const formationHigh = wtfTrace.find(({ day }) => day.date === f)?.day.h ?? 0;
-    windows.push({ formationDate: f, endDate: end ?? null, endReason, formationHigh });
+  if (currentFormationDate !== null) {
+    windows.push({ formationDate: currentFormationDate, endDate: null, endReason: null, formationHigh: currentFormationHigh });
   }
   return windows;
 }
