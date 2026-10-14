@@ -1957,16 +1957,29 @@ function simulateDtfAll(
 
   // INVALID SAR / INVALID SAR ENTRY -- see the module section comment
   // above stepInvalidSar. invalidSarState is non-null from the moment
-  // SAR fires until SAR 2 (or the instance itself) ends it; while it is
-  // non-null and not in the post-SL reactivation race, ordinary BAR
-  // THEORY (TAR ENTRY, BAR 1 - BAR 2) is suppressed from the report
-  // (invalidSarSuppressesBarTheory). anyInvalidationSinceLastSar decides,
-  // the next time SAR fires again, whether that firing is just a fresh
-  // SAR (an invalidation happened since the last one) or SAR 2 (none
-  // did) -- SAR 2 is PRIME TREND's own terminal exit for this mechanism.
+  // SAR fires until SAR 2 ends it; while it is non-null and not in the
+  // post-SL reactivation race, ordinary BAR THEORY (TAR ENTRY, BAR 1 -
+  // BAR 2) is suppressed from the report (invalidSarSuppressesBarTheory).
+  // anyInvalidationSinceLastSar decides, the next time SAR fires again,
+  // whether that firing is just a fresh SAR (an invalidation happened
+  // since the last one) or SAR 2 (none did).
+  //
+  // SAR 2 is NOT a terminal exit for the whole instance -- confirmed:
+  // "SAR 2 is kind of PAUSE which can get reactivated if BAR - TAR - TAR
+  // ENTRY (or BAR 1 - BAR 2) stays active until new SAR occurs... it
+  // terminates the idea of INVALID SAR ENTRY for THAT BAR" only. It just
+  // sets invalidSarState back to null -- BAR THEORY keeps running
+  // unsuppressed from there (same as always, once invalidSarState is
+  // null), and the NEXT genuine SAR fire (a fresh RED2 re-arming and
+  // decisively breaching again) gets its own fresh, independent
+  // fresh-SAR-vs-SAR-2 classification, same as any other SAR fire --
+  // there is no permanent flag blocking that. The real terminal exit
+  // from PRIME TREND is the WTF-level BAR SL2 event, which is already
+  // handled separately (it's this instance's own endDate/endEvent, see
+  // runWtfTrace/instances) -- "unless REAR 2 occurs" is likewise already
+  // handled as its own separate WTF instance, not by anything here.
   let invalidSarState: InvalidSarState | null = null;
   let anyInvalidationSinceLastSar = false;
-  let primeTrendEndedBySar2 = false;
 
   // Stage 1's own "since it last (re)formed" tracking, purely for
   // PrimeTrendLiveStatus (computePrimeTrend's own historical trade log
@@ -2374,9 +2387,11 @@ function simulateDtfAll(
     }
 
     // --- INVALID SAR / INVALID SAR ENTRY -- see stepInvalidSar's own
-    // comment above. Only steps once SAR has fired at least once and
-    // PRIME TREND hasn't already ended via SAR 2.
-    if (invalidSarState !== null && !primeTrendEndedBySar2) {
+    // comment above. Only steps once SAR has fired and a cycle is
+    // currently live (invalidSarState non-null) -- SAR 2 ends the
+    // CURRENT cycle (sets it to null) but not the mechanism itself; see
+    // the module-level comment above for why there's no permanent gate.
+    if (invalidSarState !== null) {
       const invalidSarResult = stepInvalidSar(invalidSarState, prev, cur);
       if (invalidSarResult.invalidSarNow) anyInvalidationSinceLastSar = true;
       if (invalidSarResult.opened) {
@@ -2397,11 +2412,11 @@ function simulateDtfAll(
         );
       }
       // "SAR 2" via a decisive breach within SEEK_INVALID itself (no
-      // fresh RED2 needed) -- same terminal effect as the recurring DTF
-      // SAR's own SAR 2 path below: ends the whole mechanism outright,
-      // straight back to plain BAR THEORY.
+      // fresh RED2 needed) -- same effect as the recurring DTF SAR's own
+      // SAR 2 path below: ends THIS cycle (back to plain BAR THEORY,
+      // unsuppressed), not the mechanism permanently -- the next fresh
+      // SAR fire still gets its own independent classification.
       if (invalidSarResult.sar2Now) {
-        primeTrendEndedBySar2 = true;
         invalidSarState = null;
       }
     }
@@ -2463,6 +2478,12 @@ function simulateDtfAll(
         // the very first SAR ever (never "SAR 2") from a later one.
         const sarFiredAlready = sarFired;
         const barTheorySuppressed = invalidSarSuppressesBarTheory(invalidSarState);
+        // Captured BEFORE tarState/bar1State are unconditionally reset to
+        // null a few lines below (this same SAR fire resets BAR THEORY's
+        // own gate-tracking regardless of classification) -- otherwise
+        // every fire would look "dormant" by the time the INVALID SAR
+        // cycle decision below is reached.
+        const barTheoryDormant = sarFiredAlready && tarState === null && bar1State === null;
         sarFired = true;
         if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
           pushRow(
@@ -2542,33 +2563,64 @@ function simulateDtfAll(
         bar2EverClosed = false;
 
         // INVALID SAR ENTRY itself -- close any open row, then decide
-        // whether THIS SAR firing is "SAR 2" (terminal for this whole
-        // mechanism -- no invalidation happened since the last SAR) or
-        // just a fresh SAR (one did) that restarts the cycle.
-        if (!primeTrendEndedBySar2) {
-          if (invalidSarState !== null && invalidSarState.mode === "ENTRY_ACTIVE" && invalidSarState.rowEntryDate !== null) {
-            pushRow(
-              0,
-              "INVALID SAR ENTRY",
-              invalidSarState.rowEntryDate,
-              invalidSarState.rowEntryPrice as number,
-              "DTF SAR",
-              cur.date,
-              sarRefLow,
-              invalidSarState.rowHH,
-              invalidSarState.rowHHDate
-            );
-          }
-          if (sarFiredAlready && !anyInvalidationSinceLastSar) {
-            // SAR 2 -- PRIME TREND's own terminal exit for this
-            // mechanism. From here on it's plain BAR THEORY: no more
-            // suppression, no more re-seeding.
-            primeTrendEndedBySar2 = true;
-            invalidSarState = null;
-          } else {
-            invalidSarState = new InvalidSarState(cur.h, cur.l);
-            anyInvalidationSinceLastSar = false;
-          }
+        // whether THIS SAR firing is "SAR 2" (no invalidation happened
+        // since the last SAR -- ends only THIS cycle, see module-level
+        // comment above) or just a fresh SAR (one did) that opens a new
+        // cycle. Either way this always runs -- there is no permanent
+        // gate once SAR has fired once.
+        //
+        // "SAR 2" only applies when there's a currently LIVE cycle that
+        // never invalidated -- if the mechanism is currently dormant
+        // (invalidSarState already null, e.g. a previous SAR 2 already
+        // paused it, or this is the very first SAR ever), THIS fire is
+        // always just a fresh SAR that opens a brand new cycle, never a
+        // repeat SAR 2 -- anyInvalidationSinceLastSar is stale leftover
+        // bookkeeping from a dead cycle, not a reason to stay paused.
+        // Confirmed via COCHINSHIP: 2024-08-06's SAR 2 (immediate
+        // breach the day after the first-ever SAR) must not keep
+        // re-firing as SAR 2 forever after -- 2024-12-23's fresh RED2-
+        // armed SAR must open a real INVALID SAR cycle.
+        const hasLiveCycleWithoutInvalidation = invalidSarState !== null && !anyInvalidationSinceLastSar;
+        if (invalidSarState !== null && invalidSarState.mode === "ENTRY_ACTIVE" && invalidSarState.rowEntryDate !== null) {
+          pushRow(
+            0,
+            "INVALID SAR ENTRY",
+            invalidSarState.rowEntryDate,
+            invalidSarState.rowEntryPrice as number,
+            "DTF SAR",
+            cur.date,
+            sarRefLow,
+            invalidSarState.rowHH,
+            invalidSarState.rowHHDate
+          );
+        }
+        // A fresh SAR fire only opens a new INVALID SAR cycle while BAR
+        // THEORY (TAR or BAR 1 - BAR 2) is actually alive -- tracking
+        // SOMETHING, even just seeking, not necessarily escalated to its
+        // own entry tier. If both are fully dormant (gated off, waiting
+        // on the current WTF BAR window's own per-lineage dormancy to
+        // clear -- e.g. right after a TAR SL/BAR 2 SL, before the next
+        // WTF BAR reform), a SAR fire here has nothing to do with and
+        // must not spin up a cycle. Never applies to the very first SAR
+        // (sarFiredAlready false) -- that one always opens a cycle, same
+        // as always. Confirmed via DIXON: the 2022-02-18 recurring SAR
+        // refire (nothing open, both TAR and BAR 1 - BAR 2 fully
+        // dormant between the 2022-01-27 TAR SL/2022-02-11 BAR 2 SL and
+        // the 2022-03-14 BAR(A.3) reform) must NOT spin up an INVALID
+        // SAR cycle -- the next genuine entry is still 2022-04-26's
+        // BAR 1 - BAR 2, nothing in between. Contrast COCHINSHIP's
+        // 2024-12-23 SAR, which fires with BAR 1 - BAR 2 already
+        // seeking (SEEK_BAR1, not dormant) and must open a cycle.
+        if (sarFiredAlready && hasLiveCycleWithoutInvalidation) {
+          // SAR 2 -- ends THIS cycle only (invalidSarState back to
+          // null, BAR THEORY unsuppressed from here); the next fresh
+          // SAR fire gets its own independent classification.
+          invalidSarState = null;
+        } else if (!barTheoryDormant) {
+          invalidSarState = new InvalidSarState(cur.h, cur.l);
+          anyInvalidationSinceLastSar = false;
+        } else {
+          invalidSarState = null;
         }
         // Spent -- must re-arm from a FRESH RED2 before firing again.
         sarRefLow = null;
