@@ -1303,6 +1303,9 @@ class InvalidSarState {
   refHigh: number;
   refLow: number;
   frozenEntryRefHigh = 0;
+  // Seeded at the bare "INVALID SAR SL" day's own Low when entering
+  // SEEK_REFORM -- see that case's own comment for why.
+  reformFloor = 0;
 
   rowEntryDate: string | null = null;
   rowEntryPrice: number | null = null;
@@ -1340,7 +1343,15 @@ function stepInvalidSar(
 
   switch (s.mode) {
     case "SEEK_INVALID": {
-      if (cur.h > s.refHigh && cur.h - s.refHigh >= THRESH - EPS && cur.c >= s.refHigh) {
+      // Must be the real breakoutShape (including cur.l >= prev.l), same
+      // as every other breakout check in this file -- confirmed via
+      // COCHINSHIP: 2024-12-27 (High 1539.05 clears the 1520 ref by far
+      // more than THRESH, Close confirms at the high) looked like a
+      // qualifying invalidation, but its Low (1445) undercut 2024-12-26's
+      // own Low (1450) -- failing cur.l >= prev.l -- so it must NOT
+      // count. The real first invalidation is 2024-12-30 (Low 1473.50 >=
+      // 2024-12-27's Low 1445).
+      if (breakoutShape(prev, cur, s.refHigh)) {
         invalidSarNow = true;
         s.refHigh = cur.h;
         s.refLow = cur.l;
@@ -1389,6 +1400,7 @@ function stepInvalidSar(
       if (!slNow && cur.h > s.refHigh && cur.h - s.refHigh >= ANY) s.refHigh = cur.h;
       if (!slNow && cur.l < s.refLow) s.refLow = cur.l;
       if (slNow) {
+        s.reformFloor = cur.l;
         s.mode = "SEEK_REFORM";
       }
       break;
@@ -1399,11 +1411,27 @@ function stepInvalidSar(
       // prior-proven-high ratchet to respect, unlike BAR1's own
       // gateEstablished case) -- mirrors BAR1's own SEEK_BAR1 "Immediately
       // BAR1" bare-SL-reform exactly.
+      //
+      // Symmetric to SEEK_INVALID's own sar2Now check above: a decisive
+      // breach of the bare SL day's own Low, before any reform ever
+      // happens, is SAR 2 -- terminates the INVALID SAR mechanism for
+      // THIS BAR outright ("no INVALID SAR ENTRY possible for this
+      // BAR"), same shape and same reasoning as the original. Confirmed
+      // via COCHINSHIP: 2025-01-10's bare SL (Low 1415.00) -> 2025-01-13
+      // decisively breaks it (Low 1359.55, gap 55.45, Close 1359.55
+      // confirming) -- SAR 2, before the reform that otherwise happens
+      // on 2025-01-16 ever gets a chance.
       if (breakoutShape(prev, cur, prev.h)) {
         s.refHigh = cur.h;
         s.refLow = cur.l;
         s.mode = "INVALID_SAR_ACTIVE";
+        break;
       }
+      if (slShape(cur, s.reformFloor)) {
+        sar2Now = true;
+        break;
+      }
+      if (cur.l < s.reformFloor) s.reformFloor = cur.l; // quiet ratchet, same as SEEK_INVALID's own "SAR LL"
       break;
     }
     case "ENTRY_ACTIVE": {
@@ -2478,12 +2506,6 @@ function simulateDtfAll(
         // the very first SAR ever (never "SAR 2") from a later one.
         const sarFiredAlready = sarFired;
         const barTheorySuppressed = invalidSarSuppressesBarTheory(invalidSarState);
-        // Captured BEFORE tarState/bar1State are unconditionally reset to
-        // null a few lines below (this same SAR fire resets BAR THEORY's
-        // own gate-tracking regardless of classification) -- otherwise
-        // every fire would look "dormant" by the time the INVALID SAR
-        // cycle decision below is reached.
-        const barTheoryDormant = sarFiredAlready && tarState === null && bar1State === null;
         sarFired = true;
         if (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE" && barState.rowEntryDate !== null) {
           pushRow(
@@ -2594,33 +2616,26 @@ function simulateDtfAll(
             invalidSarState.rowHHDate
           );
         }
-        // A fresh SAR fire only opens a new INVALID SAR cycle while BAR
-        // THEORY (TAR or BAR 1 - BAR 2) is actually alive -- tracking
-        // SOMETHING, even just seeking, not necessarily escalated to its
-        // own entry tier. If both are fully dormant (gated off, waiting
-        // on the current WTF BAR window's own per-lineage dormancy to
-        // clear -- e.g. right after a TAR SL/BAR 2 SL, before the next
-        // WTF BAR reform), a SAR fire here has nothing to do with and
-        // must not spin up a cycle. Never applies to the very first SAR
-        // (sarFiredAlready false) -- that one always opens a cycle, same
-        // as always. Confirmed via DIXON: the 2022-02-18 recurring SAR
-        // refire (nothing open, both TAR and BAR 1 - BAR 2 fully
-        // dormant between the 2022-01-27 TAR SL/2022-02-11 BAR 2 SL and
-        // the 2022-03-14 BAR(A.3) reform) must NOT spin up an INVALID
-        // SAR cycle -- the next genuine entry is still 2022-04-26's
-        // BAR 1 - BAR 2, nothing in between. Contrast COCHINSHIP's
-        // 2024-12-23 SAR, which fires with BAR 1 - BAR 2 already
-        // seeking (SEEK_BAR1, not dormant) and must open a cycle.
+        // Every fresh SAR fire opens a new INVALID SAR cycle, whatever
+        // BAR THEORY's own state is (even fully dormant, nothing open or
+        // seeking) -- confirmed via DIXON: the 2022-02-18 recurring SAR
+        // refire, with TAR and BAR 1 - BAR 2 both fully dormant (TAR SL
+        // 2022-01-27, BAR 2 SL 2022-02-11, no WTF BAR reform yet), opens
+        // exactly the INVALID SAR cycle already independently confirmed
+        // by this file's own header comment above (23/02/22 INVALID SAR
+        // -> 24/02/22 INVALID SAR SL -> 25/02/22 INVALID SAR (reform) ->
+        // 07/03/22 INVALID SAR SL), which continues on to the real
+        // 2022-04-05 INVALID SAR ENTRY. An earlier attempt to gate this
+        // on BAR THEORY being "alive" broke that already-confirmed
+        // chain -- removed.
         if (sarFiredAlready && hasLiveCycleWithoutInvalidation) {
           // SAR 2 -- ends THIS cycle only (invalidSarState back to
           // null, BAR THEORY unsuppressed from here); the next fresh
           // SAR fire gets its own independent classification.
           invalidSarState = null;
-        } else if (!barTheoryDormant) {
+        } else {
           invalidSarState = new InvalidSarState(cur.h, cur.l);
           anyInvalidationSinceLastSar = false;
-        } else {
-          invalidSarState = null;
         }
         // Spent -- must re-arm from a FRESH RED2 before firing again.
         sarRefLow = null;
