@@ -2431,27 +2431,34 @@ function simulateDtfAll(
     //
     // SAR is purely an EXIT -- confirmed: "SAR is not important unless
     // BAR ENTRY/PBAR ENTRY is active... as long as we do not have any
-    // entry what is point of looking for SAR." A decisive breach with
-    // nothing open to exit (no BAR ENTRY, PBAR ENTRY, TAR ENTRY, BAR 1 -
-    // BAR 2, or INVALID SAR ENTRY active) is simply not evaluated as a
-    // SAR event at all -- it does not fire, does not set sarFired, and
-    // does not spend the watch. The reference low still ratchets down
-    // quietly in the background on the new low either way (same thing
-    // that already happens on any ordinary non-breach lower low), so the
-    // watch stays live and keeps tightening until the day a decisive
-    // breach coincides with something actually open. Confirmed via
-    // COCHINSHIP: the 2023-01-10 breach of sarRefLow=245.90 (armed off
-    // RED2(B) 2022-12-19) landed with BAR ENTRY already SL'd (2022-12-23)
-    // and PBAR not yet even seeking -- nothing open -- so it must NOT
-    // fire; 2023-05-03/2023-07-11 are PBAR ENTRY, not TAR ENTRY.
-    const sarHasSomethingToExit =
+    // entry what is point of looking for SAR." This gate applies ONLY to
+    // the very first SAR this instance ever fires -- before that, SAR
+    // is just an exit for the pre-SAR ladder (BAR ENTRY/PBAR ENTRY), and
+    // a decisive breach with neither active is not evaluated as a SAR
+    // event at all (does not fire, does not spend the watch -- the
+    // reference low still ratchets quietly in the background on the new
+    // low either way, same as any ordinary non-breach lower low, so the
+    // watch stays live until a breach coincides with one of them being
+    // open). Confirmed via COCHINSHIP: the 2023-01-10 breach of
+    // sarRefLow=245.90 (armed off RED2(B) 2022-12-19) landed with BAR
+    // ENTRY already SL'd (2022-12-23) and PBAR not yet even seeking --
+    // nothing open -- so it must NOT fire; 2023-05-03/2023-07-11 are
+    // PBAR ENTRY, not TAR ENTRY.
+    //
+    // Once SAR has fired for real at least once, this gate no longer
+    // applies -- from there on SAR is the already-confirmed recurring
+    // kill-switch, independent of BAR/PBAR/TAR/BAR-theory state (it
+    // drives the INVALID SAR / SAR 2 progression on every qualifying
+    // RED2 regardless of whether anything is currently open to close).
+    // Confirmed via COCHINSHIP: 2024-12-23's SAR fires with BAR 1 - BAR 2
+    // only at SEEK_BAR1 (nothing open) -- still a real SAR, opening the
+    // gate to INVALID SAR/INVALID SAR ENTRY.
+    const firstSarHasEntryToExit =
       (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE") ||
-      (pbarState !== null && pbarState.mode === "PBAR_ENTRY_ACTIVE") ||
-      (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE") ||
-      (bar1State !== null && bar1State.mode === "BAR2_ACTIVE") ||
-      (invalidSarState !== null && invalidSarState.mode === "ENTRY_ACTIVE");
+      (pbarState !== null && pbarState.mode === "PBAR_ENTRY_ACTIVE");
+    const shouldEvaluateSarFire = sarFired || firstSarHasEntryToExit;
     if (sarRefLow !== null) {
-      if (sarHasSomethingToExit && slShape(cur, sarRefLow)) {
+      if (shouldEvaluateSarFire && slShape(cur, sarRefLow)) {
         // Captured BEFORE sarFired is overwritten below -- distinguishes
         // the very first SAR ever (never "SAR 2") from a later one.
         const sarFiredAlready = sarFired;
