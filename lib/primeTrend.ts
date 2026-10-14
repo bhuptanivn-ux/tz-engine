@@ -1332,11 +1332,13 @@ function stepInvalidSar(
   cur: Day
 ): {
   invalidSarNow: boolean;
+  sarSlNow: boolean;
   sar2Now: boolean;
   opened: { price: number } | null;
   closed: { exitType: string; exitPrice: number } | null;
 } {
   let invalidSarNow = false;
+  let sarSlNow = false;
   let sar2Now = false;
   let opened: { price: number } | null = null;
   let closed: { exitType: string; exitPrice: number } | null = null;
@@ -1356,6 +1358,23 @@ function stepInvalidSar(
         s.refHigh = cur.h;
         s.refLow = cur.l;
         s.mode = "INVALID_SAR_ACTIVE";
+        break;
+      }
+      // "SAR SL" -- confirmed: the upside shape alone (High clears the
+      // ref by >=THRESH, Close confirms at/above it) is satisfied, but
+      // the Low undercuts the previous day's own Low, failing
+      // breakoutShape's guard, so it must NOT be called "INVALID SAR".
+      // Still a real, named event (not silently absorbed into the
+      // ordinary quiet ratchet): it becomes the new reference high for
+      // INVALID SAR, and the reference low becomes whichever is lower,
+      // the earlier SAR low or this day's own lower low -- exactly the
+      // same ratchet the ordinary path below performs, just under its
+      // own label since the day's shape is otherwise a near-miss
+      // invalidation, not an ordinary quiet day.
+      if (cur.h > s.refHigh && cur.h - s.refHigh >= THRESH - EPS && cur.c >= s.refHigh) {
+        sarSlNow = true;
+        s.refHigh = cur.h;
+        if (cur.l < s.refLow) s.refLow = cur.l;
         break;
       }
       if (slShape(cur, s.refLow)) {
@@ -1463,7 +1482,7 @@ function stepInvalidSar(
     }
   }
 
-  return { invalidSarNow, sar2Now, opened, closed };
+  return { invalidSarNow, sarSlNow, sar2Now, opened, closed };
 }
 
 // --------------------------------------------------------------------
