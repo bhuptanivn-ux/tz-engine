@@ -2428,8 +2428,30 @@ function simulateDtfAll(
     // ever resuming once SAR has fired at all, per "reactivation past a
     // SAR exit is only through BAR theory"); it must never also gate
     // whether SAR itself can fire again.
+    //
+    // SAR is purely an EXIT -- confirmed: "SAR is not important unless
+    // BAR ENTRY/PBAR ENTRY is active... as long as we do not have any
+    // entry what is point of looking for SAR." A decisive breach with
+    // nothing open to exit (no BAR ENTRY, PBAR ENTRY, TAR ENTRY, BAR 1 -
+    // BAR 2, or INVALID SAR ENTRY active) is simply not evaluated as a
+    // SAR event at all -- it does not fire, does not set sarFired, and
+    // does not spend the watch. The reference low still ratchets down
+    // quietly in the background on the new low either way (same thing
+    // that already happens on any ordinary non-breach lower low), so the
+    // watch stays live and keeps tightening until the day a decisive
+    // breach coincides with something actually open. Confirmed via
+    // COCHINSHIP: the 2023-01-10 breach of sarRefLow=245.90 (armed off
+    // RED2(B) 2022-12-19) landed with BAR ENTRY already SL'd (2022-12-23)
+    // and PBAR not yet even seeking -- nothing open -- so it must NOT
+    // fire; 2023-05-03/2023-07-11 are PBAR ENTRY, not TAR ENTRY.
+    const sarHasSomethingToExit =
+      (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE") ||
+      (pbarState !== null && pbarState.mode === "PBAR_ENTRY_ACTIVE") ||
+      (tarState !== null && tarState.mode === "TAR_ENTRY_ACTIVE") ||
+      (bar1State !== null && bar1State.mode === "BAR2_ACTIVE") ||
+      (invalidSarState !== null && invalidSarState.mode === "ENTRY_ACTIVE");
     if (sarRefLow !== null) {
-      if (slShape(cur, sarRefLow)) {
+      if (sarHasSomethingToExit && slShape(cur, sarRefLow)) {
         // Captured BEFORE sarFired is overwritten below -- distinguishes
         // the very first SAR ever (never "SAR 2") from a later one.
         const sarFiredAlready = sarFired;
