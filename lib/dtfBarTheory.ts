@@ -27,7 +27,10 @@
 //    confirmed against real data, flag any mismatch.
 //    RED1->RED2 is reserved for the NESTED "BAR 1 - BAR 2" cascade once BAR
 //    ENTRY is first confirmed (not yet implemented in this module).
-// 3. TZ BUY SL 2 opens TWO doors at once, which then race:
+// 3. TZ BUY SL 2 -- or a nested BAR ENTRY's own SL 2 under TZ BUY (flow 3:
+//    "after BAR SL2, race to either TZ GREEN -> TZ BUY -> BAR ENTRY, or
+//    REAR -> REAR ENTER"; confirmed by the user) -- opens TWO doors at once,
+//    which then race:
 //      (a) REAR, above the dying TZ BUY's own top reference, and
 //      (b) a fresh cycle (TZ GREEN(N+1) -> RED1 -> RED2 -> TZ BUY(N+1)).
 //    Whichever occurs is reportable. If ONLY REAR occurs, REAR is live. If
@@ -37,6 +40,10 @@
 //    REAR that never activated at all before being superseded is left out
 //    of the report entirely (same Filter-rule convention as a bare,
 //    never-escalated tier).
+//    Outside such a race only ONE cycle is ever live: a breakout before TZ
+//    BUY is just TZ GREEN HH, never a second TZ GREEN. A second TZ GREEN
+//    ("TZ GREEN B", flow 2b) can only appear once TZ BUY SL 2 or BAR SL 2
+//    has fired.
 
 import { THRESH, EPS, type Day, type HistoryRowLike } from "./tzEngineWtf";
 
@@ -125,18 +132,12 @@ export class TzBuy {
   refHigh: number;
   refLow: number;
   sl: TierSL | null = null;
-  /** True once this TZ BUY's own SL2 has fired -- opens the REAR-vs-fresh-
-   * cycle race (point 3 above). TZ BUY itself never reactivates again past
-   * this point (the race's two outcomes supersede it). Distinct from
-   * `rearDoorOpen`: a nested BAR ENTRY's own SL2 also lets REAR form (same
-   * as lib/dtfBar.ts's plain rearGateOpen), but that alone does NOT put
-   * this cycle into the fresh-cycle race -- only TZ BUY's own SL2 does. */
+  /** True once this TZ BUY's own SL2, or a nested BAR ENTRY's own SL2
+   * under it, has fired -- opens the REAR-vs-fresh-cycle race (point 3
+   * above): REAR may form above currentTopRef, and a fresh sibling cycle
+   * (TZ GREEN B) may spawn. TZ BUY itself never reactivates again past this
+   * point (the race's two outcomes supersede it). */
   rearRace = false;
-  /** True once EITHER this flag's own trigger (BAR ENTRY SL2 under this
-   * TZ BUY) or `rearRace` has fired -- REAR may form above currentTopRef.
-   * Kept separate from `rearRace` so only TZ BUY's own SL2 enables the
-   * race-with-a-fresh-cycle behavior. */
-  rearDoorOpen = false;
   rear: Rear | null = null;
   red: Red | null = null;
   redEver = false;
@@ -184,7 +185,7 @@ export class DtfBarTheoryEngine {
   }
 
   /** Same as process(), but each event carries the `seq` of the cycle that
-   * produced it. During a TZ BUY SL2 race two cycles run concurrently (the
+   * produced it. During a TZ BUY SL2 / BAR SL2 race two cycles run concurrently (the
    * dying one's REAR and the fresh sibling), and their nested BAR lineages
    * can independently emit identical text on the same day (e.g. both reach
    * "BAR2(1)"), so a reporting layer must scope rows by `seq`, never by
@@ -193,7 +194,7 @@ export class DtfBarTheoryEngine {
     const ev: TaggedEvent[] = [];
 
     // Advance every still-active cycle. Normally there is at most one;
-    // during a TZ BUY SL2 race there can be exactly two -- the dying
+    // during a TZ BUY SL2 / BAR SL2 race there can be exactly two -- the dying
     // cycle (seeking REAR) and a fresh one (seeking its own TZ BUY).
     for (const cyc of this.cycles) {
       if (!cyc.active) continue;
@@ -297,23 +298,16 @@ export class DtfBarTheoryEngine {
   private evalBuy(cyc: Cycle, buy: TzBuy, prev: Day, cur: Day): string[] {
     let ev: string[] = [];
 
-    if (buy.rearDoorOpen) {
+    if (buy.rearRace) {
       // TZ BUY's own door is closed for good -- only REAR (above TZ BUY's
-      // own dying top reference) is still evaluated here. The race-with-a-
-      // fresh-cycle behavior (spawning, dormancy, termination) applies ONLY
-      // when the door opened via TZ BUY's OWN SL2 (`rearRace`) -- a nested
-      // BAR ENTRY SL2 alone just opens REAR's door, same as
-      // lib/dtfBar.ts's plain rearGateOpen, with no race semantics.
-      if (buy.rearRace) {
-        // Full termination (stop evaluating this cycle at all) only
-        // happens once a sibling's own TZ BUY(N+1) reaches BAR ENTRY -- up
-        // to that point REAR (if it activated) is merely dormant, still
-        // tracked internally per the module comment ("REAR keeps
-        // climbing").
-        if (this.siblingReachedBarEntry(cyc)) {
-          cyc.active = false;
-          return ev;
-        }
+      // own dying top reference) is still evaluated here, racing a fresh
+      // sibling cycle. Full termination (stop evaluating this cycle at all)
+      // only happens once a sibling's own TZ BUY(N+1) reaches BAR ENTRY --
+      // up to that point REAR (if it activated) is merely dormant, still
+      // tracked internally per the module comment ("REAR keeps climbing").
+      if (this.siblingReachedBarEntry(cyc)) {
+        cyc.active = false;
+        return ev;
       }
 
       if (buy.rear === null) {
@@ -326,11 +320,8 @@ export class DtfBarTheoryEngine {
       }
       const rearEv = this.evalRear(buy, buy.rear, prev, cur);
       // Supersession check: once a SIBLING fresh cycle's own TZ BUY exists,
-      // this REAR (if it ever activated) goes dormant for good. Only
-      // meaningful when this door opened via TZ BUY's own SL2 -- a fresh
-      // sibling can only ever exist in that case (see process()'s own
-      // `blocking` check, gated on `rearRace`, not `rearDoorOpen`).
-      if (buy.rearRace && !buy.rear.dormant && this.siblingTzBuyExists(cyc)) {
+      // this REAR (if it ever activated) goes dormant for good.
+      if (!buy.rear.dormant && this.siblingTzBuyExists(cyc)) {
         buy.rear.dormant = true;
         rearEv.push("REAR DORMANT (TZ BUY N+1)");
       }
@@ -374,7 +365,6 @@ export class DtfBarTheoryEngine {
         if (isSl(cur, buy.sl.refLow)) {
           buy.sl.sl2 = true;
           buy.rearRace = true;
-          buy.rearDoorOpen = true;
           ev.push("TZ BUY SL 2");
         } else {
           buy.sl.refLow = cur.l;
@@ -526,10 +516,9 @@ export class DtfBarTheoryEngine {
         host.barLineages = [];
         host.barPending = false;
         if (host instanceof TzBuy) {
-          // Nested BAR ENTRY's own SL2 opens REAR's door, but -- unlike TZ
-          // BUY's own SL2 -- does NOT put this cycle into the race with a
-          // fresh sibling (rearRace stays false; see the TzBuy field docs).
-          host.rearDoorOpen = true;
+          // Nested BAR ENTRY's own SL2 opens the same REAR-vs-fresh-cycle
+          // race as TZ BUY's own SL2 (flow 3).
+          host.rearRace = true;
           ev.push(`BAR2 SL2(${lin.label})`);
         } else {
           host.active = false;
