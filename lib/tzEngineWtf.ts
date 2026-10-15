@@ -1607,6 +1607,32 @@ export class TZEngine {
               reactivatedThisCandle = true;
               buy.barPending = false;
               linEv.push(`BAR(${lin.label})`);
+              // Real-data bug (COCHINSHIP.NS B.2/B.3): a bare, never-escalated
+              // sibling that died long before this reform (e.g. a BAR SL with
+              // no BAR 2, sitting untouched for months) must not be left in
+              // buy.barLineages once THIS lineage resumes as the active one --
+              // otherwise that stale sibling, sitting after `lin` in the
+              // array purely by insertion order, becomes `literalNewest` in
+              // evalBarLineagesProgress's own freshBarReady check below and
+              // wrongly lets a brand-new number jump the queue on the very
+              // next entry-shape candle, without the RED1->RED2 cycle this
+              // active lineage has to complete first. Confirmed: "BAR 1 B.2
+              // is active... B.3 cannot just jump in without RED1-RED2."
+              // Only a bare dead end (bar2 === null) is dropped here -- one
+              // that escalated keeps its own "track toward BAR SL 2"
+              // privilege, same as the survivor filter elsewhere in this
+              // function.
+              for (const sibling of Array.from(buy.barLineages)) {
+                if (sibling === lin) continue;
+                if (sibling.sl !== null && sibling.bar2 === null) {
+                  const idx = buy.barLineages.indexOf(sibling);
+                  if (idx !== -1) {
+                    buy.barLineages.splice(idx, 1);
+                    const n = parseInt(sibling.label.split(".").pop() as string, 10);
+                    buy.barDeadLabels.add(n);
+                  }
+                }
+              }
             } else {
               sl.invalidated = true;
               linEv.push(...this.dormantBarLowCheck(buy, lin, sl, cur));
