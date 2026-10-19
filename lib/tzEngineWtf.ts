@@ -140,6 +140,24 @@ export class ParentCycle {
   // HH separately is redundant. Sticky once set: "start it from 14/01"
   // (the first coincidence), not re-checked day by day.
   hhAbsorbedByRear = false;
+  // Real-data bug (AUROPHARMA.NS branch B): set when this branch's own
+  // milestone loses a same-day leadership clash to a rival's TZ BUY 2
+  // (TZ BUY 2 outranks every other family in that clash). PURELY a
+  // display-suppression marker, read only by the final visible-output
+  // filter in process() -- nothing else in the engine ever reads it, and
+  // it is never used to decide `dormant`/`active`/destruction for this
+  // or any other branch. That separation is deliberate: every attempt to
+  // fold this into the actual dormant/active state (even just skipping
+  // one contest-loop comparison) changed which branch is the sole
+  // non-dormant "leader" on some later candle, which silently re-synced
+  // an unrelated, long-dead branch's reactivation threshold to the new
+  // leader's current price and fabricated a fresh event out of nothing
+  // (confirmed: ICICIBANK.NS and AUROPHARMA.NS both shifted years of
+  // branch letters/thresholds from a change that never touched them on
+  // paper). This field changes ONLY which text reaches the output; state
+  // transitions for every branch stay byte-identical to the unmodified
+  // engine.
+  outrankedByTzBuy2Rival: number | null = null;
   constructor(public id: number, public seq: number, public refHigh: number, public refLow: number) {}
 }
 
@@ -501,6 +519,29 @@ export class TZEngine {
       }
     }
 
+    // Real-data bug (AUROPHARMA.NS, B vs C, 30/09/2013): mark same-day TZ
+    // BUY 2 losers, purely for display suppression -- see
+    // outrankedByTzBuy2Rival's own comment on ParentCycle. Deliberately a
+    // separate, read-only pass over perBranchEvents rather than folded
+    // into the contest loop below: that loop's job is deciding
+    // dormant/active/destroyed, and touching it (even just to skip one
+    // comparison) changes the sole-non-dormant-leader bookkeeping a few
+    // lines down, which is what fabricated an event for an unrelated
+    // branch last time. This pass changes nothing but the new field.
+    const tzBuy2AchieversToday = Array.from(perBranchEvents.entries()).filter(([, evs]) =>
+      evs.some((e) => e.startsWith("TZ BUY 2(")),
+    );
+    if (tzBuy2AchieversToday.length > 0) {
+      for (const [pid, evs] of perBranchEvents) {
+        if (evs.some((e) => e.startsWith("TZ BUY 2("))) continue;
+        if (!evs.some((e) => isMilestone(e))) continue;
+        const rival = tzBuy2AchieversToday.find(([oid]) => oid !== pid);
+        if (rival === undefined) continue;
+        const pc = this.branches.get(pid);
+        if (pc !== undefined) pc.outrankedByTzBuy2Rival = rival[0];
+      }
+    }
+
     // Real-data bug (ICICIBANK.NS hypothetical, confirmed): the first
     // candle a sibling's own TZ GREEN HH coincides with some OTHER
     // branch's genuine-BAR-SL2 lineage reaching INVALID BAR HH, that
@@ -570,6 +611,26 @@ export class TZEngine {
       let blockedThisAchiever = false;
       for (const [oid, other] of Array.from(this.branches.entries())) {
         if (other === pc || !other.active) continue;
+        // Real-data bug (AUROPHARMA.NS, B vs C, 30/09/2013): without this,
+        // a rival's TZ BUY 2 reactivating the SAME candle as pc's own
+        // milestone gets fully DESTROYED here (collaterallyTerminated),
+        // not merely dormant-ed -- confirmed: C's TZ BUY 2(C) vanished
+        // entirely, branch and all, the exact candle it should have won
+        // outright. "TZ BUY 2 outranks REAR in a same-day clash" means
+        // this pass (pc's) must leave a same-day TZ BUY 2 achiever
+        // completely alone; its own achiever-pass (its own turn in this
+        // same loop) decides pc's fate via the ordinary checks below.
+        // Scoped to today's TZ BUY 2 achievement specifically, and to
+        // skipping this ONE comparison only -- it changes no dormant/
+        // active value for ANY branch beyond what deciding not to
+        // destroy `other` already requires, so it cannot be the thing
+        // that shifts the sole-non-dormant-leader bookkeeping elsewhere
+        // (that was the earlier, broader otherTzBuy2Eligible attempt).
+        const otherAchievedTzBuy2Today =
+          (perBranchEvents.get(oid) ?? []).some((e) => e.startsWith("TZ BUY 2("));
+        const pcAchievedTzBuy2Today =
+          (perBranchEvents.get(pc.id) ?? []).some((e) => e.startsWith("TZ BUY 2("));
+        if (otherAchievedTzBuy2Today && !pcAchievedTzBuy2Today) continue;
         // Real-data bug (ETERNAL.NS branch B): deepFailureReached (BAR
         // SL2/REAR SL) deliberately makes buyCurrentlyLive report false
         // so it stops BLOCKING a sibling's own TZ BUY/RED1/RED2 progress
@@ -662,12 +723,30 @@ export class TZEngine {
       // later cycle has won the race."
       const racedOut = pcNow !== undefined && this.racedOutByNewerTzBuy2(pcNow);
       const eligible = racedOut ? events.filter((e) => !e.includes("REAR")) : events;
+      // Real-data bug (AUROPHARMA.NS, B vs C): pure text suppression for a
+      // branch that lost a same-day clash to a rival's TZ BUY 2, as long
+      // as that SAME rival still holds the TZ BUY 2 that won (self-clears
+      // the moment it doesn't). Deliberately computed from `eligible` but
+      // never fed back into it -- the dormant-flag self-wake check two
+      // lines down still reads the ORIGINAL `eligible`, so every branch's
+      // dormant/active transition stays byte-identical to the unmodified
+      // engine; only which text reaches `visible` changes.
+      let outranked = false;
+      if (pcNow !== undefined && pcNow.outrankedByTzBuy2Rival !== null) {
+        const rival = this.branches.get(pcNow.outrankedByTzBuy2Rival);
+        if (rival !== undefined && rival.active && rival.buy !== null && rival.buy.tzBuy2 !== null) {
+          outranked = true;
+        } else {
+          pcNow.outrankedByTzBuy2Rival = null;
+        }
+      }
+      const displayEligible = outranked ? [] : eligible;
       if (pcNow !== undefined && pcNow.dormant && pid !== newBranchId) {
         if (exemptionBlockedPids.has(pid)) continue;
-        visible.push(...eligible.filter((e) => isMilestone(e) || isSlOrLl(e)));
+        visible.push(...displayEligible.filter((e) => isMilestone(e) || isSlOrLl(e)));
         if (eligible.some((e) => isMilestone(e))) pcNow.dormant = false;
       } else {
-        visible.push(...eligible);
+        visible.push(...displayEligible);
       }
     }
 
