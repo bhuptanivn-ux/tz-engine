@@ -158,18 +158,6 @@ export class ParentCycle {
   // HH separately is redundant. Sticky once set: "start it from 14/01"
   // (the first coincidence), not re-checked day by day.
   hhAbsorbedByRear = false;
-  // Real-data bug (AUROPHARMA.NS branch B): set when this branch loses a
-  // same-day leadership clash to a rival's TZ BUY 2 (TZ BUY 2 outranks
-  // every other family in that clash -- see the contest loop). Purely a
-  // DISPLAY-suppression marker: it never feeds back into `dormant`/
-  // `active`, the contest loop, or branch id/seq assignment, so it cannot
-  // perturb any other branch's state or any already-verified stock's
-  // output. Checked (and self-clears) only in the visible-output
-  // assembly below, against whether that specific rival is still
-  // standing; everything this branch computes while suppressed is still
-  // correct in the backend, exactly as before -- only its own milestone
-  // text and self-wake are withheld while the rival remains undefeated.
-  outrankedByTzBuy2Rival: number | null = null;
   constructor(public id: number, public seq: number, public refHigh: number, public refLow: number) {}
 }
 
@@ -600,25 +588,6 @@ export class TZEngine {
       let blockedThisAchiever = false;
       for (const [oid, other] of Array.from(this.branches.entries())) {
         if (other === pc || !other.active) continue;
-        // Real-data bug (AUROPHARMA.NS, B vs C, 30/09/2013): TZ BUY 2
-        // reactivating on the SAME candle as a different branch's own
-        // fresh milestone (here, REAR(B)) must win that clash outright --
-        // not merely survive as "dormant instead of destroyed" (the
-        // otherTzBuy2Eligible guard below), which still let the lower
-        // branch's achievement bury the TZ BUY 2 side too. "TZ BUY 2
-        // outranks REAR in a same-day clash" means other's own
-        // achiever-pass (its own turn in this same loop, over pc) is what
-        // decides pc's fate; this pass leaves other completely untouched.
-        // Scoped to today's TZ BUY 2 achievement specifically so it never
-        // touches an unrelated same-day clash between two other families.
-        const otherAchievedTzBuy2Today =
-          (perBranchEvents.get(oid) ?? []).some((e) => e.startsWith("TZ BUY 2("));
-        const pcAchievedTzBuy2Today =
-          (perBranchEvents.get(pc.id) ?? []).some((e) => e.startsWith("TZ BUY 2("));
-        if (otherAchievedTzBuy2Today && !pcAchievedTzBuy2Today) {
-          pc.outrankedByTzBuy2Rival = oid;
-          continue;
-        }
         // Real-data bug (ETERNAL.NS branch B): deepFailureReached (BAR
         // SL2/REAR SL) deliberately makes buyCurrentlyLive report false
         // so it stops BLOCKING a sibling's own TZ BUY/RED1/RED2 progress
@@ -720,35 +689,10 @@ export class TZEngine {
       // later cycle has won the race."
       const racedOut = pcNow !== undefined && this.racedOutByNewerTzBuy2(pcNow);
       const eligible = racedOut ? events.filter((e) => !e.includes("REAR")) : events;
-      // Real-data bug (AUROPHARMA.NS, B vs C): a branch that lost a
-      // same-day leadership clash to a rival's TZ BUY 2 (marked above via
-      // outrankedByTzBuy2Rival) must keep its own milestone text -- and
-      // the self-wake it would otherwise trigger -- backend-only for as
-      // long as that SAME rival still holds the TZ BUY 2 that won. This
-      // is a pure display/self-wake gate: it never touches `dormant` or
-      // `active` for any OTHER branch, the contest loop, or branch id/seq
-      // assignment, so no other branch's (or any other stock's) output
-      // can be perturbed by it. Confirmed needed as a PERSISTENT check
-      // (not just on the day of the clash): B kept resurfacing in 2016
-      // via its own later, unrelated BAR milestones, years after losing
-      // to C in 2013, with C never failing in between.
-      let outranked = false;
-      if (pcNow !== undefined && pcNow.outrankedByTzBuy2Rival !== null) {
-        const rival = this.branches.get(pcNow.outrankedByTzBuy2Rival);
-        if (rival !== undefined && rival.active && rival.buy !== null && rival.buy.tzBuy2 !== null) {
-          outranked = true;
-        } else {
-          pcNow.outrankedByTzBuy2Rival = null;
-        }
-      }
       if (pcNow !== undefined && pcNow.dormant && pid !== newBranchId) {
         if (exemptionBlockedPids.has(pid)) continue;
-        visible.push(
-          ...eligible.filter((e) => isSlOrLl(e) || (!outranked && isMilestone(e))),
-        );
-        if (!outranked && eligible.some((e) => isMilestone(e))) pcNow.dormant = false;
-      } else if (outranked) {
-        visible.push(...eligible.filter((e) => !isMilestone(e)));
+        visible.push(...eligible.filter((e) => isMilestone(e) || isSlOrLl(e)));
+        if (eligible.some((e) => isMilestone(e))) pcNow.dormant = false;
       } else {
         visible.push(...eligible);
       }
