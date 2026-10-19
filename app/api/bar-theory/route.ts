@@ -151,7 +151,13 @@ export async function GET(req: NextRequest) {
 
   const cached = await readBarTheoryCache(segment, timeframe, end, batchKey);
   if (cached) {
-    return NextResponse.json({ ...cached, total, offset, limit, cached: true });
+    // This result is already keyed by `end` (today's date), so it can't
+    // go stale within the day -- letting the edge serve repeat requests
+    // avoids re-invoking this Function at all for the same query.
+    return NextResponse.json(
+      { ...cached, total, offset, limit, cached: true },
+      { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+    );
   }
 
   const bar: ScreenerRow[] = [];
@@ -190,5 +196,8 @@ export async function GET(req: NextRequest) {
   };
   await writeBarTheoryCache(segment, timeframe, end, batchKey, payload);
 
-  return NextResponse.json({ ...payload, total, offset, limit, cached: false });
+  return NextResponse.json(
+    { ...payload, total, offset, limit, cached: false },
+    { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+  );
 }

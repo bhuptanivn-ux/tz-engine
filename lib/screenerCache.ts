@@ -64,11 +64,14 @@ export async function readScreenerCache(
   dateISO: string,
   batchKey: string
 ): Promise<ScreenerCachePayload | null> {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
   try {
+    // Written with access: "public", so no auth token needed to read --
+    // and this path is already keyed by dateISO, so the content behind it
+    // never changes within that day. Letting the Data Cache serve repeat
+    // reads for a while avoids hitting Blob storage on every request for
+    // the same day's cached result.
     const res = await fetch(blobUrlFor(cachePathFor(segment, dateISO, batchKey)), {
-      cache: "no-store",
-      headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      next: { revalidate: 3600 },
     });
     if (!res.ok) return null;
     return (await res.json()) as ScreenerCachePayload;

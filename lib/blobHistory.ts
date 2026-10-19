@@ -107,10 +107,18 @@ async function loadChunkBundle(segment: string, timeframe: string, chunkIndex: n
     const pathname = `data/${segment}/${timeframe}/chunk-${chunkIndex}.json`;
     const url = blobUrlFor(pathname);
 
-    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    // These chunks are written with access: "public" (see
+    // bulk-upload-consolidated.mjs/refresh-daily.mjs), so no auth token is
+    // needed to read them -- and skipping it keeps this a plain cacheable
+    // GET. Content only changes once a day (the daily cron refresh), so
+    // letting Next.js's Data Cache serve repeat reads for up to an hour
+    // avoids re-pulling this same multi-MB file from Blob on every
+    // history lookup -- that was burning through the account's Data
+    // Transfer allowance (a single NSE chunk is tens of MB; refetching it
+    // on every cold serverless instance, every preview deployment, and
+    // every page load adds up fast with no caching at all).
     const res = await fetch(url, {
-      cache: "no-store",
-      headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      next: { revalidate: 3600 },
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");

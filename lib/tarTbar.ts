@@ -231,6 +231,10 @@ export interface TarTbarLiveStatus {
   side: "TAR" | "TBAR" | "REAR" | "REAR ENTRY" | "REAR RE-ENTER";
   since: string;
   activationPrice: number;
+  // TAR/REAR (tier1): that level's own tracked reference low. TBAR/REAR
+  // ENTRY/REAR RE-ENTER (tier2): that level's own tracked reference low
+  // (tighter than tier1's).
+  stopLoss: number;
   highestHigh: number | null;
   highestHighDate: string | null;
 }
@@ -590,6 +594,7 @@ function simulateWindow(dtfDays: Day[], startIdx: number, endIdxExclusive: numbe
         side: s.level === 0 ? "TBAR" : s.level === 1 ? "REAR ENTRY" : "REAR RE-ENTER",
         since: s.rowEntryDate,
         activationPrice: s.rowEntryPrice as number,
+        stopLoss: s.tbarRefLow,
         highestHigh: s.rowHHDate ? s.rowHH : null,
         highestHighDate: s.rowHHDate,
       });
@@ -601,6 +606,7 @@ function simulateWindow(dtfDays: Day[], startIdx: number, endIdxExclusive: numbe
         side: s.level === 0 ? "TAR" : s.level === 1 ? "REAR" : "REAR RE-ENTER",
         since: s.rowEntryDate ?? wtfFormationDate,
         activationPrice: s.tarActivationPrice as number,
+        stopLoss: s.tarRefLow,
         highestHigh: null,
         highestHighDate: null,
       });

@@ -183,7 +183,10 @@ export async function GET(req: NextRequest) {
 
   const cached = await readReportCache(segment, year, event, timeframe, end, batchKey);
   if (cached) {
-    return NextResponse.json({ ...cached, total, offset, limit, cached: true });
+    return NextResponse.json(
+      { ...cached, total, offset, limit, cached: true },
+      { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+    );
   }
 
   const matches: ReportMatch[] = [];
@@ -261,5 +264,8 @@ export async function GET(req: NextRequest) {
   };
   await writeReportCache(segment, year, event, timeframe, end, batchKey, payload);
 
-  return NextResponse.json({ ...payload, total, offset, limit, cached: false });
+  return NextResponse.json(
+    { ...payload, total, offset, limit, cached: false },
+    { headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" } }
+  );
 }
