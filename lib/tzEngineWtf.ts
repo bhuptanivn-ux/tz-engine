@@ -689,7 +689,16 @@ export class TZEngine {
           other.buy !== null &&
           ((other.buy.rear !== null && other.buy.rear.sl === null) ||
             (other.buy.rearReenter !== null && other.buy.rearReenter.sl === null));
-        if (other.seq < pc.seq || otherDeepFailurePending || otherRearChainAlive) {
+        // Confirmed: TZ BUY 2 is not a dead end once SL'd -- it stays
+        // eligible to reactivate above its own reference high, same as
+        // BAR/REAR reactivate above theirs, and outranks REAR in a
+        // same-day leadership clash. A sibling that still holds a TZ BUY
+        // 2 object (SL'd or not) must never be collaterally DESTROYED by
+        // another branch's fresh milestone -- only dormant-ed, so its own
+        // evalTzBuy2 keeps watching and can retake the lead the moment it
+        // genuinely reactivates.
+        const otherTzBuy2Eligible = other.buy !== null && other.buy.tzBuy2 !== null;
+        if (other.seq < pc.seq || otherDeepFailurePending || otherRearChainAlive || otherTzBuy2Eligible) {
           other.dormant = true;
         } else {
           if (!isFreshBuy && (this.preTodayLiveBuy.get(oid) ?? false)) {
