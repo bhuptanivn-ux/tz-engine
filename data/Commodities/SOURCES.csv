@@ -1,0 +1,29 @@
+mcx_symbol,file_stem,source_tv_symbol,note
+ALUMINI,ALUMINI,COMEX:ALI1!,TradingView MCX group mcx_free is permission-denied without a paid session. Public COMEX aluminium continuous used.
+ALUMINIUM,ALUMINIUM,COMEX:ALI1!,Same as ALUMINI (public aluminium analog, not MCX lot size).
+COPPER,COPPER,COMEX:HG1!,Public COMEX copper continuous.
+COTTON,COTTON,ICEUS:CT1!,Public ICE US cotton continuous.
+CRUDEOIL,CRUDEOIL,NYMEX:CL1!,Public NYMEX WTI continuous.
+CRUDEOILM,CRUDEOILM,NYMEX:CL1!,Same WTI series as CRUDEOIL (not MCX mini lot).
+GOLD,GOLD,TVC:GOLD,Public gold US$/oz (not MCX INR/10g).
+GOLDGUINEA,GOLDGUINEA,TVC:GOLD,Same gold series as GOLD.
+GOLDM,GOLDM,TVC:GOLD,Same gold series as GOLD.
+GOLDPETAL,GOLDPETAL,TVC:GOLD,Same gold series as GOLD.
+GOLDTEN,GOLDTEN,TVC:GOLD,Same gold series as GOLD.
+NATURALGAS,NATURALGAS,NYMEX:NG1!,Public NYMEX Henry Hub continuous.
+NATGASMINI,NATGASMINI,NYMEX:NG1!,Same NG series as NATURALGAS.
+SILVER,SILVER,COMEX:SI1!,Public COMEX silver continuous.
+SILVERM,SILVERM,COMEX:SI1!,Same silver series as SILVER.
+SILVERMIC,SILVERMIC,COMEX:SI1!,Same silver series as SILVER.
+CARDAMOM,,,"No public TradingView series (MCX denied)."
+COTTONOIL,,,"No public TradingView series (MCX denied)."
+KAPAS,,,"No public TradingView series (MCX denied)."
+LEADMINI,,,"No public TradingView series (MCX denied)."
+LEAD,,,"No public TradingView series (MCX denied)."
+MENTHAOIL,,,"No public TradingView series (MCX denied)."
+NICKEL,,,"No public TradingView series (MCX denied)."
+STEELREBAR,,,"No public TradingView series (MCX denied)."
+ZINCMINI,,,"No public TradingView series (MCX denied)."
+ZINC,,,"No public TradingView series (MCX denied)."
+MCXBULLDEX,,,"No public TradingView series (MCX denied)."
+MCXMETLDEX,,,"No public TradingView series (MCX denied)."

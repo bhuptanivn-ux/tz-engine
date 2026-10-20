@@ -1,0 +1,8 @@
+category,filename,tv_symbol,name
+commodities,ALUMINIUM,COMEX:ALI1!,Aluminium (COMEX continuous; MCX feed not public on TradingView)
+commodities,COPPER,COMEX:HG1!,Copper (COMEX continuous)
+commodities,COTTON,ICEUS:CT1!,Cotton (ICE US continuous)
+commodities,CRUDEOIL,NYMEX:CL1!,Crude Oil (NYMEX WTI continuous)
+commodities,GOLD,TVC:GOLD,Gold (TVC US$/oz)
+commodities,NATURALGAS,NYMEX:NG1!,Natural Gas (NYMEX continuous)
+commodities,SILVER,COMEX:SI1!,Silver (COMEX continuous)
