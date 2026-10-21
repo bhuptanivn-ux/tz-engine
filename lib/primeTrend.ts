@@ -1982,6 +1982,127 @@ export function wtfSlLabel(endEvent: string | null): string | null {
   return null;
 }
 
+// --------------------------------------------------------------------
+// POST-BAR-SL2 SAR -- user's own extension (session of 2026-10-21), NOT
+// yet verified against any real data (no real BAR SL2 -> SAR2/INVALID
+// SAR ENTRY instance has been traced yet; this is the rule as stated,
+// typechecked, nothing more). Does NOT modify TZEngine
+// (lib/tzEngineWtf.ts) or any existing Prime Trend output above -- the
+// WTF engine's own REAR/TZ BUY display, and every already-verified
+// instance/row this file already produces, are untouched. Purely an
+// additive, independent cross-timeframe computation layered on top of
+// an existing BAR-SL2-ended instance.
+//
+// THE RULE, as given: until now, the WTF-side TZ BUY-vs-REAR leadership
+// race (the engine's own existing contest-loop hierarchy, already fully
+// coded and verified in tzEngineWtf.ts -- TZ BUY 2 outranks REAR, etc.)
+// started being relevant immediately at WTF BAR SL2. That is no longer
+// the trigger. Instead, BAR SL2 arms a FRESH DTF SAR watch, seeded at
+// that BAR lineage's own SL reference low (`inst.endPrice`) -- same
+// decisive-breach/quiet-ratchet shape as the ordinary RED2-anchored SAR
+// above, just a different seed and no "something must be open" gate
+// (nothing is left open once the instance has already ended). Once that
+// SAR actually fires, it hands off to the SAME, unmodified
+// InvalidSarState/stepInvalidSar machinery used everywhere else in this
+// file:
+//   - If that ladder reaches INVALID SAR ENTRY (the user's own name for
+//     this, in this specific context: "INVALID SAR 2") -- report it as
+//     this instance's own continuation entry. The TZ BUY-vs-REAR race
+//     never triggers in this branch.
+//   - If that ladder instead ends in a decisive SAR 2 (no invalidation
+//     ever happened) -- the TZ BUY-vs-REAR race finally starts, dated
+//     to that SAR 2 candle, not to the original BAR SL2 candle. Which
+//     side actually wins is decided by the engine's own existing,
+//     already-verified hierarchy -- this function only reports WHEN
+//     that race became live, not who wins it (read the WTF trace from
+//     `raceTriggeredDate` onward for the already-correct outcome).
+//   - Otherwise (SAR itself never fires within the available data, or
+//     fires and is still mid-ladder) -- reported as "still watching",
+//     same honest "nothing more to report yet" posture used everywhere
+//     else in this file for an in-progress structure.
+export interface PostBarSl2Result {
+  letter: string;
+  barSl2Date: string;
+  barSl2RefLow: number;
+  sarDate: string | null;
+  outcome: "INVALID_SAR_ENTRY" | "RACE_TRIGGERED" | "STILL_WATCHING" | "NONE";
+  invalidSarEntryDate: string | null;
+  invalidSarEntryPrice: number | null;
+  raceTriggeredDate: string | null;
+  raceTriggeredPrice: number | null;
+}
+
+/** Only applicable when `inst` ended via a WTF BAR SL2 -- null otherwise
+ * (a TZ BUY 2/REAR 2 SL ending, or an instance still open, has no BAR
+ * lineage SL reference low to seed this watch from). `dtfDays` is the
+ * full DTF series; only days strictly after `inst.endDate` are watched. */
+export function postBarSl2Race(dtfDays: Day[], inst: WtfInstance): PostBarSl2Result | null {
+  if (inst.endEvent === null || !inst.endEvent.startsWith("BAR SL2(") || inst.endPrice === null) {
+    return null;
+  }
+
+  const result: PostBarSl2Result = {
+    letter: inst.letter,
+    barSl2Date: inst.endDate,
+    barSl2RefLow: inst.endPrice,
+    sarDate: null,
+    outcome: "STILL_WATCHING",
+    invalidSarEntryDate: null,
+    invalidSarEntryPrice: null,
+    raceTriggeredDate: null,
+    raceTriggeredPrice: null,
+  };
+
+  let startIdx: number | null = null;
+  for (let i = 0; i < dtfDays.length; i++) {
+    if (dtfDays[i].date > inst.endDate) {
+      startIdx = i;
+      break;
+    }
+  }
+  if (startIdx === null || startIdx === 0) {
+    result.outcome = "NONE";
+    return result;
+  }
+
+  let sarRefLow = inst.endPrice;
+  let invalidSarState: InvalidSarState | null = null;
+
+  for (let i = startIdx; i < dtfDays.length; i++) {
+    const prev = dtfDays[i - 1];
+    const cur = dtfDays[i];
+
+    if (invalidSarState === null) {
+      // Seeking the first SAR fire off the BAR SL2 reference low --
+      // same decisive-breach/quiet-ratchet-down shape as the ordinary
+      // RED2-anchored SAR watch above, no "something open" gate.
+      if (slShape(cur, sarRefLow)) {
+        result.sarDate = cur.date;
+        invalidSarState = new InvalidSarState(cur.h, cur.l);
+      } else if (cur.l < sarRefLow) {
+        sarRefLow = cur.l;
+      }
+      continue;
+    }
+
+    const { sar2Now, opened } = stepInvalidSar(invalidSarState, prev, cur);
+    if (opened) {
+      result.outcome = "INVALID_SAR_ENTRY";
+      result.invalidSarEntryDate = cur.date;
+      result.invalidSarEntryPrice = opened.price;
+      return result;
+    }
+    if (sar2Now) {
+      result.outcome = "RACE_TRIGGERED";
+      result.raceTriggeredDate = cur.date;
+      result.raceTriggeredPrice = cur.l;
+      return result;
+    }
+  }
+
+  return result;
+}
+
 function simulateDtfAll(
   dtfDays: Day[],
   wtfTrace: WtfTraceEntry[],
