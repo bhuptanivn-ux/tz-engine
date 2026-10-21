@@ -2020,6 +2020,31 @@ export function wtfSlLabel(endEvent: string | null): string | null {
 //     fires and is still mid-ladder) -- reported as "still watching",
 //     same honest "nothing more to report yet" posture used everywhere
 //     else in this file for an in-progress structure.
+//
+// SECOND ADDITION, same session: while this watch is pending (SAR 2 has
+// NOT yet occurred -- whether SAR hasn't fired at all yet, or has fired
+// and is mid-INVALID-SAR-ladder), if a FRESH WTF "BAR(" reforms for this
+// SAME top-level lineage (a new sub-lineage generation under the same
+// letter, e.g. "A.5" after "A.4" SL2'd), that fresh BAR's own future
+// path is governed by BAR THEORY (TAR/TBAR, lib/tarTbar.ts) only.
+//
+// IMPORTANT, user-flagged distinction -- these are TWO DIFFERENT rules
+// for two different contexts, not one rule reused:
+//   (a) Ordinary BAR THEORY (the RED2-anchored SAR, elsewhere in this
+//       file): AFTER its own SAR 2 fires, a fresh BAR can still occur --
+//       it just goes through TAR/TBAR instead of ordinary BAR/PBAR.
+//   (b) THIS BAR-SL2-anchored context: once SAR 2 fires HERE, BAR CANNOT
+//       OCCUR ANY MORE at all for this lineage -- not even via TAR/TBAR.
+//       A fresh BAR only follows BAR Theory if it forms BEFORE this SAR
+//       2; one formed on or after this SAR 2 is not flagged at all (see
+//       `finish()` below -- the date comparison against
+//       `raceTriggeredDate` is exactly this (b) boundary, not (a)'s).
+// This function does NOT duplicate tarTbar.ts's own state machine
+// (`computeTarTbar` already processes every WTF "BAR(" occurrence
+// completely independently, with no awareness of Prime Trend/SAR state
+// at all) -- it only DETECTS that case (b)'s pre-SAR-2 window applies
+// and reports which WTF BAR label to look up in that module's own
+// output; it does not compute the TAR/TBAR structure itself.
 export interface PostBarSl2Result {
   letter: string;
   barSl2Date: string;
@@ -2030,13 +2055,23 @@ export interface PostBarSl2Result {
   invalidSarEntryPrice: number | null;
   raceTriggeredDate: string | null;
   raceTriggeredPrice: number | null;
+  // Set when a fresh WTF BAR reformed for this same lineage before SAR 2
+  // occurred (regardless of whether SAR 2 eventually occurs later) --
+  // look up `freshBarLabel` in computeTarTbar's own `windows`/`results`
+  // for the actual TAR/TBAR structure; this field only flags that it
+  // applies and names which WTF BAR window to use.
+  freshBarDate: string | null;
+  freshBarLabel: string | null;
 }
 
 /** Only applicable when `inst` ended via a WTF BAR SL2 -- null otherwise
  * (a TZ BUY 2/REAR 2 SL ending, or an instance still open, has no BAR
  * lineage SL reference low to seed this watch from). `dtfDays` is the
- * full DTF series; only days strictly after `inst.endDate` are watched. */
-export function postBarSl2Race(dtfDays: Day[], inst: WtfInstance): PostBarSl2Result | null {
+ * full DTF series; only days strictly after `inst.endDate` are watched.
+ * `wtfTrace` is only used to detect a fresh same-letter WTF BAR
+ * reforming (the second addition above) -- it does not affect the SAR
+ * watch itself. */
+export function postBarSl2Race(dtfDays: Day[], wtfTrace: WtfTraceEntry[], inst: WtfInstance): PostBarSl2Result | null {
   if (inst.endEvent === null || !inst.endEvent.startsWith("BAR SL2(") || inst.endPrice === null) {
     return null;
   }
@@ -2051,7 +2086,22 @@ export function postBarSl2Race(dtfDays: Day[], inst: WtfInstance): PostBarSl2Res
     invalidSarEntryPrice: null,
     raceTriggeredDate: null,
     raceTriggeredPrice: null,
+    freshBarDate: null,
+    freshBarLabel: null,
   };
+
+  // Earliest fresh "BAR(<letter>.N)" reform for this same top-level
+  // lineage, strictly after the BAR SL2 that ended this instance.
+  const freshBarPattern = new RegExp(`^BAR\\(${inst.letter}\\.\\d+\\)$`);
+  let freshBarEvent: { date: string; label: string } | null = null;
+  for (const { day, events } of wtfTrace) {
+    if (day.date <= inst.endDate) continue;
+    const hit = events.find((e) => freshBarPattern.test(e));
+    if (hit) {
+      freshBarEvent = { date: day.date, label: hit.slice(4, -1) };
+      break;
+    }
+  }
 
   let startIdx: number | null = null;
   for (let i = 0; i < dtfDays.length; i++) {
@@ -2062,11 +2112,25 @@ export function postBarSl2Race(dtfDays: Day[], inst: WtfInstance): PostBarSl2Res
   }
   if (startIdx === null || startIdx === 0) {
     result.outcome = "NONE";
+    if (freshBarEvent !== null) {
+      result.freshBarDate = freshBarEvent.date;
+      result.freshBarLabel = freshBarEvent.label;
+    }
     return result;
   }
 
   let sarRefLow = inst.endPrice;
   let invalidSarState: InvalidSarState | null = null;
+
+  const finish = () => {
+    // "SAR 2 has not occurred" -- true unless the race was triggered
+    // (a real SAR 2) strictly before this fresh BAR formed.
+    if (freshBarEvent !== null && (result.outcome !== "RACE_TRIGGERED" || freshBarEvent.date < (result.raceTriggeredDate as string))) {
+      result.freshBarDate = freshBarEvent.date;
+      result.freshBarLabel = freshBarEvent.label;
+    }
+    return result;
+  };
 
   for (let i = startIdx; i < dtfDays.length; i++) {
     const prev = dtfDays[i - 1];
@@ -2090,17 +2154,17 @@ export function postBarSl2Race(dtfDays: Day[], inst: WtfInstance): PostBarSl2Res
       result.outcome = "INVALID_SAR_ENTRY";
       result.invalidSarEntryDate = cur.date;
       result.invalidSarEntryPrice = opened.price;
-      return result;
+      return finish();
     }
     if (sar2Now) {
       result.outcome = "RACE_TRIGGERED";
       result.raceTriggeredDate = cur.date;
       result.raceTriggeredPrice = cur.l;
-      return result;
+      return finish();
     }
   }
 
-  return result;
+  return finish();
 }
 
 function simulateDtfAll(
