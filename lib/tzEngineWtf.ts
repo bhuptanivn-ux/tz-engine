@@ -1648,15 +1648,31 @@ export class TZEngine {
           if (cur.l < lin.refLow && lin.refLow - cur.l >= THRESH - EPS && cur.c <= lin.refLow + EPS) {
             linEv.push(`BAR SL(${lin.label})`);
             lin.sl = new BarSL(cur.h, cur.l);
-            buy.red1 = null;
-            lin.red1Since = false;
-            // Reverted: a fresh RED1 is not needed here -- once a
-            // lineage has its own BAR SL, a brand-new BAR is already
-            // free to form directly (see the newestIsDead-gated
-            // freshBarReady check below), so there is nothing for a
-            // same-candle RED1 to unlock. Confirmed: "Since it was BAR
-            // SL, I doubt RED 1 was required since NEW BAR will anyways
-            // be valid to occur."
+            if (lin.bar2 === null) {
+              // Reverted: a fresh RED1 is not needed here -- once a
+              // lineage has its own BAR SL, a brand-new BAR is already
+              // free to form directly (see the newestIsDead-gated
+              // freshBarReady check below), so there is nothing for a
+              // same-candle RED1 to unlock. Confirmed: "Since it was BAR
+              // SL, I doubt RED 1 was required since NEW BAR will anyways
+              // be valid to occur." Scoped to a lineage that never
+              // escalated past BAR 1 -- see the else branch just below for
+              // one that did.
+              buy.red1 = null;
+              lin.red1Since = false;
+            } else if (lin === newestForRed1 && buy.red1 !== null && buy.red1.active) {
+              // Real-data bug (PAYTM.NS A.2, 19/01/26): once a lineage has
+              // escalated past BAR 2, its own bare BAR SL does NOT make
+              // the parent's RED1 moot the way it does for a lineage that
+              // never got past BAR 1 (the branch above) -- "RED1-RED2
+              // will not be required to be tracked if only BAR 1 has
+              // formed and SL'd. RED1-RED2 will form once BAR 1-BAR 2 is
+              // completed." The already-open RED1 must still be allowed
+              // to confirm RED2 on this SAME candle, simultaneously with
+              // this BAR SL. Confirmed: BAR SL(A.2) and RED2(A) both land
+              // on 19/01/26.
+              linEv.push(...this.evalRed1Generic(pc, buy, lin, prev, cur));
+            }
             continue;
           }
           if (lin === newestForRed1) {

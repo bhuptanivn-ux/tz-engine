@@ -1477,6 +1477,22 @@ function stepInvalidSar(
         s.rowHHDate = cur.date;
         s.mode = "ENTRY_ACTIVE";
         opened = { price: entryPrice };
+        break;
+      }
+      // Real-data bug (PAYTM.NS, post-BAR-SL2 DTF SAR, 2026): a High that
+      // clears frozenEntryRefHigh without the Close confirming back above
+      // it (02/07/26 High 1227.70 Close 1213.40; 03/07/26 High 1231.90
+      // Close 1221.40, against frozenEntryRefHigh=1223.00) was silently
+      // dropped instead of raising the reactivation reference -- every
+      // other mode in this state machine ratchets its own refHigh the
+      // same way on a plain ANY-threshold new high (SEEK_INVALID,
+      // INVALID_SAR_ACTIVE, ENTRY_ACTIVE); SEEK_REACTIVATION was the one
+      // mode with no such ratchet at all. Confirmed: the real
+      // reactivation two days later (07/07/26, High 1251.00 Close
+      // 1246.00) must breakout above the ratcheted 1231.90, not the
+      // stale pre-SL 1223.00.
+      if (cur.h > s.frozenEntryRefHigh && cur.h - s.frozenEntryRefHigh >= ANY) {
+        s.frozenEntryRefHigh = cur.h;
       }
       break;
     }
@@ -1606,7 +1622,7 @@ export interface WtfInstance {
   formationDate: string;
   endDate: string; // this instance's own failure date, or the last WTF date if it never fails
   endEvent: string | null; // null if it never fails (or fails with no explicit SL-type event) within the data
-  endPrice: number | null; // BAR SL2 -> that BAR lineage's own SL reference low; own "2" SL / parent-tier SL -> this tier's own ref_low
+  endPrice: number | null; // BAR SL2 -> the actual Low of the WTF candle that confirmed BAR SL2 (NOT the pre-break SL reference it broke through -- confirmed PAYTM.NS 09/03/26: BAR SL2's own candle Low 966.70, not the 1023.00 reference it decisively broke); own "2" SL / parent-tier SL -> this tier's own ref_low
 }
 
 // Safety valve, not a real-world expectation: a normal stock's history
@@ -1687,8 +1703,12 @@ function wtfInstancesForFamily(
           if (hit !== null) break;
           if (e2.startsWith(`${spec.barPrefix}${letter}.`)) {
             hit = e2;
-            const linLabel = e2.slice(spec.barPrefix.length, -1);
-            endPrice = preBarSl2.get(linLabel) ?? day2.c;
+            // Real-data bug (PAYTM.NS 09/03/26): this used to report the
+            // pre-break SL reference (preBarSl2, 1023.00) that BAR SL2
+            // decisively broke THROUGH, not the actual confirming
+            // candle's own Low (966.70) -- confirmed by the user against
+            // real data ("Reference low is WTF BAR SL2 low 966.70").
+            endPrice = day2.l;
             break;
           }
         }
@@ -2045,14 +2065,55 @@ export function wtfSlLabel(endEvent: string | null): string | null {
 // at all) -- it only DETECTS that case (b)'s pre-SAR-2 window applies
 // and reports which WTF BAR label to look up in that module's own
 // output; it does not compute the TAR/TBAR structure itself.
+// WIDENED (same session): the first version of this function stopped
+// reporting at the FIRST checkpoint (either INVALID SAR ENTRY forming
+// once, or a decisive SAR 2) -- confirmed, against real PAYTM.NS data,
+// that the ladder keeps going well past that: INVALID SAR ENTRY can SL
+// and reactivate (same SEEK_REACTIVATION cycle already used by the
+// ordinary RED2-anchored mechanism elsewhere in this file), each step
+// with its own HH/LL/SL text. This now runs the full InvalidSarState
+// lifecycle across the whole available window and reports every
+// checkpoint, not just the first.
+export type PostBarSl2CheckpointLabel =
+  | "SAR"
+  | "SAR HH"
+  | "SAR LL"
+  | "SAR SL"
+  | "INVALID SAR"
+  | "INVALID SAR HH"
+  | "INVALID SAR LL"
+  | "INVALID SAR SL"
+  | "INVALID SAR ENTRY"
+  | "INVALID SAR ENTRY REACTIVATED"
+  | "INVALID SAR ENTRY HH"
+  | "INVALID SAR ENTRY LL"
+  | "INVALID SAR ENTRY SL"
+  | "SAR 2";
+
+export interface PostBarSl2Checkpoint {
+  date: string;
+  label: PostBarSl2CheckpointLabel;
+  price: number;
+}
+
 export interface PostBarSl2Result {
   letter: string;
   barSl2Date: string;
   barSl2RefLow: number;
-  sarDate: string | null;
-  outcome: "INVALID_SAR_ENTRY" | "RACE_TRIGGERED" | "STILL_WATCHING" | "NONE";
-  invalidSarEntryDate: string | null;
-  invalidSarEntryPrice: number | null;
+  // The full dated ladder, in order -- SAR/SAR HH/SAR LL/SAR SL, then
+  // (once SAR fires) INVALID SAR's own HH/LL/SL, then (once it opens)
+  // INVALID SAR ENTRY's own HH/LL/SL/reactivation cycle, or SAR 2 if a
+  // decisive breach happens before any invalidation ever occurred.
+  checkpoints: PostBarSl2Checkpoint[];
+  // "RACE_TRIGGERED": a decisive SAR 2 fired -- the TZ BUY-vs-REAR race
+  // starts at raceTriggeredDate (who wins is the engine's own existing,
+  // unmodified hierarchy -- read the WTF trace from there). "OPEN": an
+  // INVALID SAR ENTRY is currently active at the end of the window.
+  // "CLOSED_SEEKING_REACTIVATION": INVALID SAR ENTRY SL'd and is
+  // watching for reactivation. "STILL_WATCHING": SAR itself hasn't
+  // fired yet (still ratcheting toward the BAR SL2 reference low).
+  // "NONE": no DTF data exists after the BAR SL2 date at all.
+  outcome: "RACE_TRIGGERED" | "OPEN" | "CLOSED_SEEKING_REACTIVATION" | "STILL_WATCHING" | "NONE";
   raceTriggeredDate: string | null;
   raceTriggeredPrice: number | null;
   // Set when a fresh WTF BAR reformed for this same lineage before SAR 2
@@ -2080,10 +2141,8 @@ export function postBarSl2Race(dtfDays: Day[], wtfTrace: WtfTraceEntry[], inst: 
     letter: inst.letter,
     barSl2Date: inst.endDate,
     barSl2RefLow: inst.endPrice,
-    sarDate: null,
+    checkpoints: [],
     outcome: "STILL_WATCHING",
-    invalidSarEntryDate: null,
-    invalidSarEntryPrice: null,
     raceTriggeredDate: null,
     raceTriggeredPrice: null,
     freshBarDate: null,
@@ -2119,9 +2178,6 @@ export function postBarSl2Race(dtfDays: Day[], wtfTrace: WtfTraceEntry[], inst: 
     return result;
   }
 
-  let sarRefLow = inst.endPrice;
-  let invalidSarState: InvalidSarState | null = null;
-
   const finish = () => {
     // "SAR 2 has not occurred" -- true unless the race was triggered
     // (a real SAR 2) strictly before this fresh BAR formed.
@@ -2132,6 +2188,9 @@ export function postBarSl2Race(dtfDays: Day[], wtfTrace: WtfTraceEntry[], inst: 
     return result;
   };
 
+  let sarRefLow = inst.endPrice;
+  let invalidSarState: InvalidSarState | null = null;
+
   for (let i = startIdx; i < dtfDays.length; i++) {
     const prev = dtfDays[i - 1];
     const cur = dtfDays[i];
@@ -2141,30 +2200,191 @@ export function postBarSl2Race(dtfDays: Day[], wtfTrace: WtfTraceEntry[], inst: 
       // same decisive-breach/quiet-ratchet-down shape as the ordinary
       // RED2-anchored SAR watch above, no "something open" gate.
       if (slShape(cur, sarRefLow)) {
-        result.sarDate = cur.date;
+        result.checkpoints.push({ date: cur.date, label: "SAR", price: cur.l });
         invalidSarState = new InvalidSarState(cur.h, cur.l);
       } else if (cur.l < sarRefLow) {
         sarRefLow = cur.l;
+        result.checkpoints.push({ date: cur.date, label: "SAR LL", price: cur.l });
+      } else if (cur.h > sarRefLow) {
+        result.checkpoints.push({ date: cur.date, label: "SAR HH", price: cur.h });
       }
       continue;
     }
 
-    const { sar2Now, opened } = stepInvalidSar(invalidSarState, prev, cur);
-    if (opened) {
-      result.outcome = "INVALID_SAR_ENTRY";
-      result.invalidSarEntryDate = cur.date;
-      result.invalidSarEntryPrice = opened.price;
-      return finish();
-    }
+    const modeBefore = invalidSarState.mode;
+    const refHighBefore = invalidSarState.refHigh;
+    const refLowBefore = invalidSarState.refLow;
+    const frozenBefore = invalidSarState.frozenEntryRefHigh;
+
+    const { invalidSarNow, sarSlNow, sar2Now, opened, closed } = stepInvalidSar(invalidSarState, prev, cur);
+
     if (sar2Now) {
+      result.checkpoints.push({ date: cur.date, label: "SAR 2", price: cur.l });
       result.outcome = "RACE_TRIGGERED";
       result.raceTriggeredDate = cur.date;
       result.raceTriggeredPrice = cur.l;
       return finish();
     }
+    if (invalidSarNow) {
+      result.checkpoints.push({ date: cur.date, label: "INVALID SAR", price: cur.h });
+      continue;
+    }
+    if (sarSlNow) {
+      result.checkpoints.push({ date: cur.date, label: "SAR SL", price: cur.h });
+      continue;
+    }
+    if (opened) {
+      const label = modeBefore === "SEEK_REACTIVATION" ? "INVALID SAR ENTRY REACTIVATED" : "INVALID SAR ENTRY";
+      result.checkpoints.push({ date: cur.date, label, price: opened.price });
+      continue;
+    }
+    if (closed) {
+      result.checkpoints.push({ date: cur.date, label: "INVALID SAR ENTRY SL", price: closed.exitPrice });
+      continue;
+    }
+    // No named transition fired this candle -- a quiet ratchet, same
+    // logic each stepInvalidSar case above uses internally.
+    if (modeBefore === "SEEK_INVALID") {
+      if (invalidSarState.refHigh > refHighBefore) {
+        result.checkpoints.push({ date: cur.date, label: "SAR HH", price: invalidSarState.refHigh });
+      } else if (invalidSarState.refLow < refLowBefore) {
+        result.checkpoints.push({ date: cur.date, label: "SAR LL", price: invalidSarState.refLow });
+      }
+    } else if (modeBefore === "INVALID_SAR_ACTIVE") {
+      if (invalidSarState.refHigh > refHighBefore) {
+        result.checkpoints.push({ date: cur.date, label: "INVALID SAR HH", price: invalidSarState.refHigh });
+      } else if (invalidSarState.refLow < refLowBefore) {
+        result.checkpoints.push({ date: cur.date, label: "INVALID SAR LL", price: invalidSarState.refLow });
+      }
+    } else if (modeBefore === "ENTRY_ACTIVE") {
+      if (cur.h === invalidSarState.rowHH && invalidSarState.rowHH > refHighBefore) {
+        result.checkpoints.push({ date: cur.date, label: "INVALID SAR ENTRY HH", price: invalidSarState.rowHH });
+      } else if (invalidSarState.refLow < refLowBefore) {
+        result.checkpoints.push({ date: cur.date, label: "INVALID SAR ENTRY LL", price: invalidSarState.refLow });
+      }
+    } else if (modeBefore === "SEEK_REACTIVATION") {
+      if (invalidSarState.frozenEntryRefHigh > frozenBefore) {
+        result.checkpoints.push({ date: cur.date, label: "INVALID SAR ENTRY HH", price: invalidSarState.frozenEntryRefHigh });
+      }
+    }
   }
 
+  if (invalidSarState !== null && invalidSarState.mode === "ENTRY_ACTIVE") {
+    result.outcome = "OPEN";
+  } else if (invalidSarState !== null && invalidSarState.mode === "SEEK_REACTIVATION") {
+    result.outcome = "CLOSED_SEEKING_REACTIVATION";
+  } else {
+    // null (SAR never fired), or still SEEK_INVALID/INVALID_SAR_ACTIVE/
+    // SEEK_REFORM -- nothing has opened yet in any of these.
+    result.outcome = "STILL_WATCHING";
+  }
   return finish();
+}
+
+// --------------------------------------------------------------------
+// POST-BAR-SL2 NEW-LINEAGE REINTERPRETATION -- user's own extension
+// (session of 2026-10-22), NOT yet verified beyond PAYTM.NS, and NOT
+// wired into anything live. Purely read-only: never touches TZEngine
+// or its output. The raw WTF trace still literally prints a fresh
+// "TZ GREEN(<newLetter>)" sibling the instant BAR SL2 opens sibling-
+// spawn eligibility (TZEngine has no DTF awareness and never will --
+// this is deliberately a separate layer, not a live-engine change, per
+// the user's own instruction).
+//
+// THE RULE, as given: that unconditional spawn is only CORRECT if the
+// DTF SAR watch armed off this same BAR SL2 has already decisively
+// confirmed SAR 2 by that point. If it has not -- whether SAR itself
+// hasn't fired yet, or has fired and gone SAR -> INVALID SAR -> INVALID
+// SAR ENTRY instead -- AND the parent-tier RED1->RED2 cycle has
+// completed (either before this BAR SL2, like PAYTM's own 19/01/26, OR
+// a fresh RED1->RED2 completing AFTER BAR SL2 -- either counts), then
+// the raw trace's "TZ GREEN(<newLetter>)" is a MISCLASSIFICATION: it
+// should have been read as a fresh BAR continuing the SAME lineage,
+// not a new sibling. This function only DETECTS and reports that --
+// same "flag, don't duplicate the state machine" posture as
+// freshBarLabel above -- it does not re-simulate the alternate BAR/
+// BAR 2/BAR SL cascade that would have followed (that's a materially
+// different, much larger computation: every subsequent week the raw
+// trace attributes to the new sibling branch would need its own
+// re-derivation under the BAR/BAR 2/BAR SL ladder instead).
+//
+// Scoped to the FIRST such sibling spawn after this instance's own BAR
+// SL2 only -- that one is unambiguously attributable to THIS BAR SL2
+// (nothing else could have opened sibling-spawn eligibility before it).
+// A LATER sibling spawn (e.g. off that first sibling's own later deep
+// failure) is a separate instance of the same general rule and needs
+// its own analysis against ITS OWN DTF SAR watch, not this one.
+export interface ReinterpretedPostBarSl2Spawn {
+  letter: string; // the lineage that hit BAR SL2, e.g. "A"
+  barSl2Date: string;
+  spawnedAsLetter: string; // the sibling letter the raw WTF trace actually used, e.g. "B"
+  spawnedAsDate: string; // that TZ GREEN(<spawnedAsLetter>) formation date
+  red2CompletedDate: string; // the RED2(<letter>) date satisfying "RED1-RED2 has completed"
+  sar2: { date: string; price: number } | null; // null if SAR 2 had not confirmed by spawnedAsDate
+  // true: this spawn is a misclassification -- per the rule, it should
+  // have been a fresh BAR on `letter`'s own lineage, not a new sibling.
+  shouldBeBar: boolean;
+}
+
+/** Only applicable when `inst` ended via a WTF BAR SL2 -- null if it
+ * didn't, or if no new sibling "TZ GREEN(" ever spawned after it in the
+ * trace at all (nothing to reinterpret). `sarResult` must be the SAME
+ * instance's own `postBarSl2Race` result -- this function does not
+ * recompute the DTF SAR watch itself. */
+export function reinterpretPostBarSl2Spawn(
+  wtfTrace: WtfTraceEntry[],
+  inst: WtfInstance,
+  sarResult: PostBarSl2Result
+): ReinterpretedPostBarSl2Spawn | null {
+  if (inst.endEvent === null || !inst.endEvent.startsWith("BAR SL2(")) {
+    return null;
+  }
+
+  // First new-sibling "TZ GREEN(<newLetter>)" formation strictly after
+  // this BAR SL2 -- the raw trace's own unconditional spawn.
+  let spawn: { date: string; letter: string } | null = null;
+  for (const { day, events } of wtfTrace) {
+    if (day.date <= inst.endDate) continue;
+    for (const e of events) {
+      const m = /^TZ GREEN\(([A-Z]+)\)$/.exec(e);
+      if (m && m[1] !== inst.letter) {
+        spawn = { date: day.date, letter: m[1] };
+        break;
+      }
+    }
+    if (spawn !== null) break;
+  }
+  if (spawn === null) return null;
+
+  // RED2(<letter>) at or before the spawn date, anywhere in the trace --
+  // before BAR SL2 (PAYTM's own 19/01/26) or a fresh one completing
+  // AFTER it both satisfy "RED1-RED2 has completed" per the rule as
+  // given.
+  let red2Date: string | null = null;
+  const red2Pattern = new RegExp(`^RED2\\(${inst.letter}\\)$`);
+  for (const { day, events } of wtfTrace) {
+    if (day.date > spawn.date) break;
+    if (events.some((e) => red2Pattern.test(e))) red2Date = day.date;
+  }
+  if (red2Date === null) return null; // RED1-RED2 never completed -- the ordinary spawn stands as-is.
+
+  const sar2 =
+    sarResult.outcome === "RACE_TRIGGERED" && sarResult.raceTriggeredDate !== null
+      ? { date: sarResult.raceTriggeredDate, price: sarResult.raceTriggeredPrice as number }
+      : null;
+
+  return {
+    letter: inst.letter,
+    barSl2Date: inst.endDate,
+    spawnedAsLetter: spawn.letter,
+    spawnedAsDate: spawn.date,
+    red2CompletedDate: red2Date,
+    sar2,
+    // SAR 2 never confirmed at all, or confirmed only AFTER this spawn --
+    // either way, this spawn preceded a real SAR 2, so it should have
+    // been BAR, not a new sibling.
+    shouldBeBar: sar2 === null || sar2.date > spawn.date,
+  };
 }
 
 function simulateDtfAll(
