@@ -22,9 +22,12 @@
 //    high after a BAR ENTRY SL -- no intermediate "BAR1 reforms first" step,
 //    no RED1->RED2 gate. Each such reactivation is reported as its OWN
 //    separate row (not folded silently into the row that preceded its SL).
-//    BAR ENTRY's own SL escalates to SL2 the same quiet-ratchet way TZ BUY's
-//    does (point 1), mirrored for symmetry -- NOT yet independently
-//    confirmed against real data, flag any mismatch.
+//    While SL'd, a higher high that fails to reactivate it is INVALID BAR
+//    ENTRY HH and raises the frozen high. BAR ENTRY's own SL has NO SL2:
+//    "BAR SL" -> "BAR SL 2" belongs to the BAR1 that produced the live BAR
+//    ENTRY (the anchor), measured from that BAR1's own reference low, same
+//    quiet-ratchet-then-decisive-second-breach shape as TZ BUY's (point 1).
+//    All confirmed on PAYTM daily 2022.
 //    RED1->RED2 is reserved for the NESTED "BAR 1 - BAR 2" cascade once BAR
 //    ENTRY is first confirmed (point 4).
 // 3. TZ BUY SL 2 -- or a nested BAR ENTRY's own SL 2 under TZ BUY (flow 3:
@@ -56,9 +59,10 @@
 //    is only superseded once the NEXT BAR2 forms (confirmed). The RED1 ->
 //    RED2 of the repeat is only sought while the latest BAR ENTRY is live
 //    (not sitting SL'd).
-//    Not yet confirmed: TZ BUY 2's own SL is tested against TZ BUY 2's own
-//    candle low (mirroring BAR2/REAR2), and a TZ BUY reactivated after its
-//    SL needs a fresh TZ BUY 2 before RED1 is sought again.
+//    TZ BUY 2 does not move TZ BUY's own SL reference low (confirmed). The
+//    RED gate, and a BAR1 it has armed, keep running through a BAR ENTRY SL
+//    (confirmed). Not yet confirmed: a TZ BUY reactivated after its SL
+//    needs a fresh TZ BUY 2 before RED1 is sought again.
 
 import { THRESH, EPS, type Day, type HistoryRowLike } from "./tzEngineWtf";
 
@@ -114,6 +118,10 @@ export class Bar2Entry {
  * first escalation to BAR ENTRY (BAR2). */
 export class BarLineage {
   bar2: Bar2Entry | null = null;
+  /** Once this BAR1 has produced a BAR ENTRY it is the anchor of the BAR
+   * stage: its own reference low keeps being tracked, and its own SL
+   * ("BAR SL") -> "BAR SL 2" ends the whole BAR stage. */
+  barSl: TierSL | null = null;
   constructor(public label: string, public refHigh: number, public refLow: number) {}
 }
 
@@ -355,33 +363,32 @@ export class DtfBarTheoryEngine {
     if (buy.active) {
       // TZ BUY 2 -- TZ BUY's own escalation above its current reference
       // high (same breakout test as BAR1 -> BAR2). Required before the first
-      // RED1 under TZ BUY; from here on TZ BUY 2's own candle is the tier's
-      // reference.
+      // RED1 under TZ BUY. It does NOT move TZ BUY's own SL reference low
+      // (confirmed, PAYTM 2022: TZ BUY 01/04 low 530.00 stays the SL level
+      // after TZ BUY 2 on 04/04, so 06/05's low 546.65 is no SL).
       if (!buy.buy2 && breaksRef(prev, cur, buy.refHigh)) {
         buy.buy2 = true;
         buy.refHigh = cur.h;
-        buy.refLow = cur.l;
         buy.redSeek = true;
         buy.red = null;
         ev.push("TZ BUY 2");
         return ev;
       }
-      const tier = buy.buy2 ? "TZ BUY 2" : "TZ BUY";
       const isSlNow = isSl(cur, buy.refLow);
       const newHigh = quietHh(cur, buy.refHigh);
       if (newHigh !== null) {
         buy.refHigh = newHigh;
-        if (!isSlNow) ev.push(`${tier} HH`);
+        if (!isSlNow) ev.push("TZ BUY HH");
       }
       const newLow = quietLl(cur, buy.refLow);
       if (newLow !== null) {
         buy.refLow = newLow;
-        ev.push(`${tier} LL`);
+        ev.push("TZ BUY LL");
       }
 
       if (isSlNow) {
         buy.sl = new TierSL(buy.refHigh, cur.l);
-        ev.push(`${tier} SL`);
+        ev.push("TZ BUY SL");
         buy.active = false;
         buy.buy2 = false;
         buy.redSeek = false;
@@ -492,8 +499,6 @@ export class DtfBarTheoryEngine {
    * RED1 -> RED2 of the repeating BAR 1 - BAR 2 cascade. */
   private armRepeat(host: BarHost): void {
     host.redSeek = true;
-    host.red = null;
-    host.barPending = false;
   }
 
   /** Evaluates every BAR lineage under a host. Normally there is one; during
@@ -528,14 +533,14 @@ export class DtfBarTheoryEngine {
 
   private evalLineage(host: BarHost, lin: BarLineage, prev: Day, cur: Day): { ev: string[]; stop: boolean } {
     const ev: string[] = [];
-    const isNewest = host.barLineages[host.barLineages.length - 1] === lin;
 
     if (lin.bar2 === null) {
       // Still at BAR1 (tier-1) -- escalate to BAR ENTRY (BAR2), or a bare,
       // unreported SL that reforms unrestricted ("Immediately BAR1").
       if (breaksRef(prev, cur, lin.refHigh)) {
         lin.bar2 = new Bar2Entry(cur.h, cur.l);
-        // The NEXT BAR2 has formed: the previous BAR ENTRY is superseded.
+        // The NEXT BAR2 has formed: the previous BAR ENTRY is superseded,
+        // and this BAR1 becomes the BAR stage's anchor.
         host.barLineages = [lin];
         this.armRepeat(host);
         ev.push(`BAR2(${lin.label})`);
@@ -556,9 +561,23 @@ export class DtfBarTheoryEngine {
         host.barDeadLabels.add(parseInt(lin.label, 10));
         host.barLineages = host.barLineages.filter((l) => l !== lin);
         host.barPending = true; // bare BAR1 SL re-seeks a fresh BAR1 unrestricted
-        ev.push(`BAR1 SL(${lin.label})`);
+        ev.push(`BAR SL(${lin.label})`);
       }
       return { ev, stop: false };
+    }
+
+    // This BAR1 has produced a BAR ENTRY: it is the anchor. Its own SL ->
+    // SL2 ends the whole BAR stage (confirmed, PAYTM 2022: BAR1 06/07 low
+    // 656.30 -> BAR 1 LL 26/09 651.00 -> BAR SL 28/09 -> BAR SL 2 29/09).
+    const anchor = this.evalAnchorSl(host, lin, cur);
+    ev.push(...anchor.ev);
+    if (anchor.ended) return { ev, stop: true };
+    if (lin.barSl === null && anchor.ev.length === 0) {
+      const newLow = quietLl(cur, lin.refLow);
+      if (newLow !== null) {
+        lin.refLow = newLow;
+        ev.push(`BAR1 LL(${lin.label})`);
+      }
     }
 
     // BAR ENTRY (BAR2) is live.
@@ -576,56 +595,63 @@ export class DtfBarTheoryEngine {
         ev.push(`BAR2 LL(${lin.label})`);
       }
       if (isSlNow) {
+        // The RED gate and any RED2-armed BAR1 keep running through a BAR
+        // ENTRY SL (confirmed, PAYTM 26/07/22 and 29/08 -> 09/09/22).
         bar2.sl = new TierSL(bar2.refHigh, cur.l);
-        // The repeat's RED1 -> RED2 is only sought while BAR ENTRY is live.
-        // A newer BAR1 already formed in this round keeps running.
-        if (isNewest) {
-          host.redSeek = false;
-          host.red = null;
-          host.barPending = false;
-        }
         ev.push(`BAR2 SL(${lin.label})`);
       }
       return { ev, stop: false };
     }
 
-    // BAR ENTRY SL'd -- reactivates DIRECTLY above its own frozen reference
-    // high (no BAR1 restart), or escalates to SL2 via the same quiet-
-    // ratchet-then-decisive-second-breach shape as TZ BUY's own SL.
+    // BAR ENTRY SL'd -- it has no SL2 of its own (the anchor BAR1 does).
+    // It reactivates DIRECTLY above its own frozen reference high; a higher
+    // high that fails to reactivate is INVALID BAR ENTRY HH and raises that
+    // frozen high (confirmed, PAYTM 14/07, 19/07, 20/07/22 -> 21/07/22).
     const sl = bar2.sl;
     if (breaksRef(prev, cur, sl.refHigh)) {
-      const newLabel = this.nextBarLabel(host);
-      const fresh = new BarLineage(newLabel, sl.refHigh, sl.refLow);
-      fresh.bar2 = new Bar2Entry(cur.h, cur.l);
-      host.barLineages = host.barLineages.map((l) => (l === lin ? fresh : l));
-      // Re-arm the repeat only when no newer BAR1 is already in progress.
-      if (isNewest) this.armRepeat(host);
-      ev.push(`BAR2(${newLabel})`);
+      lin.bar2 = new Bar2Entry(cur.h, cur.l);
+      this.armRepeat(host);
+      ev.push(`BAR2(${lin.label})`);
       return { ev, stop: false };
     }
-    if (cur.l < sl.refLow) {
-      if (isSl(cur, sl.refLow)) {
-        sl.sl2 = true;
-        host.refHigh = this.currentTopRef(host);
-        host.barLineages = [];
-        host.barPending = false;
-        if (host instanceof TzBuy) {
-          // Nested BAR ENTRY's own SL2 opens the same REAR-vs-fresh-cycle
-          // race as TZ BUY's own SL2 (flow 3).
-          host.rearRace = true;
-        } else {
-          host.active = false;
-          host.sl = new RearSL(sl.refLow);
-          host.red = null;
-          host.redSeek = true; // REAR RE-ENTER seeks a fresh RED1
-        }
-        ev.push(`BAR2 SL2(${lin.label})`);
-        return { ev, stop: true };
-      }
-      sl.refLow = cur.l;
-      ev.push(`BAR2 SL LL(${lin.label})`);
+    if (cur.h > sl.refHigh) {
+      sl.refHigh = cur.h;
+      ev.push(`INVALID BAR2 HH(${lin.label})`);
     }
     return { ev, stop: false };
+  }
+
+  /** The anchor BAR1's own SL -> SL2 (same quiet-ratchet-then-decisive-
+   * second-breach shape as TZ BUY SL -> SL 2). `ended` is true once BAR SL 2
+   * has ended the whole BAR stage. */
+  private evalAnchorSl(host: BarHost, lin: BarLineage, cur: Day): { ev: string[]; ended: boolean } {
+    if (lin.barSl === null) {
+      if (isSl(cur, lin.refLow)) {
+        lin.barSl = new TierSL(lin.refHigh, cur.l);
+        return { ev: [`BAR SL(${lin.label})`], ended: false };
+      }
+      return { ev: [], ended: false };
+    }
+    if (cur.l >= lin.barSl.refLow) return { ev: [], ended: false };
+    if (!isSl(cur, lin.barSl.refLow)) {
+      lin.barSl.refLow = cur.l;
+      return { ev: [`BAR SL LL(${lin.label})`], ended: false };
+    }
+    lin.barSl.sl2 = true;
+    host.refHigh = this.currentTopRef(host);
+    host.barLineages = [];
+    host.barPending = false;
+    if (host instanceof TzBuy) {
+      // BAR SL 2 opens the same REAR-vs-fresh-cycle race as TZ BUY's own
+      // SL 2 (flow 3).
+      host.rearRace = true;
+    } else {
+      host.active = false;
+      host.sl = new RearSL(lin.barSl.refLow);
+      host.red = null;
+      host.redSeek = true; // REAR RE-ENTER seeks a fresh RED1
+    }
+    return { ev: [`BAR SL2(${lin.label})`], ended: true };
   }
 
   // -----------------------------------------------------------------
