@@ -434,9 +434,13 @@ export class DtfBarTheoryEngine {
    * exists. Used only to detect when a dying cycle's own REAR must go
    * dormant per the race. Must filter on `active` -- otherwise a long-dead,
    * unrelated cycle from years earlier (never pruned from `this.cycles`)
-   * would falsely count as a sibling forever. */
+   * would falsely count as a sibling forever -- and on `seq` -- only a
+   * cycle born after this one can be its TZ BUY(N+1); an OLDER cycle still
+   * racing (PAYTM: cycle from 13/05/22, racing since its BAR SL 2 on
+   * 29/09/22) made the REAR of 09/01/23 go dormant a day after forming,
+   * long before TZ BUY(N+1) on 20/01/23. */
   private siblingTzBuyExists(cyc: Cycle): boolean {
-    return this.cycles.some((c) => c !== cyc && c.active && c.buy !== null);
+    return this.cycles.some((c) => c.seq > cyc.seq && c.active && c.buy !== null);
   }
 
   /** True once some OTHER, still-active (sibling) cycle's own TZ BUY has
@@ -444,7 +448,7 @@ export class DtfBarTheoryEngine {
    * REAR race is fully terminated, not merely dormant. */
   private siblingReachedBarEntry(cyc: Cycle): boolean {
     return this.cycles.some(
-      (c) => c !== cyc && c.active && c.buy !== null && c.buy.barLineages.some((lin) => lin.bar2 !== null)
+      (c) => c.seq > cyc.seq && c.active && c.buy !== null && c.buy.barLineages.some((lin) => lin.bar2 !== null)
     );
   }
 
