@@ -26,7 +26,7 @@
 //    does (point 1), mirrored for symmetry -- NOT yet independently
 //    confirmed against real data, flag any mismatch.
 //    RED1->RED2 is reserved for the NESTED "BAR 1 - BAR 2" cascade once BAR
-//    ENTRY is first confirmed (not yet implemented in this module).
+//    ENTRY is first confirmed (point 4).
 // 3. TZ BUY SL 2 -- or a nested BAR ENTRY's own SL 2 under TZ BUY (flow 3:
 //    "after BAR SL2, race to either TZ GREEN -> TZ BUY -> BAR ENTRY, or
 //    REAR -> REAR ENTER"; confirmed by the user) -- opens TWO doors at once,
@@ -44,6 +44,21 @@
 //    BUY is just TZ GREEN HH, never a second TZ GREEN. A second TZ GREEN
 //    ("TZ GREEN B", flow 2b) can only appear once TZ BUY SL 2 or BAR SL 2
 //    has fired.
+
+// 4. Confirmed full flow (user):
+//      TZ GREEN -> RED1 -> RED2 -> TZ BUY -> TZ BUY 2 -> RED1 -> RED2 -> BAR1
+//      -> BAR ENTRY -> RED1 -> RED2 -> BAR1 -> BAR2 -> ...
+//    Once BAR ENTRY is received, RED1 -> RED2 -> BAR1 -> BAR2 repeats until
+//    BAR SL 2. TZ BUY 2 is TZ BUY's own escalation above its current
+//    reference high (same breakout test as BAR1 -> BAR2 and REAR -> REAR2)
+//    and is required before the first RED1 under TZ BUY (both confirmed).
+//    The previous BAR ENTRY stays live alongside the next round's BAR1 and
+//    is only superseded once the NEXT BAR2 forms (confirmed). The RED1 ->
+//    RED2 of the repeat is only sought while the latest BAR ENTRY is live
+//    (not sitting SL'd).
+//    Not yet confirmed: TZ BUY 2's own SL is tested against TZ BUY 2's own
+//    candle low (mirroring BAR2/REAR2), and a TZ BUY reactivated after its
+//    SL needs a fresh TZ BUY 2 before RED1 is sought again.
 
 import { THRESH, EPS, type Day, type HistoryRowLike } from "./tzEngineWtf";
 
@@ -116,6 +131,9 @@ export class Rear {
   reenter: RearReenter | null = null;
   red: Red | null = null;
   redEver = false;
+  /** True while this host may seek a RED1 (see evalRedGate). REAR seeks
+   * one straight away. */
+  redSeek = true;
   barLineages: BarLineage[] = [];
   barPending = false;
   barGen = 0;
@@ -139,8 +157,14 @@ export class TzBuy {
    * point (the race's two outcomes supersede it). */
   rearRace = false;
   rear: Rear | null = null;
+  /** True once TZ BUY 2 (TZ BUY's own escalation) has formed; reset when
+   * TZ BUY re-forms after its own SL. */
+  buy2 = false;
   red: Red | null = null;
   redEver = false;
+  /** True while this host may seek a RED1 (see evalRedGate). TZ BUY only
+   * starts seeking once TZ BUY 2 forms. */
+  redSeek = false;
   barLineages: BarLineage[] = [];
   barPending = false;
   barGen = 0;
@@ -329,22 +353,38 @@ export class DtfBarTheoryEngine {
     }
 
     if (buy.active) {
+      // TZ BUY 2 -- TZ BUY's own escalation above its current reference
+      // high (same breakout test as BAR1 -> BAR2). Required before the first
+      // RED1 under TZ BUY; from here on TZ BUY 2's own candle is the tier's
+      // reference.
+      if (!buy.buy2 && breaksRef(prev, cur, buy.refHigh)) {
+        buy.buy2 = true;
+        buy.refHigh = cur.h;
+        buy.refLow = cur.l;
+        buy.redSeek = true;
+        buy.red = null;
+        ev.push("TZ BUY 2");
+        return ev;
+      }
+      const tier = buy.buy2 ? "TZ BUY 2" : "TZ BUY";
       const isSlNow = isSl(cur, buy.refLow);
       const newHigh = quietHh(cur, buy.refHigh);
       if (newHigh !== null) {
         buy.refHigh = newHigh;
-        if (!isSlNow) ev.push("TZ BUY HH");
+        if (!isSlNow) ev.push(`${tier} HH`);
       }
       const newLow = quietLl(cur, buy.refLow);
       if (newLow !== null) {
         buy.refLow = newLow;
-        ev.push("TZ BUY LL");
+        ev.push(`${tier} LL`);
       }
 
       if (isSlNow) {
         buy.sl = new TierSL(buy.refHigh, cur.l);
-        ev.push("TZ BUY SL");
+        ev.push(`${tier} SL`);
         buy.active = false;
+        buy.buy2 = false;
+        buy.redSeek = false;
         buy.red = null;
         buy.barLineages = [];
         buy.barPending = false;
@@ -376,20 +416,10 @@ export class DtfBarTheoryEngine {
       return ev;
     }
 
-    if (buy.red === null) {
-      if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
-        buy.redEver = true;
-        buy.red = new Red(cur.h, cur.l);
-        ev.push("RED1");
-      }
-    } else if (buy.red.active) {
-      const redEv = this.evalRed(buy.red, prev, cur, "RED1", "RED2", "RED1 HH");
-      ev.push(...redEv);
-      if (redEv.includes("RED2")) buy.barPending = true;
-      else if (redEv.some((e) => e.startsWith("INVALID"))) buy.red = null;
-    }
-
+    // BAR lineages first: a BAR ENTRY SL on the same candle cancels the
+    // repeat's RED1 -> RED2 before it is evaluated.
     ev.push(...this.evalBarLineages(buy, prev, cur));
+    ev.push(...this.evalRedGate(buy, prev, cur));
     return ev;
   }
 
@@ -412,6 +442,31 @@ export class DtfBarTheoryEngine {
   }
 
   // -----------------------------------------------------------------
+  /** The RED1 -> RED2 gate under a TZ BUY/REAR host. Sought only while
+   * `host.redSeek` is set: under TZ BUY from TZ BUY 2 on, under REAR from
+   * its formation/re-entry, and again each time a BAR ENTRY (BAR2) forms
+   * (the repeating BAR 1 - BAR 2 cascade). RED2 arms the next BAR1. */
+  private evalRedGate(host: BarHost, prev: Day, cur: Day): string[] {
+    if (!host.redSeek) return [];
+    if (host.red === null) {
+      if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
+        host.redEver = true;
+        host.red = new Red(cur.h, cur.l);
+        return ["RED1"];
+      }
+      return [];
+    }
+    const redEv = this.evalRed(host.red, prev, cur, "RED1", "RED2", "RED1 HH");
+    if (redEv.includes("RED2")) {
+      host.barPending = true;
+      host.redSeek = false;
+      host.red = null;
+    } else if (redEv.some((e) => e.startsWith("INVALID"))) {
+      host.red = null;
+    }
+    return redEv;
+  }
+
   private currentTopRef(host: BarHost): number {
     let top = host.refHigh;
     for (const lin of host.barLineages) {
@@ -433,27 +488,58 @@ export class DtfBarTheoryEngine {
     return String(n);
   }
 
+  /** A BAR ENTRY (BAR2) just formed or reactivated: start seeking the next
+   * RED1 -> RED2 of the repeating BAR 1 - BAR 2 cascade. */
+  private armRepeat(host: BarHost): void {
+    host.redSeek = true;
+    host.red = null;
+    host.barPending = false;
+  }
+
+  /** Evaluates every BAR lineage under a host. Normally there is one; during
+   * a repeat round of the BAR 1 - BAR 2 cascade there can be two -- the
+   * previous BAR ENTRY (still live: it is only superseded once the NEXT
+   * BAR2 forms, user-confirmed) and the newer BAR1 seeking that BAR2. */
   private evalBarLineages(host: BarHost, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
 
-    if (host.barPending && host.barLineages.length === 0 && bar1Shape(prev, cur)) {
+    // A RED2-armed BAR1 -- either the first under this host (or a bare-SL
+    // reform), or the next round of the repeating cascade, alongside the
+    // previous BAR ENTRY (which keeps running until this BAR1's own BAR2).
+    if (host.barPending && bar1Shape(prev, cur)) {
       const label = this.nextBarLabel(host);
+      host.barLineages = host.barLineages.filter((l) => l.bar2 !== null);
       host.barLineages.push(new BarLineage(label, cur.h, cur.l));
       host.barPending = false;
       ev.push(`BAR1(${label})`);
       return ev;
     }
-    if (host.barLineages.length === 0) return ev;
 
-    const lin = host.barLineages[host.barLineages.length - 1];
+    // Oldest first; stop once one of them ends the host's whole BAR stage
+    // (BAR SL2) or replaces the set (the newer BAR1 reaching BAR2).
+    for (const lin of [...host.barLineages]) {
+      if (!host.barLineages.includes(lin)) continue;
+      const res = this.evalLineage(host, lin, prev, cur);
+      ev.push(...res.ev);
+      if (res.stop) break;
+    }
+    return ev;
+  }
+
+  private evalLineage(host: BarHost, lin: BarLineage, prev: Day, cur: Day): { ev: string[]; stop: boolean } {
+    const ev: string[] = [];
+    const isNewest = host.barLineages[host.barLineages.length - 1] === lin;
 
     if (lin.bar2 === null) {
       // Still at BAR1 (tier-1) -- escalate to BAR ENTRY (BAR2), or a bare,
       // unreported SL that reforms unrestricted ("Immediately BAR1").
       if (breaksRef(prev, cur, lin.refHigh)) {
         lin.bar2 = new Bar2Entry(cur.h, cur.l);
+        // The NEXT BAR2 has formed: the previous BAR ENTRY is superseded.
+        host.barLineages = [lin];
+        this.armRepeat(host);
         ev.push(`BAR2(${lin.label})`);
-        return ev;
+        return { ev, stop: true };
       }
       const slNow = isSl(cur, lin.refLow);
       const newHigh = quietHh(cur, lin.refHigh);
@@ -467,13 +553,12 @@ export class DtfBarTheoryEngine {
         ev.push(`BAR1 LL(${lin.label})`);
       }
       if (slNow) {
-        const n = parseInt(lin.label, 10);
-        host.barDeadLabels.add(n);
-        host.barLineages = [];
+        host.barDeadLabels.add(parseInt(lin.label, 10));
+        host.barLineages = host.barLineages.filter((l) => l !== lin);
         host.barPending = true; // bare BAR1 SL re-seeks a fresh BAR1 unrestricted
         ev.push(`BAR1 SL(${lin.label})`);
       }
-      return ev;
+      return { ev, stop: false };
     }
 
     // BAR ENTRY (BAR2) is live.
@@ -492,9 +577,16 @@ export class DtfBarTheoryEngine {
       }
       if (isSlNow) {
         bar2.sl = new TierSL(bar2.refHigh, cur.l);
+        // The repeat's RED1 -> RED2 is only sought while BAR ENTRY is live.
+        // A newer BAR1 already formed in this round keeps running.
+        if (isNewest) {
+          host.redSeek = false;
+          host.red = null;
+          host.barPending = false;
+        }
         ev.push(`BAR2 SL(${lin.label})`);
       }
-      return ev;
+      return { ev, stop: false };
     }
 
     // BAR ENTRY SL'd -- reactivates DIRECTLY above its own frozen reference
@@ -503,11 +595,13 @@ export class DtfBarTheoryEngine {
     const sl = bar2.sl;
     if (breaksRef(prev, cur, sl.refHigh)) {
       const newLabel = this.nextBarLabel(host);
-      const freshBar2 = new Bar2Entry(cur.h, cur.l);
-      host.barLineages = [new BarLineage(newLabel, sl.refHigh, sl.refLow)];
-      host.barLineages[0].bar2 = freshBar2;
+      const fresh = new BarLineage(newLabel, sl.refHigh, sl.refLow);
+      fresh.bar2 = new Bar2Entry(cur.h, cur.l);
+      host.barLineages = host.barLineages.map((l) => (l === lin ? fresh : l));
+      // Re-arm the repeat only when no newer BAR1 is already in progress.
+      if (isNewest) this.armRepeat(host);
       ev.push(`BAR2(${newLabel})`);
-      return ev;
+      return { ev, stop: false };
     }
     if (cur.l < sl.refLow) {
       if (isSl(cur, sl.refLow)) {
@@ -519,19 +613,19 @@ export class DtfBarTheoryEngine {
           // Nested BAR ENTRY's own SL2 opens the same REAR-vs-fresh-cycle
           // race as TZ BUY's own SL2 (flow 3).
           host.rearRace = true;
-          ev.push(`BAR2 SL2(${lin.label})`);
         } else {
           host.active = false;
           host.sl = new RearSL(sl.refLow);
           host.red = null;
-          ev.push(`BAR2 SL2(${lin.label})`);
+          host.redSeek = true; // REAR RE-ENTER seeks a fresh RED1
         }
-      } else {
-        sl.refLow = cur.l;
-        ev.push(`BAR2 SL LL(${lin.label})`);
+        ev.push(`BAR2 SL2(${lin.label})`);
+        return { ev, stop: true };
       }
+      sl.refLow = cur.l;
+      ev.push(`BAR2 SL LL(${lin.label})`);
     }
-    return ev;
+    return { ev, stop: false };
   }
 
   // -----------------------------------------------------------------
@@ -569,6 +663,7 @@ export class DtfBarTheoryEngine {
         rear.active = false;
         ev.push(`${baseTierName} SL`);
         rear.red = null;
+        rear.redSeek = true; // REAR RE-ENTER seeks a fresh RED1
         rear.barLineages = [];
         rear.barPending = false;
         return ev;
@@ -595,20 +690,10 @@ export class DtfBarTheoryEngine {
       return ev;
     }
 
-    if (rear.red === null) {
-      if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
-        rear.redEver = true;
-        rear.red = new Red(cur.h, cur.l);
-        ev.push("RED1");
-      }
-    } else if (rear.red.active) {
-      const redEv = this.evalRed(rear.red, prev, cur, "RED1", "RED2", "RED1 HH");
-      ev.push(...redEv);
-      if (redEv.includes("RED2")) rear.barPending = true;
-      else if (redEv.some((e) => e.startsWith("INVALID"))) rear.red = null;
-    }
-
+    // BAR lineages first: a BAR ENTRY SL on the same candle cancels the
+    // repeat's RED1 -> RED2 before it is evaluated.
     ev.push(...this.evalBarLineages(rear, prev, cur));
+    ev.push(...this.evalRedGate(rear, prev, cur));
     return ev;
   }
 }
