@@ -9,7 +9,9 @@
 // Confirmed differences from lib/dtfBar.ts (this module's own first pass,
 // NOT yet verified beyond the PAYTM dates checked so far):
 //
-// 1. TZ BUY's own SL escalates to SL2 the same way the nested BAR lineage's
+// 1. (Only once TZ BUY 2 has been achieved -- a bare TZ BUY's SL has no SL2
+//    and a new TZ BUY may form straight away while TZ GREEN is active.)
+//    TZ BUY's own SL escalates to SL2 the same way the nested BAR lineage's
 //    own SL already does in lib/dtfBar.ts: while TZ BUY sits SL'd (not yet
 //    reactivated), a quiet lower low ratchets the SL's own reference low
 //    down ("TZ BUY SL LL"); a candle that closes decisively AT LEAST 0.20
@@ -158,6 +160,10 @@ export class TzBuy {
   refHigh: number;
   refLow: number;
   sl: TierSL | null = null;
+  /** True while a BARE TZ BUY (no TZ BUY 2 yet) sits SL'd: no SL2 path,
+   * and a new TZ BUY may form straight away on the plain breakout shape
+   * while TZ GREEN is active (same as a bare BAR1 SL re-forming). */
+  bareSl = false;
   /** True once this TZ BUY's own SL2, or a nested BAR ENTRY's own SL2
    * under it, has fired -- opens the REAR-vs-fresh-cycle race (point 3
    * above): REAR may form above currentTopRef, and a fresh sibling cycle
@@ -265,7 +271,8 @@ export class DtfBarTheoryEngine {
     const newHigh = quietHh(cur, cyc.refHigh);
     if (newHigh !== null) {
       cyc.refHigh = newHigh;
-      if (!hasLiveBuy && !isSlNow) ev.push("TZ GREEN HH");
+      // TZ GREEN HH is tracked but not recorded (user: "No need to record
+      // TZ GREEN HH").
     }
     const newLow = quietLl(cur, cyc.refLow);
     if (newLow !== null) {
@@ -387,7 +394,11 @@ export class DtfBarTheoryEngine {
       }
 
       if (isSlNow) {
-        buy.sl = new TierSL(buy.refHigh, cur.l);
+        // TZ BUY SL 2 is only possible once TZ BUY 2 has been achieved
+        // (confirmed, PAYTM: bare TZ BUY 09/12/22 -> TZ BUY SL 19/12/22 has
+        // no SL 2 on 21/12/22; a new TZ BUY forms on 26/12/22 instead).
+        if (buy.buy2) buy.sl = new TierSL(buy.refHigh, cur.l);
+        else buy.bareSl = true;
         ev.push("TZ BUY SL");
         buy.active = false;
         buy.buy2 = false;
@@ -397,6 +408,15 @@ export class DtfBarTheoryEngine {
         buy.barPending = false;
         return ev;
       }
+    } else if (buy.bareSl) {
+      if (bar1Shape(prev, cur)) {
+        buy.active = true;
+        buy.bareSl = false;
+        buy.refHigh = cur.h;
+        buy.refLow = cur.l;
+        ev.push("TZ BUY");
+      }
+      return ev;
     } else if (buy.sl !== null) {
       if (breaksRef(prev, cur, buy.sl.refHigh)) {
         buy.active = true;
