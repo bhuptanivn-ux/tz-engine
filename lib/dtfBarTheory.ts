@@ -25,9 +25,10 @@
 // 3. TZ BUY ENTRY has its own reference high/low and its own SL ("TZ BUY
 //    ENTRY SL", e.g. 06/05/22). TZ BUY stays active through it, and the RED
 //    gate / a RED2-armed BAR1 keep running, so BAR -> BAR ENTRY is still
-//    possible. Not yet built: reactivation when only RED1 (no RED2) exists
-//    -- REAR above TZ BUY ENTRY's reference high, then TZ BUY ENTRY above
-//    that REAR.
+//    possible. With only RED1, or no RED at all, reactivation is REAR above
+//    TZ BUY ENTRY's frozen reference high, then TZ BUY ENTRY above that
+//    REAR. Like BAR ENTRY, TZ BUY ENTRY has no SL2, and while SL'd a higher
+//    high that fails to clear its frozen high is INVALID TZ BUY ENTRY HH.
 // 4. BAR ENTRY (BAR2) reactivates DIRECTLY above its own frozen reference
 //    high after a BAR ENTRY SL; while SL'd, a higher high that fails to
 //    reactivate it is INVALID BAR ENTRY HH and raises the frozen high. BAR
@@ -93,6 +94,10 @@ export class TierSL {
  * ENTRY SL"), while TZ BUY's own SL stays at TZ BUY's own low. */
 export class TzBuyEntry {
   sl = false;
+  /** While SL'd and no RED2 has armed a BAR: the reactivation REAR, formed
+   * above TZ BUY ENTRY's frozen reference high. TZ BUY ENTRY then re-forms
+   * above this REAR's reference high. */
+  rear: { refHigh: number; refLow: number } | null = null;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -421,6 +426,8 @@ export class DtfBarTheoryEngine {
           entry.sl = true;
           ev.push("TZ BUY ENTRY SL");
         }
+      } else if (entry !== null && entry.sl && !buy.barPending && buy.barLineages.length === 0) {
+        ev.push(...this.evalEntryReactivation(buy, entry, prev, cur));
       }
     } else if (buy.bareSl) {
       if (bar1Shape(prev, cur)) {
@@ -446,6 +453,35 @@ export class DtfBarTheoryEngine {
     ev.push(...barEv);
     ev.push(...this.evalRedGate(buy, prev, cur));
     return ev;
+  }
+
+  /** TZ BUY ENTRY sitting SL'd with no RED2-armed BAR (only RED1, or no
+   * RED at all): reactivation is REAR above TZ BUY ENTRY's frozen reference
+   * high, then TZ BUY ENTRY above that REAR (user-confirmed). Like BAR ENTRY,
+   * TZ BUY ENTRY has no SL2 of its own, and a higher high that fails to
+   * clear its frozen high is INVALID TZ BUY ENTRY HH, raising that high. */
+  private evalEntryReactivation(buy: TzBuy, entry: TzBuyEntry, prev: Day, cur: Day): string[] {
+    if (entry.rear === null) {
+      if (breaksRef(prev, cur, entry.refHigh)) {
+        entry.rear = { refHigh: cur.h, refLow: cur.l };
+        return ["REAR (TZ BUY ENTRY)"];
+      }
+      if (cur.h > entry.refHigh) {
+        entry.refHigh = cur.h;
+        return ["INVALID TZ BUY ENTRY HH"];
+      }
+      return [];
+    }
+    if (breaksRef(prev, cur, entry.rear.refHigh)) {
+      buy.entry = new TzBuyEntry(cur.h, cur.l);
+      buy.redSeek = true;
+      return ["TZ BUY ENTRY"];
+    }
+    if (cur.h > entry.rear.refHigh) {
+      entry.rear.refHigh = cur.h;
+      return ["REAR HH (TZ BUY ENTRY)"];
+    }
+    return [];
   }
 
   /** True once some OTHER, still-active (sibling) cycle's own TZ BUY
