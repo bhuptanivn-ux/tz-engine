@@ -6,65 +6,44 @@
 // different theory gets its own file, not a patch onto another one.
 // lib/dtfBar.ts itself is untouched by this file.
 //
-// Confirmed differences from lib/dtfBar.ts (this module's own first pass,
-// NOT yet verified beyond the PAYTM dates checked so far):
+// Rules below are user-confirmed against PAYTM daily (2021-11 -> 2023-06)
+// unless marked otherwise.
 //
-// 1. (Only once TZ BUY 2 has been achieved -- a bare TZ BUY's SL has no SL2
-//    and a new TZ BUY may form straight away while TZ GREEN is active.)
-//    TZ BUY's own SL escalates to SL2 the same way the nested BAR lineage's
-//    own SL already does in lib/dtfBar.ts: while TZ BUY sits SL'd (not yet
-//    reactivated), a quiet lower low ratchets the SL's own reference low
-//    down ("TZ BUY SL LL"); a candle that closes decisively AT LEAST 0.20
-//    pts further below whatever that reference currently is -- even on the
-//    very next candle, with no intervening reactivation -- is TZ BUY SL 2.
-//    (lib/dtfBar.ts has no such escalation path at all: reactivation always
-//    resets buy.sl to null, so a second failure there can only ever
-//    re-fire plain "TZ BUY SL".)
-// 2. BAR ENTRY (BAR2) reactivates DIRECTLY above its own frozen reference
-//    high after a BAR ENTRY SL -- no intermediate "BAR1 reforms first" step,
-//    no RED1->RED2 gate. Each such reactivation is reported as its OWN
-//    separate row (not folded silently into the row that preceded its SL).
-//    While SL'd, a higher high that fails to reactivate it is INVALID BAR
-//    ENTRY HH and raises the frozen high. BAR ENTRY's own SL has NO SL2:
-//    "BAR SL" -> "BAR SL 2" belongs to the BAR1 that produced the live BAR
-//    ENTRY (the anchor), measured from that BAR1's own reference low, same
-//    quiet-ratchet-then-decisive-second-breach shape as TZ BUY's (point 1).
-//    All confirmed on PAYTM daily 2022.
-//    RED1->RED2 is reserved for the NESTED "BAR 1 - BAR 2" cascade once BAR
-//    ENTRY is first confirmed (point 4).
-// 3. TZ BUY SL 2 -- or a nested BAR ENTRY's own SL 2 under TZ BUY (flow 3:
-//    "after BAR SL2, race to either TZ GREEN -> TZ BUY -> BAR ENTRY, or
-//    REAR -> REAR ENTER"; confirmed by the user) -- opens TWO doors at once,
-//    which then race:
+// 1. Flow:
+//      TZ GREEN -> RED1 -> RED2 -> TZ BUY -> TZ BUY ENTRY -> RED1 -> RED2
+//      -> BAR1 -> BAR ENTRY -> RED1 -> RED2 -> BAR1 -> BAR2 -> ...
+//    RED1 -> RED2 needs TZ GREEN active (no TZ GREEN SL). TZ BUY needs
+//    RED1 -> RED2 completed. TZ BUY ENTRY (formerly "TZ BUY 2") forms above
+//    TZ BUY's reference high and is required before the first RED1 under
+//    TZ BUY. Once BAR ENTRY is received, RED1 -> RED2 -> BAR1 -> BAR2
+//    repeats until BAR SL 2. Only ONE cycle is live outside a race: a
+//    breakout before TZ BUY is just TZ GREEN HH (tracked, not recorded).
+// 2. TZ BUY SL. TZ BUY's own SL stays at TZ BUY's own low. There is no TZ
+//    BUY SL 2. A bare TZ BUY (no TZ BUY ENTRY) SL lets a fresh TZ BUY form
+//    straight away while TZ GREEN is active. After TZ BUY ENTRY, TZ BUY SL
+//    opens the race (point 5).
+// 3. TZ BUY ENTRY has its own reference high/low and its own SL ("TZ BUY
+//    ENTRY SL", e.g. 06/05/22). TZ BUY stays active through it, and the RED
+//    gate / a RED2-armed BAR1 keep running, so BAR -> BAR ENTRY is still
+//    possible. Not yet built: reactivation when only RED1 (no RED2) exists
+//    -- REAR above TZ BUY ENTRY's reference high, then TZ BUY ENTRY above
+//    that REAR.
+// 4. BAR ENTRY (BAR2) reactivates DIRECTLY above its own frozen reference
+//    high after a BAR ENTRY SL; while SL'd, a higher high that fails to
+//    reactivate it is INVALID BAR ENTRY HH and raises the frozen high. BAR
+//    ENTRY's own SL has NO SL2: "BAR SL" -> "BAR SL 2" belongs to the BAR1
+//    that produced the live BAR ENTRY (the anchor), from that BAR1's own
+//    low, quiet-ratchet-then-decisive-second-breach shape. The previous BAR
+//    ENTRY stays live alongside the next round's BAR1 until the NEXT BAR2.
+//    The RED gate and a BAR1 it armed keep running through a BAR ENTRY SL.
+//    A bare BAR1 SL ("BAR SL") re-forms straight away, without a RED gate.
+//    Once BAR ENTRY confirms, TZ BUY HH / TZ BUY ENTRY HH aren't recorded.
+// 5. The race -- opened by TZ BUY SL after TZ BUY ENTRY, or by BAR SL 2:
 //      (a) REAR, above the dying TZ BUY's own top reference, and
-//      (b) a fresh cycle (TZ GREEN(N+1) -> RED1 -> RED2 -> TZ BUY(N+1)).
-//    Whichever occurs is reportable. If ONLY REAR occurs, REAR is live. If
-//    TZ BUY(N+1) ever forms -- whether before or after REAR -- TZ BUY(N+1)
-//    takes reporting preference; REAR (if it had activated) goes dormant,
-//    and is fully terminated once TZ BUY(N+1) itself reaches BAR ENTRY. A
-//    REAR that never activated at all before being superseded is left out
-//    of the report entirely (same Filter-rule convention as a bare,
-//    never-escalated tier).
-//    Outside such a race only ONE cycle is ever live: a breakout before TZ
-//    BUY is just TZ GREEN HH, never a second TZ GREEN. A second TZ GREEN
-//    ("TZ GREEN B", flow 2b) can only appear once TZ BUY SL 2 or BAR SL 2
-//    has fired.
-
-// 4. Confirmed full flow (user):
-//      TZ GREEN -> RED1 -> RED2 -> TZ BUY -> TZ BUY 2 -> RED1 -> RED2 -> BAR1
-//      -> BAR ENTRY -> RED1 -> RED2 -> BAR1 -> BAR2 -> ...
-//    Once BAR ENTRY is received, RED1 -> RED2 -> BAR1 -> BAR2 repeats until
-//    BAR SL 2. TZ BUY 2 is TZ BUY's own escalation above its current
-//    reference high (same breakout test as BAR1 -> BAR2 and REAR -> REAR2)
-//    and is required before the first RED1 under TZ BUY (both confirmed).
-//    The previous BAR ENTRY stays live alongside the next round's BAR1 and
-//    is only superseded once the NEXT BAR2 forms (confirmed). The RED1 ->
-//    RED2 of the repeat is only sought while the latest BAR ENTRY is live
-//    (not sitting SL'd).
-//    TZ BUY 2 does not move TZ BUY's own SL reference low (confirmed). The
-//    RED gate, and a BAR1 it has armed, keep running through a BAR ENTRY SL
-//    (confirmed). Not yet confirmed: a TZ BUY reactivated after its SL
-//    needs a fresh TZ BUY 2 before RED1 is sought again.
+//      (b) a fresh cycle (TZ GREEN B -> RED1 -> RED2 -> TZ BUY(N+1)).
+//    As built (pending the user's latest rules): TZ BUY(N+1) takes
+//    preference; an activated REAR goes dormant (never reported) and is
+//    terminated once TZ BUY(N+1) reaches BAR ENTRY.
 
 import { THRESH, EPS, type Day, type HistoryRowLike } from "./tzEngineWtf";
 
@@ -106,6 +85,14 @@ export class Red {
  * own SL and BAR ENTRY's own SL (point 1/2 above). */
 export class TierSL {
   sl2 = false;
+  constructor(public refHigh: number, public refLow: number) {}
+}
+
+/** TZ BUY ENTRY (formerly "TZ BUY 2") -- TZ BUY's own escalation above its
+ * reference high. Has its OWN reference high/low and its own SL ("TZ BUY
+ * ENTRY SL"), while TZ BUY's own SL stays at TZ BUY's own low. */
+export class TzBuyEntry {
+  sl = false;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -159,8 +146,7 @@ export class TzBuy {
   active = true;
   refHigh: number;
   refLow: number;
-  sl: TierSL | null = null;
-  /** True while a BARE TZ BUY (no TZ BUY 2 yet) sits SL'd: no SL2 path,
+  /** True while a BARE TZ BUY (no TZ BUY ENTRY yet) sits SL'd: no SL2 path,
    * and a new TZ BUY may form straight away on the plain breakout shape
    * while TZ GREEN is active (same as a bare BAR1 SL re-forming). */
   bareSl = false;
@@ -175,9 +161,8 @@ export class TzBuy {
    * TZ BUY HH is tracked but not recorded (user-confirmed). Reset when TZ
    * BUY SLs. */
   barEntryEver = false;
-  /** True once TZ BUY 2 (TZ BUY's own escalation) has formed; reset when
-   * TZ BUY re-forms after its own SL. */
-  buy2 = false;
+  /** TZ BUY ENTRY, once formed; cleared when TZ BUY SLs. */
+  entry: TzBuyEntry | null = null;
   red: Red | null = null;
   redEver = false;
   /** True while this host may seek a RED1 (see evalRedGate). TZ BUY only
@@ -372,24 +357,24 @@ export class DtfBarTheoryEngine {
     }
 
     if (buy.active) {
-      // TZ BUY 2 -- TZ BUY's own escalation above its current reference
+      // TZ BUY ENTRY -- TZ BUY's own escalation above its current reference
       // high (same breakout test as BAR1 -> BAR2). Required before the first
-      // RED1 under TZ BUY. It does NOT move TZ BUY's own SL reference low
-      // (confirmed, PAYTM 2022: TZ BUY 01/04 low 530.00 stays the SL level
-      // after TZ BUY 2 on 04/04, so 06/05's low 546.65 is no SL).
-      if (!buy.buy2 && breaksRef(prev, cur, buy.refHigh)) {
-        buy.buy2 = true;
+      // RED1 under TZ BUY. It has its own reference low and SL; TZ BUY's own
+      // SL stays at TZ BUY's own low (PAYTM 2022: TZ BUY 01/04 low 530.00).
+      if (buy.entry === null && breaksRef(prev, cur, buy.refHigh)) {
+        buy.entry = new TzBuyEntry(cur.h, cur.l);
         buy.refHigh = cur.h;
         buy.redSeek = true;
         buy.red = null;
-        ev.push("TZ BUY 2");
+        ev.push("TZ BUY ENTRY");
         return ev;
       }
       const isSlNow = isSl(cur, buy.refLow);
       const newHigh = quietHh(cur, buy.refHigh);
       if (newHigh !== null) {
         buy.refHigh = newHigh;
-        if (!isSlNow && !buy.barEntryEver) ev.push("TZ BUY HH");
+        // Once TZ BUY ENTRY exists its own HH is recorded instead.
+        if (!isSlNow && buy.entry === null) ev.push("TZ BUY HH");
       }
       const newLow = quietLl(cur, buy.refLow);
       if (newLow !== null) {
@@ -398,20 +383,44 @@ export class DtfBarTheoryEngine {
       }
 
       if (isSlNow) {
-        // TZ BUY SL 2 is only possible once TZ BUY 2 has been achieved
-        // (confirmed, PAYTM: bare TZ BUY 09/12/22 -> TZ BUY SL 19/12/22 has
-        // no SL 2 on 21/12/22; a new TZ BUY forms on 26/12/22 instead).
-        if (buy.buy2) buy.sl = new TierSL(buy.refHigh, cur.l);
+        // TZ BUY SL 2 no longer exists (user-confirmed). A bare TZ BUY (no
+        // TZ BUY ENTRY) SL lets a fresh TZ BUY form straight away while TZ
+        // GREEN is active (PAYTM 09/12/22 -> SL 19/12/22 -> TZ BUY 26/12/22).
+        // After TZ BUY ENTRY, TZ BUY SL itself opens the race: a new
+        // lineage vs REAR above TZ BUY's reference high.
+        if (buy.entry !== null) buy.rearRace = true;
         else buy.bareSl = true;
         ev.push("TZ BUY SL");
         buy.active = false;
         buy.barEntryEver = false;
-        buy.buy2 = false;
+        buy.entry = null;
         buy.redSeek = false;
         buy.red = null;
         buy.barLineages = [];
         buy.barPending = false;
         return ev;
+      }
+
+      // TZ BUY ENTRY's own HH/LL/SL. TZ BUY stays active through a TZ BUY
+      // ENTRY SL, and the RED gate / a RED2-armed BAR1 keep running
+      // (cases a and b, user-confirmed).
+      const entry = buy.entry;
+      if (entry !== null && !entry.sl) {
+        const entrySlNow = isSl(cur, entry.refLow);
+        const eHigh = quietHh(cur, entry.refHigh);
+        if (eHigh !== null) {
+          entry.refHigh = eHigh;
+          if (!entrySlNow && !buy.barEntryEver) ev.push("TZ BUY ENTRY HH");
+        }
+        const eLow = quietLl(cur, entry.refLow);
+        if (eLow !== null) {
+          entry.refLow = eLow;
+          ev.push("TZ BUY ENTRY LL");
+        }
+        if (entrySlNow) {
+          entry.sl = true;
+          ev.push("TZ BUY ENTRY SL");
+        }
       }
     } else if (buy.bareSl) {
       if (bar1Shape(prev, cur)) {
@@ -420,28 +429,6 @@ export class DtfBarTheoryEngine {
         buy.refHigh = cur.h;
         buy.refLow = cur.l;
         ev.push("TZ BUY");
-      }
-      return ev;
-    } else if (buy.sl !== null) {
-      if (breaksRef(prev, cur, buy.sl.refHigh)) {
-        buy.active = true;
-        buy.refHigh = cur.h;
-        buy.refLow = cur.l;
-        buy.sl = null;
-        ev.push("TZ BUY");
-        return ev;
-      }
-      // Quiet-ratchet-then-decisive-second-breach escalation to SL2 --
-      // same shape as the nested BAR lineage's own BAR SL -> BAR SL2.
-      if (cur.l < buy.sl.refLow) {
-        if (isSl(cur, buy.sl.refLow)) {
-          buy.sl.sl2 = true;
-          buy.rearRace = true;
-          ev.push("TZ BUY SL 2");
-        } else {
-          buy.sl.refLow = cur.l;
-          ev.push("TZ BUY SL LL");
-        }
       }
       return ev;
     } else {
@@ -454,7 +441,7 @@ export class DtfBarTheoryEngine {
     // BAR ENTRY confirming today already silences today's TZ BUY HH.
     if (!buy.barEntryEver && barEv.some((e) => /^BAR2\(/.test(e))) {
       buy.barEntryEver = true;
-      ev = ev.filter((e) => e !== "TZ BUY HH");
+      ev = ev.filter((e) => e !== "TZ BUY HH" && e !== "TZ BUY ENTRY HH");
     }
     ev.push(...barEv);
     ev.push(...this.evalRedGate(buy, prev, cur));
