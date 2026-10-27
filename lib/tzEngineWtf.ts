@@ -223,6 +223,20 @@ export class TZEngine {
   private preTodayLiveBuy = new Map<number, boolean>();
   private preTodayTzBuy2Active = new Map<number, boolean>();
 
+  // Every genuine BAR SL2 confirmation, backend-true regardless of whether
+  // its own text ever reached visible output -- a sub-lineage born while
+  // its branch is dormant (bornDormant) has its whole visible existence
+  // withheld, SL2 included (see evalBarLineagesProgress's own bornDormant
+  // filter), yet the confirmation is just as real for anything that needs
+  // to know whether/when a BAR SL2 actually happened (e.g. the misclassified-
+  // spawn detection in lib/tarTbar.ts, which otherwise would only ever see
+  // a SL2 that happened to be visible). Confirmed real-data (DIXON.NS,
+  // branch B's own silent B.3 sub-lineage): SL2 fired 2025-06-16 with
+  // nothing shown for it at all, yet it is the exact same "provisional
+  // until its own SAR 2" event that governs whether a later TZ GREEN(newLetter)
+  // is a genuine new lineage or more noise.
+  barSl2Log: { label: string; date: string; low: number }[] = [];
+
   // REVISION, weekly timeframe only: a BAR lineage that never escalated
   // past BAR 1 (bar2 === null) opens REAR eligibility on its own bare BAR
   // SL, instead of the lineage just reforming unrestricted -- see
@@ -1796,6 +1810,16 @@ export class TZEngine {
             sl.sl2 = true;
             sl2ConfirmedToday = true;
             buy.barPending = false;
+            // Backend-truth log, independent of bornDormant text
+            // suppression below -- confirmed real-data (DIXON.NS branch
+            // B.3): a BAR SL2 can fire for a sub-lineage that was itself
+            // born while its branch was dormant, in which case its own
+            // text (this push included) never reaches visible output at
+            // all (see the bornDormant filter later in this function).
+            // Callers that need to know BAR SL2 genuinely happened --
+            // regardless of whether anything was ever shown for it --
+            // read this log instead of grepping visible trace text.
+            this.barSl2Log.push({ label: lin.label, date: cur.date, low: cur.l });
           }
         } else if (!this.rearAncestorTerminated(buy)) {
           // REAR only ever occurs above BAR 2's own reference high, and

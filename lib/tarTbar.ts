@@ -117,7 +117,7 @@
 // there).
 
 import { THRESH, EPS, type Day } from "./tzEngineWtf";
-import { runWtfTrace, type OhlcRow } from "./primeTrend";
+import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, type OhlcRow, type WtfInstance } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
   return cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h;
@@ -157,18 +157,31 @@ export interface TarTbarWindow {
   // it quietly on each later DAY's own High directly (same look-ahead
   // trap preS1Ref/wtfBarRefHigh elsewhere in this codebase avoid).
   formationHigh: number;
+  // Only ever set for a REINTERPRETED window (see
+  // findReinterpretedWindows) -- a real window's own "BAR 2(" already
+  // appears as visible WTF text, nothing to derive. A reinterpreted
+  // window's own WTF-level BAR2 escalation is hidden under whatever
+  // tier the misclassified letter's raw ladder happened to be at that
+  // week, so it's derived here directly from the WEEKLY candles, using
+  // the identical breakout rule tzEngineWtf.ts's own evalBar2 uses
+  // (confirmed real-data, DIXON.NS: A.5's own BAR2 confirms 2022-07-11,
+  // A.6's own confirms 2023-05-22 -- both exact). Null if the window
+  // ended (or data ran out) before ever confirming.
+  bar2Date: string | null;
 }
 
 export interface TarTbarResult {
   wtfLabel: string;
   wtfFormationDate: string;
-  // "BAR2" rows are the independent BAR1->BAR2 route's own row
-  // (confirmed: gets its own visible row) -- they OVERLAP whatever the
-  // enclosing TAR ENTRY row is doing rather than replacing it, since
-  // this route runs fully independently (see the module comment above)
-  // and its own harder SL reforms unrestricted, per the confirmed
-  // BAR1-BAR2 rules.
-  side: "TAR ENTRY" | "BAR2";
+  // "BAR ENTRY" rows are the independent BAR1->BAR ENTRY route's own row
+  // (confirmed: gets its own visible row, named the same as PRIME
+  // TREND's own "BAR ENTRY" -- same underlying escalation shape, just
+  // BAR theory's own independent nested instance of it) -- they OVERLAP
+  // whatever the enclosing TAR ENTRY row is doing rather than replacing
+  // it, since this route runs fully independently (see the module
+  // comment above) and its own harder SL ("BAR ENTRY SL") reforms
+  // unrestricted, per the confirmed BAR1-BAR2 rules.
+  side: "TAR ENTRY" | "BAR ENTRY";
   entryDate: string;
   entryPrice: number;
   exitType: string;
@@ -409,7 +422,7 @@ function stepLevel(
     if (!nSlNow && cur.h > s.nestedRefHigh) s.nestedRefHigh = cur.h;
     if (!nSlNow && cur.l < s.nestedRefLow) s.nestedRefLow = cur.l;
     if (nSlNow) {
-      // "PRIME TREND SL" -- door already open, unrestricted reform at
+      // "BAR ENTRY SL" -- door already open, unrestricted reform at
       // the SAME level (confirmed: does not promote). Gets its own
       // visible row, overlapping whatever the outer TAR ENTRY row is
       // doing.
@@ -479,7 +492,17 @@ function stepLevel(
       }
       if (cur.h > s.path1RefHigh) s.path1RefHigh = cur.h; // quiet climb, Path 1's own seed
       if (!s.everSawRed1) break;
-      if (bar1Shape(prev, cur)) {
+      // RED-gated TAR formation checks the SAME continuously-climbing
+      // WTF-BAR reference Path 1 uses -- confirmed real-data bug
+      // (DIXON.NS, A.2 window): TAR must always occur above the WTF
+      // BAR's own reference high; RED1/RED1-RED2 only unlocks the
+      // (unrestricted-use) formation path, it does not relocate the
+      // reference down to a bare day-over-day breakout against
+      // yesterday's own High. "30/08/21: WTF BAR (ref high 4337.20) ...
+      // 08/09/21: made ref high for TAR ... NO TAR between 30/08/21-
+      // 22/09/21 ... 30/09/21: TAR occurs" -- the breakout that
+      // confirms is checked against the climbed reference, not prev.h.
+      if (breaksRef(prev, cur, s.path1RefHigh)) {
         s.tarRefHigh = cur.h;
         s.tarRefLow = cur.l;
         s.tarActivationPrice = cur.h; // fixed at formation; tarRefHigh keeps climbing afterward
@@ -632,10 +655,10 @@ function simulateWindow(
       rows.push({
         wtfLabel,
         wtfFormationDate,
-        side: "BAR2",
+        side: "BAR ENTRY",
         entryDate: nestedClosed.entryDate,
         entryPrice: nestedClosed.entryPrice,
-        exitType: "PRIME TREND SL",
+        exitType: "BAR ENTRY SL",
         exitDate: cur.date,
         exitPrice: nestedClosed.exitPrice,
         highestHigh: nestedClosed.hh,
@@ -676,29 +699,353 @@ function findWindows(wtfDays: Day[]): TarTbarWindow[] {
   const trace = runWtfTrace(wtfDays);
   const formations: { date: string; label: string; formationHigh: number }[] = [];
   const sls: { date: string; label: string }[] = [];
+  // A BAR-theory window also ends the moment its PARENT WTF family dies
+  // back underneath it (`TZ BUY SL(letter)`/`TZ GREEN SL(letter)`), not
+  // only on its own label's "BAR SL(" or a fresh "BAR(" reform --
+  // confirmed real-data bug (DIXON.NS): A.1's window stayed open (per
+  // the text-pattern scan alone) all the way to A.1's own NEXT "BAR("
+  // reform (2020-03-02), but the whole family had already collapsed via
+  // "TZ BUY SL(A)" on 2019-07-29, so no TAR/TAR ENTRY should have been
+  // computed at all in between (the 28/08/19 TAR ENTRY / 17/09/19 TAR
+  // ENTRY SL this produced were both spurious).
+  const familyDeaths: { date: string; letter: string }[] = [];
   for (const entry of trace) {
     for (const e of entry.events) {
       const formMatch = /^BAR\(([^)]+)\)$/.exec(e);
       if (formMatch) formations.push({ date: entry.day.date, label: formMatch[1], formationHigh: entry.day.h });
       const slMatch = /^BAR SL\(([^)]+)\)$/.exec(e);
       if (slMatch) sls.push({ date: entry.day.date, label: slMatch[1] });
+      const familyDeathMatch = /^TZ (?:BUY|GREEN) SL\(([^)]+)\)$/.exec(e);
+      if (familyDeathMatch) familyDeaths.push({ date: entry.day.date, letter: familyDeathMatch[1] });
     }
   }
 
   const windows: TarTbarWindow[] = [];
   for (let i = 0; i < formations.length; i++) {
     const f = formations[i];
+    const letter = f.label.split(".")[0];
     const nextFormation = formations[i + 1] ?? null;
     const matchingSl = sls.find((sl) => sl.label === f.label && sl.date > f.date && (nextFormation === null || sl.date < nextFormation.date));
-    if (matchingSl) {
-      windows.push({ wtfLabel: f.label, formationDate: f.date, endDate: matchingSl.date, endReason: "BAR SL", formationHigh: f.formationHigh });
+    const familyDeath = familyDeaths.find(
+      (fd) =>
+        fd.letter === letter &&
+        fd.date > f.date &&
+        (matchingSl === undefined || fd.date < matchingSl.date) &&
+        (nextFormation === null || fd.date < nextFormation.date)
+    );
+    if (familyDeath) {
+      windows.push({ wtfLabel: f.label, formationDate: f.date, endDate: familyDeath.date, endReason: "BAR SL", formationHigh: f.formationHigh, bar2Date: null });
+    } else if (matchingSl) {
+      windows.push({ wtfLabel: f.label, formationDate: f.date, endDate: matchingSl.date, endReason: "BAR SL", formationHigh: f.formationHigh, bar2Date: null });
     } else if (nextFormation) {
-      windows.push({ wtfLabel: f.label, formationDate: f.date, endDate: nextFormation.date, endReason: "new BAR", formationHigh: f.formationHigh });
+      windows.push({ wtfLabel: f.label, formationDate: f.date, endDate: nextFormation.date, endReason: "new BAR", formationHigh: f.formationHigh, bar2Date: null });
     } else {
-      windows.push({ wtfLabel: f.label, formationDate: f.date, endDate: null, endReason: null, formationHigh: f.formationHigh });
+      windows.push({ wtfLabel: f.label, formationDate: f.date, endDate: null, endReason: null, formationHigh: f.formationHigh, bar2Date: null });
     }
   }
   return windows;
+}
+
+// A WTF "BAR SL2(label)" is PROVISIONAL, not a validated terminal event
+// on its own -- it only validates once its own anchored DTF SAR-after-
+// BAR-SL2 watch decisively confirms "SAR 2" (see primeTrend.ts's
+// postBarSl2Race/reinterpretPostBarSl2Spawn). If SAR 2 never confirms
+// before the raw engine's own next sibling spawn ("TZ GREEN(newLetter)"
+// -- the unconditional, DTF-unaware consequence TZEngine always takes
+// once BAR SL2 opens sibling-spawn eligibility), that spawn is a
+// misclassification: the real structure is the ORIGINAL letter's own
+// BAR lineage simply continuing, not a genuine new family. Confirmed,
+// real-data (DIXON.NS): BAR SL2(A.2) on 2022-05-09 never got its own
+// SAR 2, so the raw trace's TZ GREEN(B) on 2022-05-30 -- and every
+// later TZ GREEN(B)/TZ GREEN SL(B) reform under that same misclassified
+// letter -- should instead read as fresh BAR/BAR SL reforms continuing
+// family A's own lineage. Verified end-to-end against the user's own
+// given flow for that whole stretch (11/07/22 TAR through 04/08/22
+// BAR1-BAR2, every date exact) once fed through unchanged as ordinary
+// BAR-theory windows.
+//
+// Scoped to ONE level of reinterpretation per BAR SL2 instance -- a
+// reinterpreted window that itself later ends in another genuine BAR
+// SL2 is not recursively re-checked here (that would need its own
+// fresh postBarSl2Race/reinterpretPostBarSl2Spawn call against ITS OWN
+// DTF SAR watch); not yet exercised by real data, flagged rather than
+// guessed at.
+
+/** A reinterpreted window's own WTF-level "BAR 2" escalation, derived
+ * directly from the WEEKLY candles using the identical breakout rule
+ * tzEngineWtf.ts's own evalBar2 uses for a real lineage (clear the
+ * continuously-climbing reference by the required margin/shape) --
+ * confirmed real-data (DIXON.NS): A.5 (formed 2022-06-27) confirms
+ * 2022-07-11 exact; A.6 (formed 2023-02-27) confirms 2023-05-22 exact.
+ * A simplification against evalBar2's own full nuance: this climbs the
+ * reference on every plain new high (same as Path 1's own quiet climb
+ * elsewhere in this file), not evalBar2's own RED1-dependent near-miss
+ * distinction -- not yet verified whether that simplification ever
+ * matters in practice. Returns null if the window ends (or data runs
+ * out) before ever confirming. */
+function deriveReinterpretedBar2Date(wtfDays: Day[], formationDate: string, formationHigh: number, endDate: string | null): string | null {
+  const startIdx = wtfDays.findIndex((d) => d.date === formationDate);
+  if (startIdx === -1) return null;
+  let ref = formationHigh;
+  for (let i = startIdx + 1; i < wtfDays.length; i++) {
+    const prev = wtfDays[i - 1];
+    const cur = wtfDays[i];
+    if (endDate !== null && cur.date >= endDate) return null;
+    if (breaksRef(prev, cur, ref)) return cur.date;
+    if (cur.h > ref) ref = cur.h;
+  }
+  return null;
+}
+function findReinterpretedWindows(
+  wtfDays: Day[],
+  dtfDays: Day[]
+): {
+  windows: TarTbarWindow[];
+  misclassifiedLetters: { letter: string; sinceDate: string; untilDate: string | null }[];
+  invalidRearWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
+} {
+  const barSl2BackendLog: { label: string; date: string; low: number }[] = [];
+  const wtfTrace = runWtfTrace(wtfDays, barSl2BackendLog);
+  const windows: TarTbarWindow[] = [];
+  // The misclassified sibling letter's ENTIRE downstream existence is
+  // noise, not just its own "TZ GREEN(" tier -- confirmed real-data
+  // (DIXON.NS): the raw engine keeps running its own unmodified ladder
+  // on top of the misclassified letter regardless (RED(B), TZ BUY(B),
+  // TZ BUY SL(B), TZ BUY 2(B), and eventually a genuine-looking
+  // "BAR(B.1)" of its own), but since BAR SL2(A.2)'s own SAR cycle
+  // still has never received a real SAR 2 confirmation (only a fresh
+  // SAR re-arming "for BAR SL2 09/05/22", not a decisive SAR 2), every
+  // bit of that downstream ladder -- B.1's own later "BAR(" included --
+  // stays noise too, fully subsumed by the reinterpreted window already
+  // continuing (A.6 here). Reported so `computeTarTbar` can drop any
+  // raw-trace window for this letter from the spawn date onward, so it
+  // is never ALSO counted as a second, genuine, parallel family.
+  const misclassifiedLetters: { letter: string; sinceDate: string; untilDate: string | null }[] = [];
+
+  // REAR is gated EXACTLY the same way a brand-new top-level "TZ GREEN"
+  // is: forming above a BAR 2's own reference high requires not just that
+  // BAR SL2 to have fired, but for its own SAR-SAR2 cycle to have
+  // DECISIVELY CONFIRMED SAR 2 -- the raw WTF engine's own rule ("REAR
+  // only occurs once this lineage has confirmed genuine BAR SL2") is a
+  // necessary but not sufficient condition on its own. Confirmed
+  // real-data (DIXON.NS): REAR(B)/REAR 2(B)/REAR 2 SL(B)/REAR SL(B)
+  // (2025-09-01 through 2025-09-29) all fire off BAR SL2(B.3)'s own
+  // 2025-06-16 reference high, but that SAME BAR SL2's SAR 2 does not
+  // confirm until 2025-12-26 -- so none of that REAR vocabulary was ever
+  // real; it is nothing but the SAME still-open BAR 2 making a new high
+  // (BAR 2 HH), same as price breaking out before a validated BAR SL2
+  // never licenses a fresh top-level lineage either. Reported the same
+  // {letter, sinceDate, untilDate} shape as `misclassifiedLetters` so a
+  // caller can drop any REAR-family text for this letter in this range.
+  const invalidRearWindows: { letter: string; sinceDate: string; untilDate: string | null }[] = [];
+
+  // Backend-true confirmations (barSl2BackendLog), NOT a regex over the
+  // visible trace text -- a BAR SL2 that fires for a sub-lineage born
+  // while its own branch is dormant never reaches visible output at all
+  // (confirmed real-data, DIXON.NS branch B's own silent B.3: SL2 fired
+  // 2025-06-16 with nothing shown), yet it is exactly the event this
+  // misclassification detection has to see.
+  const barSl2Events: { letter: string; label: string; date: string; low: number }[] = barSl2BackendLog.map(
+    (e) => ({ letter: e.label.split(".")[0], label: e.label, date: e.date, low: e.low })
+  );
+
+  for (const sl2 of barSl2Events) {
+    const inst: WtfInstance = {
+      family: "TZ BUY 2",
+      letter: sl2.letter,
+      formationDate: wtfDays[0].date,
+      endDate: sl2.date,
+      endEvent: `BAR SL2(${sl2.label})`,
+      endPrice: sl2.low,
+    };
+    const sarResult = postBarSl2Race(dtfDays, wtfTrace, inst);
+    if (sarResult === null) continue;
+
+    // NOT just the first sibling spawn -- for as long as THIS SAME BAR
+    // SL2's own SAR cycle has never decisively confirmed SAR 2 (never,
+    // for DIXON.NS's own BAR SL2(A.2)), EVERY subsequent "TZ GREEN(
+    // newLetter)" is an equally fresh misclassification, not only the
+    // very first one. Confirmed real-data (DIXON.NS): the raw trace
+    // spawns letter B on 2022-05-30 (the one `reinterpretPostBarSl2Spawn`
+    // itself checks), but then ALSO spawns an orphaned, one-week-only
+    // letter C on 2023-05-15 while letter B's own (equally misclassified)
+    // structure is still alive -- both are noise, both get folded into
+    // the same continuing `sl2.letter` lineage.
+    const sar2Date = sarResult.outcome === "RACE_TRIGGERED" ? sarResult.raceTriggeredDate : null;
+
+    // REAR-gating check (see invalidRearWindows' own comment above) --
+    // deliberately independent of `reinterp`/`shouldBeBar` below, which
+    // only governs whether a NEW sibling letter's spawn is noise. REAR
+    // forms directly under THIS SAME `sl2.letter`, no new letter
+    // involved, so it needs its own, simpler check: any REAR-family text
+    // for `sl2.letter` strictly after this BAR SL2 and before its own
+    // SAR 2 (or forever, if SAR 2 never confirms) is invalid.
+    const rearPattern = new RegExp(`^REAR(?: RE-ENTER)?(?: 2)?(?: SL)?\\(${sl2.letter}\\)$`);
+    let firstInvalidRear: string | null = null;
+    for (const entry of wtfTrace) {
+      if (entry.day.date <= sl2.date) continue;
+      if (sar2Date !== null && entry.day.date >= sar2Date) break;
+      if (firstInvalidRear === null && entry.events.some((e) => rearPattern.test(e))) {
+        firstInvalidRear = entry.day.date;
+      }
+    }
+    if (firstInvalidRear !== null) {
+      invalidRearWindows.push({ letter: sl2.letter, sinceDate: firstInvalidRear, untilDate: sar2Date ?? null });
+    }
+
+    const reinterp = reinterpretPostBarSl2Spawn(wtfTrace, inst, sarResult);
+    if (reinterp === null || !reinterp.shouldBeBar) continue;
+
+    const allSpawns: { date: string; letter: string }[] = [];
+    for (let ti = 0; ti < wtfTrace.length; ti++) {
+      const entry = wtfTrace[ti];
+      if (entry.day.date <= sl2.date) continue;
+      for (const e of entry.events) {
+        const m = /^TZ GREEN\(([A-Z]+)\)$/.exec(e);
+        if (m === null || m[1] === sl2.letter || !(sar2Date === null || entry.day.date < sar2Date)) continue;
+        // The orphan check (nothing at all under this same letter the very
+        // next week) only matters when sar2Date is null -- an UNBOUNDED
+        // scan (this BAR SL2's own SAR cycle never confirms SAR 2 at all,
+        // e.g. DIXON.NS's BAR SL2(A.2)) would otherwise sweep in every
+        // future reuse of every letter for the rest of time, so only a
+        // true one-off orphan counts as noise there; a letter that keeps
+        // showing further events (HH, its own reform, an escalation) is a
+        // genuinely separate, sustained structure in THAT case.
+        // Once sar2Date is a real, finite date (this BAR SL2's own SAR
+        // cycle DOES eventually confirm SAR 2, just later), the window
+        // [sl2.date, sar2Date) is already the correct, bounded answer on
+        // its own -- the rule is unconditional ("until SAR 2 confirms, no
+        // new top-level lineage is ever legitimate"), so a spawn landing
+        // inside that window is misclassified regardless of how much
+        // sustained activity it goes on to show. Confirmed real-data bug
+        // (DIXON.NS): BAR SL2(B.3) on 2025-06-16 doesn't get its own SAR 2
+        // until 2025-12-26 -- the orphan check was wrongly waving through
+        // TZ GREEN(C) on 2025-06-30 just because C goes on to show its own
+        // real-looking RED(C)/etc. afterward, even though C's own BIRTH
+        // still landed squarely inside the unvalidated window.
+        if (sar2Date === null) {
+          const nextEntry = wtfTrace[ti + 1];
+          const letterContinues = nextEntry !== undefined && nextEntry.events.some((ev) => ev.includes(`(${m[1]})`) || ev.includes(`(${m[1]}.`));
+          if (letterContinues) continue;
+        }
+        allSpawns.push({ date: entry.day.date, letter: m[1] });
+      }
+    }
+
+    let maxSub = 0;
+    for (const entry of wtfTrace) {
+      for (const e of entry.events) {
+        const bm = /^BAR\(([^)]+)\)$/.exec(e);
+        if (bm && bm[1].split(".")[0] === sl2.letter) {
+          const n = parseInt(bm[1].split(".")[1] ?? "0", 10);
+          if (n > maxSub) maxSub = n;
+        }
+      }
+    }
+
+    // Tracks whether the lineage currently has an open reinterpreted
+    // window as each spawn is processed in chronological order -- a
+    // spawn landing while the PRIOR reinterpreted window is still alive
+    // is not a fresh formation at all (there is no room for one; the
+    // existing window just keeps continuing through it), only noise to
+    // suppress. Confirmed real-data (DIXON.NS): the orphaned, one-week
+    // "TZ GREEN(C)" on 2023-05-15 lands while A.6 (formed 2023-02-27) is
+    // still alive -- it produces no window of its own at all, not even
+    // an open-ended one; A.6 keeps running uninterrupted (its own BAR 2
+    // then confirms a week later, 2023-05-22, per deriveReinterpretedBar2Date).
+    let openWindowEndDate: string | null | undefined = undefined; // undefined = no window yet
+
+    for (const spawn of allSpawns) {
+      const priorWindowStillOpen = openWindowEndDate === null || (openWindowEndDate !== undefined && spawn.date <= openWindowEndDate);
+      // An orphaned spawn with no window of its own (priorWindowStillOpen)
+      // bounds its own suppression to just this one date -- confirmed
+      // real-data bug (DIXON.NS): without this bound, the raw engine's
+      // UNRELATED, much-later reuse of the same letter (TZ GREEN(C) in
+      // 2025 and 2026, completely disconnected from this 2023 episode)
+      // was wrongly suppressed forever by an open-ended rule meant only
+      // for a letter that genuinely keeps continuing the misclassified
+      // structure (like letter B here, which never resolves at all).
+      //
+      // Otherwise, the bound is `sar2Date` when it is a real, finite date
+      // (not null): once THIS BAR SL2's own SAR cycle decisively confirms
+      // SAR 2, the misclassification regime it governs is OVER -- any
+      // LATER reuse of this exact same letter (which letter-recycling
+      // makes inevitable over a long enough dataset) belongs to whatever
+      // the raw engine legitimately does next, not to this chain.
+      // Confirmed real-data bug (DIXON.NS): BAR SL2(B.3)'s own SAR 2
+      // confirms 2025-12-26, so an open-ended suppression of every future
+      // "letter C" wrongly also swallowed an unrelated branch's own
+      // genuine reuse of letter C starting 2026-02-02.
+      misclassifiedLetters.push({ letter: spawn.letter, sinceDate: spawn.date, untilDate: priorWindowStillOpen ? spawn.date : sar2Date });
+      if (priorWindowStillOpen) {
+        continue; // prior window still open (or not yet ended) at this spawn's date -- noise only
+      }
+
+      // Every "TZ GREEN(spawn.letter)"/"TZ GREEN SL(spawn.letter)" from
+      // this spawn onward is a reinterpreted BAR/BAR SL reform
+      // continuing `sl2.letter`'s own lineage -- same two-tier window
+      // logic as findWindows above, just reading a different pair of
+      // event-name patterns. Each explicit "TZ GREEN SL(" already ends one
+      // leg and the very next "TZ GREEN(" of the same letter is read as
+      // the next leg, regardless of whether the raw engine's own pid
+      // churned underneath (an SL frees that id, and the very next
+      // candle's reform can get the SAME id straight back) -- confirmed
+      // real-data (DIXON.NS letter B itself): 2022-05-30/06-13, 06-27/
+      // 2023-01-23, 02-27 is read as ONE continuing reinterpreted chain,
+      // exactly as already verified against real price action, even
+      // though the raw engine's own id bookkeeping underneath may not be
+      // one continuous pid end to end.
+      //
+      // What DOES need bounding is `sar2Date`: once THIS SAME BAR SL2's
+      // own SAR cycle has decisively confirmed SAR 2, the reinterpretation
+      // regime it governs is OVER -- any letter-reuse at or after that
+      // point (even of `spawn.letter` itself) belongs to whatever the raw
+      // engine legitimately does next, not to this chain. Confirmed
+      // real-data bug (DIXON.NS): without this bound, the 2025-06-30
+      // TZ GREEN(C) window kept scanning straight through SAR 2's own
+      // 2025-12-26 confirmation and wrongly swallowed an unrelated LATER
+      // branch's own reuse of letter "C" on 2026-02-02 as if it were the
+      // same window still continuing.
+      const spawnFormMatch = new RegExp(`^TZ GREEN\\(${spawn.letter}\\)$`);
+      const spawnSlMatch = new RegExp(`^TZ GREEN SL\\(${spawn.letter}\\)$`);
+      const spawnFormations: { date: string; formationHigh: number }[] = [];
+      const spawnSls: { date: string }[] = [];
+      for (const entry of wtfTrace) {
+        if (entry.day.date < spawn.date) continue;
+        if (sar2Date !== null && entry.day.date >= sar2Date) break;
+        for (const e of entry.events) {
+          if (spawnFormMatch.test(e)) spawnFormations.push({ date: entry.day.date, formationHigh: entry.day.h });
+          if (spawnSlMatch.test(e)) spawnSls.push({ date: entry.day.date });
+        }
+      }
+
+      for (let i = 0; i < spawnFormations.length; i++) {
+        const f = spawnFormations[i];
+        const nextFormation = spawnFormations[i + 1] ?? null;
+        const matchingSl = spawnSls.find((sl) => sl.date > f.date && (nextFormation === null || sl.date < nextFormation.date));
+        const subLabel = `${sl2.letter}.${maxSub + 1}`;
+        maxSub += 1;
+        const windowEndDate = matchingSl?.date ?? nextFormation?.date ?? null;
+        const bar2Date = deriveReinterpretedBar2Date(wtfDays, f.date, f.formationHigh, windowEndDate);
+        if (matchingSl) {
+          windows.push({ wtfLabel: subLabel, formationDate: f.date, endDate: matchingSl.date, endReason: "BAR SL", formationHigh: f.formationHigh, bar2Date });
+          openWindowEndDate = matchingSl.date;
+        } else if (nextFormation) {
+          windows.push({ wtfLabel: subLabel, formationDate: f.date, endDate: nextFormation.date, endReason: "new BAR", formationHigh: f.formationHigh, bar2Date });
+          openWindowEndDate = nextFormation.date;
+        } else {
+          // No explicit SL/reform text found before this sl2's own scan
+          // bound (sar2Date, or the end of the dataset) -- genuinely
+          // unresolved within this reinterpretation's own scope, left
+          // open rather than fabricating an end reason.
+          windows.push({ wtfLabel: subLabel, formationDate: f.date, endDate: null, endReason: null, formationHigh: f.formationHigh, bar2Date });
+          openWindowEndDate = null;
+        }
+      }
+    }
+  }
+
+  return { windows, misclassifiedLetters, invalidRearWindows };
 }
 
 // Additive helper (session of 2026-10-22), NOT yet verified beyond
@@ -727,10 +1074,51 @@ export function computeTarTbarForWindow(
   return { results, live };
 }
 
-export function computeTarTbar(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): { windows: TarTbarWindow[]; results: TarTbarResult[]; live: TarTbarLiveStatus[] } {
+export function computeTarTbar(
+  wtfRows: OhlcRow[],
+  dtfRows: OhlcRow[]
+): {
+  windows: TarTbarWindow[];
+  results: TarTbarResult[];
+  live: TarTbarLiveStatus[];
+  // Every raw-trace letter confirmed to be a misclassified continuation
+  // of an earlier lineage (see findReinterpretedWindows), with the date
+  // its own noise starts from -- callers building a WTF event ledger
+  // from the raw trace need this to suppress that letter's entire
+  // downstream existence too, not just the windows this function itself
+  // already drops.
+  misclassifiedLetters: { letter: string; sinceDate: string; untilDate: string | null }[];
+  // REAR-family text ("REAR(", "REAR 2(", "REAR SL(", "REAR 2 SL(", and
+  // the REAR RE-ENTER variants) for this letter in this date range is
+  // ALSO invalid, for the same underlying reason -- see
+  // findReinterpretedWindows's own comment. Independent of
+  // misclassifiedLetters: it can apply to a letter that is not itself
+  // misclassified, since REAR's own gating is a property of the BAR SL2
+  // it forms off, not of whether a new sibling letter spawned.
+  invalidRearWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
+} {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
-  const windows = findWindows(wtfDays);
+  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows } = findReinterpretedWindows(wtfDays, dtfDays);
+  // Drop any raw-trace window for a misclassified letter, from its own
+  // spawn date onward -- its ENTIRE downstream existence (not just the
+  // "TZ GREEN(" tier reinterpretedWindows already covers) is noise,
+  // fully subsumed by the reinterpreted window already continuing; see
+  // findReinterpretedWindows's own comment. Confirmed real-data
+  // (DIXON.NS): without this, the raw engine's own later "BAR(B.1)"
+  // (formed off letter B's unmodified TZ BUY 2->RED1->RED2 escalation)
+  // would otherwise be double-counted as a second, genuine, parallel
+  // family alongside the reinterpreted window already covering that
+  // same stretch.
+  const rawWindows = findWindows(wtfDays).filter(
+    (w) =>
+      !misclassifiedLetters.some(
+        (m) => w.wtfLabel.split(".")[0] === m.letter && w.formationDate >= m.sinceDate && (m.untilDate === null || w.formationDate <= m.untilDate)
+      )
+  );
+  const windows = [...rawWindows, ...reinterpretedWindows].sort((a, b) =>
+    a.formationDate < b.formationDate ? -1 : a.formationDate > b.formationDate ? 1 : 0
+  );
 
   const results: TarTbarResult[] = [];
   const live: TarTbarLiveStatus[] = [];
@@ -747,5 +1135,5 @@ export function computeTarTbar(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): { window
     // "once WTF TZ BUY 2 fails, DTF tracking freezes" everywhere else.
     if (w.endDate === null) live.push(...windowLive);
   }
-  return { windows, results, live };
+  return { windows, results, live, misclassifiedLetters, invalidRearWindows };
 }
