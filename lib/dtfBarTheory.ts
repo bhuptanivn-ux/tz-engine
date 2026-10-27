@@ -472,16 +472,26 @@ export class DtfBarTheoryEngine {
       }
       return [];
     }
-    if (breaksRef(prev, cur, entry.rear.refHigh)) {
+    const rear = entry.rear;
+    if (breaksRef(prev, cur, rear.refHigh)) {
       buy.entry = new TzBuyEntry(cur.h, cur.l);
       buy.redSeek = true;
       return ["TZ BUY ENTRY"];
     }
-    if (cur.h > entry.rear.refHigh) {
-      entry.rear.refHigh = cur.h;
-      return ["REAR HH (TZ BUY ENTRY)"];
+    const ev: string[] = [];
+    if (cur.h > rear.refHigh) {
+      rear.refHigh = cur.h;
+      ev.push("REAR HH (TZ BUY ENTRY)");
     }
-    return [];
+    // Quiet lower lows ratchet REAR's low (confirmed, PAYTM 19/06, 21/06,
+    // 27/06, 28/06/24). What a REAR SL leads to is not yet defined (none
+    // occurs on PAYTM), so a decisive break below is not acted on yet.
+    const newLow = quietLl(cur, rear.refLow);
+    if (newLow !== null) {
+      rear.refLow = newLow;
+      ev.push("REAR LL (TZ BUY ENTRY)");
+    }
+    return ev;
   }
 
   /** True once some OTHER, still-active (sibling) cycle's own TZ BUY
