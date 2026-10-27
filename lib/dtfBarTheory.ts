@@ -124,7 +124,7 @@ export class BarLineage {
    * stage: its own reference low keeps being tracked, and its own SL
    * ("BAR SL") -> "BAR SL 2" ends the whole BAR stage. */
   barSl: TierSL | null = null;
-  constructor(public refHigh: number, public refLow: number) {}
+  constructor(public label: string, public refHigh: number, public refLow: number) {}
 }
 
 export class RearSL {
@@ -146,6 +146,8 @@ export class Rear {
   redSeek = true;
   barLineages: BarLineage[] = [];
   barPending = false;
+  barGen = 0;
+  barDeadLabels = new Set<number>();
   /** Once true, this REAR is confirmed dormant (superseded by a fresh
    * TZ BUY(N+1)) -- still tracked internally (per the module comment,
    * REAR "keeps climbing") but never again reported as live. */
@@ -183,6 +185,8 @@ export class TzBuy {
   redSeek = false;
   barLineages: BarLineage[] = [];
   barPending = false;
+  barGen = 0;
+  barDeadLabels = new Set<number>();
   constructor(refHigh: number, refLow: number) {
     this.refHigh = refHigh;
     this.refLow = refLow;
@@ -448,7 +452,7 @@ export class DtfBarTheoryEngine {
     // repeat's RED1 -> RED2 before it is evaluated.
     const barEv = this.evalBarLineages(buy, prev, cur);
     // BAR ENTRY confirming today already silences today's TZ BUY HH.
-    if (barEv.includes("BAR2") && !buy.barEntryEver) {
+    if (!buy.barEntryEver && barEv.some((e) => /^BAR2\(/.test(e))) {
       buy.barEntryEver = true;
       ev = ev.filter((e) => e !== "TZ BUY HH");
     }
@@ -514,6 +518,18 @@ export class DtfBarTheoryEngine {
     return top;
   }
 
+  private nextBarLabel(host: BarHost): string {
+    let n: number;
+    if (host.barDeadLabels.size > 0) {
+      n = Math.min(...host.barDeadLabels);
+      host.barDeadLabels.delete(n);
+    } else {
+      host.barGen += 1;
+      n = host.barGen;
+    }
+    return String(n);
+  }
+
   /** A BAR ENTRY (BAR2) just formed or reactivated: start seeking the next
    * RED1 -> RED2 of the repeating BAR 1 - BAR 2 cascade. */
   private armRepeat(host: BarHost): void {
@@ -531,10 +547,11 @@ export class DtfBarTheoryEngine {
     // reform), or the next round of the repeating cascade, alongside the
     // previous BAR ENTRY (which keeps running until this BAR1's own BAR2).
     if (host.barPending && bar1Shape(prev, cur)) {
+      const label = this.nextBarLabel(host);
       host.barLineages = host.barLineages.filter((l) => l.bar2 !== null);
-      host.barLineages.push(new BarLineage(cur.h, cur.l));
+      host.barLineages.push(new BarLineage(label, cur.h, cur.l));
       host.barPending = false;
-      ev.push("BAR1");
+      ev.push(`BAR1(${label})`);
       return ev;
     }
 
@@ -561,24 +578,25 @@ export class DtfBarTheoryEngine {
         // and this BAR1 becomes the BAR stage's anchor.
         host.barLineages = [lin];
         this.armRepeat(host);
-        ev.push(`BAR2`);
+        ev.push(`BAR2(${lin.label})`);
         return { ev, stop: true };
       }
       const slNow = isSl(cur, lin.refLow);
       const newHigh = quietHh(cur, lin.refHigh);
       if (newHigh !== null) {
         lin.refHigh = newHigh;
-        if (!slNow) ev.push(`BAR1 HH`);
+        if (!slNow) ev.push(`BAR1 HH(${lin.label})`);
       }
       const newLow = quietLl(cur, lin.refLow);
       if (newLow !== null) {
         lin.refLow = newLow;
-        ev.push(`BAR1 LL`);
+        ev.push(`BAR1 LL(${lin.label})`);
       }
       if (slNow) {
+        host.barDeadLabels.add(parseInt(lin.label, 10));
         host.barLineages = host.barLineages.filter((l) => l !== lin);
         host.barPending = true; // bare BAR1 SL re-seeks a fresh BAR1 unrestricted
-        ev.push(`BAR SL`);
+        ev.push(`BAR SL(${lin.label})`);
       }
       return { ev, stop: false };
     }
@@ -593,7 +611,7 @@ export class DtfBarTheoryEngine {
       const newLow = quietLl(cur, lin.refLow);
       if (newLow !== null) {
         lin.refLow = newLow;
-        ev.push(`BAR1 LL`);
+        ev.push(`BAR1 LL(${lin.label})`);
       }
     }
 
@@ -604,18 +622,18 @@ export class DtfBarTheoryEngine {
       const newHigh = quietHh(cur, bar2.refHigh);
       if (newHigh !== null) {
         bar2.refHigh = newHigh;
-        if (!isSlNow) ev.push(`BAR2 HH`);
+        if (!isSlNow) ev.push(`BAR2 HH(${lin.label})`);
       }
       const newLow = quietLl(cur, bar2.refLow);
       if (newLow !== null) {
         bar2.refLow = newLow;
-        ev.push(`BAR2 LL`);
+        ev.push(`BAR2 LL(${lin.label})`);
       }
       if (isSlNow) {
         // The RED gate and any RED2-armed BAR1 keep running through a BAR
         // ENTRY SL (confirmed, PAYTM 26/07/22 and 29/08 -> 09/09/22).
         bar2.sl = new TierSL(bar2.refHigh, cur.l);
-        ev.push(`BAR2 SL`);
+        ev.push(`BAR2 SL(${lin.label})`);
       }
       return { ev, stop: false };
     }
@@ -628,12 +646,12 @@ export class DtfBarTheoryEngine {
     if (breaksRef(prev, cur, sl.refHigh)) {
       lin.bar2 = new Bar2Entry(cur.h, cur.l);
       this.armRepeat(host);
-      ev.push(`BAR2`);
+      ev.push(`BAR2(${lin.label})`);
       return { ev, stop: false };
     }
     if (cur.h > sl.refHigh) {
       sl.refHigh = cur.h;
-      ev.push(`INVALID BAR2 HH`);
+      ev.push(`INVALID BAR2 HH(${lin.label})`);
     }
     return { ev, stop: false };
   }
@@ -645,14 +663,14 @@ export class DtfBarTheoryEngine {
     if (lin.barSl === null) {
       if (isSl(cur, lin.refLow)) {
         lin.barSl = new TierSL(lin.refHigh, cur.l);
-        return { ev: [`BAR SL`], ended: false };
+        return { ev: [`BAR SL(${lin.label})`], ended: false };
       }
       return { ev: [], ended: false };
     }
     if (cur.l >= lin.barSl.refLow) return { ev: [], ended: false };
     if (!isSl(cur, lin.barSl.refLow)) {
       lin.barSl.refLow = cur.l;
-      return { ev: [`BAR SL LL`], ended: false };
+      return { ev: [`BAR SL LL(${lin.label})`], ended: false };
     }
     lin.barSl.sl2 = true;
     host.refHigh = this.currentTopRef(host);
@@ -668,7 +686,7 @@ export class DtfBarTheoryEngine {
       host.red = null;
       host.redSeek = true; // REAR RE-ENTER seeks a fresh RED1
     }
-    return { ev: [`BAR SL2`], ended: true };
+    return { ev: [`BAR SL2(${lin.label})`], ended: true };
   }
 
   // -----------------------------------------------------------------
