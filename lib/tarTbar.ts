@@ -117,7 +117,7 @@
 // there).
 
 import { THRESH, EPS, type Day } from "./tzEngineWtf";
-import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, type OhlcRow, type WtfInstance } from "./primeTrend";
+import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
   return cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h;
@@ -150,7 +150,7 @@ export interface TarTbarWindow {
   wtfLabel: string;
   formationDate: string;
   endDate: string | null;
-  endReason: "BAR SL" | "new BAR" | null;
+  endReason: "BAR SL" | "new BAR" | "SAR 2 confirmed" | null;
   // The WTF BAR's own reference high AT FORMATION (that week's own
   // known High) -- the seed for TAR's own "Path 1" trigger (a straight
   // breakout above it, no RED required). Only a seed: the caller climbs
@@ -168,6 +168,18 @@ export interface TarTbarWindow {
   // A.6's own confirms 2023-05-22 -- both exact). Null if the window
   // ended (or data ran out) before ever confirming.
   bar2Date: string | null;
+  // Only ever set for a REINTERPRETED window whose raw-trace spawn has
+  // no explicit "TZ GREEN SL("/new formation text of its own (see
+  // simulateBarLadderContinuation) -- this window's own BAR1/BAR 2
+  // ladder, directly simulated off the weekly candles once the raw
+  // engine's REAR takeover is known to be invalid (invalidRearWindows)
+  // and so cannot be read off visible trace text either. Extra WTF-side
+  // events (RED1/RED2/BAR 2 SL/BAR SL/BAR SL2) this window produces
+  // beyond its own formation/BAR 2, in order.
+  continuationEvents?: { date: string; label: string }[];
+  // The DTF-side SAR cycle(s) this continuation's own RED2 and/or fresh
+  // BAR SL2 each arm, tagged by which one anchors them.
+  continuationSar?: { anchor: "RED2" | "BAR SL2"; checkpoints: PostBarSl2Checkpoint[] }[];
 }
 
 export interface TarTbarResult {
@@ -796,6 +808,197 @@ function deriveReinterpretedBar2Date(wtfDays: Day[], formationDate: string, form
   }
   return null;
 }
+interface BarLadderContinuation {
+  // RED1/RED2/BAR 2 SL/BAR SL/BAR SL2, in order -- HH/LL omitted (not
+  // displayed anywhere else in this codebase either). "BAR 2" itself is
+  // NOT included -- the window's own bar2Date already carries it.
+  wtfEvents: { date: string; label: string }[];
+  sarCycles: { anchor: "RED2" | "BAR SL2"; checkpoints: PostBarSl2Checkpoint[] }[];
+  // The earliest SAR 2 confirmed by either cycle above, or null if
+  // neither ever confirms within the data. BAR THEORY tracking for this
+  // window must freeze here (see the rule below) -- confirmed real-data
+  // (DIXON.NS): "BAR ENTRY was only possible for a WTF BAR which is
+  // either ACTIVE or RED2-SAR-SAR2 has not yet occurred" / "BAR SL2-SAR-
+  // SAR2 halts the lineage... BAR theory will start for either new
+  // lineage or after REAR once it confirms" -- i.e. this window's own
+  // BAR THEORY tracking does not resume on its own past this date.
+  freezeDate: string | null;
+}
+
+/** What a reinterpreted window's own BAR1->BAR 2 structure keeps doing
+ * after its formation/BAR 2 escalation, directly simulated off the
+ * weekly candles using the SAME rules tzEngineWtf.ts's own BAR-lineage
+ * tracking uses (own BAR1-tier refLow -> "BAR SL"/deep SL2 watch; own
+ * BAR 2-tier refLow -> recoverable "BAR 2 SL"; a fully independent,
+ * parallel top-level RED1->RED2 pullback) -- NOT read off the raw
+ * engine's own trace text, because for a reinterpreted window that text
+ * does not exist: the raw engine's own letter this window is hiding
+ * under has usually already diverted into something else entirely (an
+ * ancestor BAR SL2's own REAR takeover, now correctly voided by
+ * invalidRearWindows) that locks its own lineage object out of ever
+ * tracking this price action again (confirmed by direct backend
+ * inspection, DIXON.NS: zero RED1/RED2 fires under any letter for the
+ * whole 2025-09/2025-12 stretch). Confirmed real-data (DIXON.NS, window
+ * formed 2025-06-30, BAR 2 2025-07-07): RED1 2025-09-29, RED2
+ * 2025-10-20, its own RED2-anchored SAR 2 2025-11-06, BAR 2's own
+ * decisive SL 2025-11-03, the BAR1-tier's own SL 2025-12-01, SL2
+ * 2025-12-08, and ITS OWN fresh SAR 2 2025-12-30 -- every one of these
+ * dates falls out of this exact simulation, run against nothing but the
+ * real weekly OHLC.
+ *
+ * Scope: stops the moment a fresh BAR SL2 is reached (reporting the
+ * freeze date if its own SAR 2, or the earlier RED2-anchored one,
+ * confirms) -- there is no verified real-data case yet for what the WTF
+ * ladder itself does past that point (a further reform, a genuine REAR
+ * this time, etc.), so none is fabricated here. */
+function simulateBarLadderContinuation(
+  wtfDays: Day[],
+  dtfDays: Day[],
+  wtfTrace: WtfTraceEntry[],
+  formationDate: string,
+  formationHigh: number,
+  formationLow: number
+): BarLadderContinuation {
+  const wtfEvents: BarLadderContinuation["wtfEvents"] = [];
+  const sarCycles: BarLadderContinuation["sarCycles"] = [];
+  let freezeDate: string | null = null;
+
+  const armSarCycle = (anchor: "RED2" | "BAR SL2", anchorDate: string, anchorLow: number) => {
+    // Reuses postBarSl2Race verbatim -- its own daily SAR/INVALID SAR/
+    // SAR 2 stepper only needs a reference low and a start date, nothing
+    // about the label has to exist in the real trace (same technique
+    // already verified for the BAR-SL2-anchored checkpoint lists
+    // elsewhere in this table).
+    const inst: WtfInstance = {
+      family: "TZ BUY 2",
+      letter: "_shadow",
+      formationDate: wtfDays[0].date,
+      endDate: anchorDate,
+      endEvent: "BAR SL2(_shadow)",
+      endPrice: anchorLow,
+    };
+    const result = postBarSl2Race(dtfDays, wtfTrace, inst);
+    if (result === null) return;
+    sarCycles.push({ anchor, checkpoints: result.checkpoints });
+    if (result.outcome === "RACE_TRIGGERED" && result.raceTriggeredDate !== null) {
+      if (freezeDate === null || result.raceTriggeredDate < freezeDate) freezeDate = result.raceTriggeredDate;
+    }
+  };
+
+  let refHigh = formationHigh;
+  let refLow = formationLow;
+  let bar2: { refHigh: number; refLow: number; slActive: boolean } | null = null;
+  let sl: { refHigh: number; refLow: number; sl2: boolean } | null = null;
+  let red: RedGate | null = null;
+  // Mirrors buy.awaitingBar2SinceRed2: once a RED2 confirms, no FURTHER
+  // RED1 can attach until a fresh BAR 2 escalation resets it -- which,
+  // for this SAME lineage, never happens again once BAR 2 has already
+  // formed once (bar2 is set once and never re-escalates here). So this
+  // flips permanently true the first time RED2 confirms, same as the
+  // real engine's own lineage can only ever complete ONE RED1->RED2
+  // cycle for its one, already-escalated BAR 2. Confirmed real-data
+  // (DIXON.NS): only 2025-09-29/2025-10-20's cycle exists -- no second
+  // RED1 ever attaches after that RED2 confirms, all the way through
+  // this window's own fresh BAR SL/BAR SL2.
+  let red2Done = false;
+
+  const startIdx = wtfDays.findIndex((d) => d.date === formationDate);
+  if (startIdx === -1) return { wtfEvents, sarCycles, freezeDate };
+
+  for (let i = startIdx + 1; i < wtfDays.length; i++) {
+    const prev = wtfDays[i - 1];
+    const cur = wtfDays[i];
+
+    // BAR 2-tier (unconditional, mirrors evalBar2 running every candle
+    // regardless of the BAR1-tier sl state below -- but only while sl
+    // itself is still null, same as evalBar2's own early return once
+    // lin.sl exists).
+    if (sl === null) {
+      if (bar2 !== null) {
+        if (bar2.slActive) {
+          if (cur.l >= prev.l && cur.h > bar2.refHigh && cur.h - bar2.refHigh >= THRESH - EPS && cur.c >= bar2.refHigh) {
+            bar2.refHigh = cur.h;
+            bar2.refLow = cur.l;
+            bar2.slActive = false;
+          }
+        } else if (cur.l < bar2.refLow) {
+          if (isSl(cur, bar2.refLow)) {
+            wtfEvents.push({ date: cur.date, label: "BAR 2 SL" });
+            bar2.slActive = true;
+          } else {
+            bar2.refLow = cur.l;
+          }
+        }
+        if (!bar2.slActive && cur.h > bar2.refHigh) bar2.refHigh = cur.h;
+      } else if (breaksRef(prev, cur, refHigh)) {
+        // This window's own first BAR 2 escalation already has its own
+        // date (the caller's bar2Date, from deriveReinterpretedBar2Date)
+        // -- not pushed again here.
+        bar2 = { refHigh: cur.h, refLow: cur.l, slActive: false };
+      }
+    }
+
+    // BAR1-tier: once sl exists, EVERYTHING below (bar2's own further
+    // tracking above included, via the `sl===null` guard) stops except
+    // sl's own HH/LL/SL2 watch -- same as the real engine's permanent
+    // branch split on lin.sl.
+    if (sl !== null) {
+      if (!sl.sl2) {
+        if (cur.h > sl.refHigh) sl.refHigh = cur.h;
+        if (isSl(cur, sl.refLow)) {
+          wtfEvents.push({ date: cur.date, label: "BAR SL2" });
+          sl.sl2 = true;
+          armSarCycle("BAR SL2", cur.date, cur.l);
+          break; // see this function's own scope note above
+        } else if (cur.l < sl.refLow) {
+          sl.refLow = cur.l;
+        }
+      }
+      continue;
+    }
+    if (isSl(cur, refLow)) {
+      wtfEvents.push({ date: cur.date, label: "BAR SL" });
+      sl = { refHigh: cur.h, refLow: cur.l, sl2: false };
+      // Same as the real engine's own `continue` the instant lin.sl is
+      // created this candle -- no RED1 check below for this same week.
+      continue;
+    }
+    if (cur.l < refLow) refLow = cur.l;
+
+    // Top-level RED1/RED2 -- only reached on a candle that did NOT just
+    // create sl above (see the continue), only before red2Done, and
+    // only once this lineage has escalated to BAR 2. Confirmed real-data
+    // (DIXON.NS, A.6 window): "ONLY BAR had formed before this RED1 --
+    // RED1-RED2 is only possible once BAR-BAR 2 ('BAR ENTRY' is BAR 2's
+    // own DTF-side name) has confirmed", already coded for the real
+    // engine's own lineages (tzEngineWtf.ts: "RED1-RED2 will not be
+    // required to be tracked if only BAR 1 has formed and SL'd. RED1-RED2
+    // will form once BAR 1-BAR 2 is completed") -- a bare, never-escalated
+    // BAR has no RED1-RED2 concept of its own at all.
+    if (bar2 !== null && !red2Done) {
+      if (red === null) {
+        if (isRed1Shape(prev, cur)) {
+          red = new RedGate(cur.h, cur.l);
+          wtfEvents.push({ date: cur.date, label: "RED1" });
+        }
+      } else {
+        const outcome = stepRed(red, prev, cur);
+        if (outcome === "invalid") {
+          red = null;
+          wtfEvents.push({ date: cur.date, label: "INVALID RED1" });
+        } else if (outcome === "confirmed") {
+          wtfEvents.push({ date: cur.date, label: "RED2" });
+          red = null;
+          red2Done = true;
+          armSarCycle("RED2", cur.date, cur.l);
+        }
+      }
+    }
+  }
+
+  return { wtfEvents, sarCycles, freezeDate };
+}
+
 function findReinterpretedWindows(
   wtfDays: Day[],
   dtfDays: Day[]
@@ -1008,13 +1211,13 @@ function findReinterpretedWindows(
       // same window still continuing.
       const spawnFormMatch = new RegExp(`^TZ GREEN\\(${spawn.letter}\\)$`);
       const spawnSlMatch = new RegExp(`^TZ GREEN SL\\(${spawn.letter}\\)$`);
-      const spawnFormations: { date: string; formationHigh: number }[] = [];
+      const spawnFormations: { date: string; formationHigh: number; formationLow: number }[] = [];
       const spawnSls: { date: string }[] = [];
       for (const entry of wtfTrace) {
         if (entry.day.date < spawn.date) continue;
         if (sar2Date !== null && entry.day.date >= sar2Date) break;
         for (const e of entry.events) {
-          if (spawnFormMatch.test(e)) spawnFormations.push({ date: entry.day.date, formationHigh: entry.day.h });
+          if (spawnFormMatch.test(e)) spawnFormations.push({ date: entry.day.date, formationHigh: entry.day.h, formationLow: entry.day.l });
           if (spawnSlMatch.test(e)) spawnSls.push({ date: entry.day.date });
         }
       }
@@ -1034,12 +1237,43 @@ function findReinterpretedWindows(
           windows.push({ wtfLabel: subLabel, formationDate: f.date, endDate: nextFormation.date, endReason: "new BAR", formationHigh: f.formationHigh, bar2Date });
           openWindowEndDate = nextFormation.date;
         } else {
-          // No explicit SL/reform text found before this sl2's own scan
-          // bound (sar2Date, or the end of the dataset) -- genuinely
-          // unresolved within this reinterpretation's own scope, left
-          // open rather than fabricating an end reason.
-          windows.push({ wtfLabel: subLabel, formationDate: f.date, endDate: null, endReason: null, formationHigh: f.formationHigh, bar2Date });
-          openWindowEndDate = null;
+          // No explicit SL/reform TEXT ends this window -- but that does
+          // NOT mean nothing happens to it. The raw engine's own REAR
+          // takeover (now correctly voided, see invalidRearWindows) was
+          // standing in for this window's OWN BAR 2 continuing to climb;
+          // once REAR is out of the picture, this window's BAR1/BAR 2
+          // ladder is still live underneath and keeps running on the
+          // same weekly candles, same rules, same as every other BAR
+          // lineage -- it is simulated directly here rather than left
+          // open. See simulateBarLadderContinuation's own comment.
+          const continuation = simulateBarLadderContinuation(wtfDays, dtfDays, wtfTrace, f.date, f.formationHigh, f.formationLow);
+          if (continuation.freezeDate !== null) {
+            windows.push({
+              wtfLabel: subLabel,
+              formationDate: f.date,
+              endDate: continuation.freezeDate,
+              endReason: "SAR 2 confirmed",
+              formationHigh: f.formationHigh,
+              bar2Date,
+              continuationEvents: continuation.wtfEvents,
+              continuationSar: continuation.sarCycles,
+            });
+            openWindowEndDate = continuation.freezeDate;
+          } else {
+            // Genuinely unresolved within the available data -- continuation
+            // events (if any) are still reported, just with no freeze date.
+            windows.push({
+              wtfLabel: subLabel,
+              formationDate: f.date,
+              endDate: null,
+              endReason: null,
+              formationHigh: f.formationHigh,
+              bar2Date,
+              continuationEvents: continuation.wtfEvents,
+              continuationSar: continuation.sarCycles,
+            });
+            openWindowEndDate = null;
+          }
         }
       }
     }
