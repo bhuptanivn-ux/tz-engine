@@ -26,6 +26,24 @@ export const EPS = 1e-9; // float-precision guard for boundary comparisons
 
 export function branchLabel(nIn: number): string {
   // 1 -> A, 2 -> B, ..., 26 -> Z, 27 -> AA, ... (spreadsheet-column style)
+  //
+  // IMPORTANT for every comment/example in this file (and in
+  // lib/primeTrend.ts, lib/tarTbar.ts) that names a letter like "B" or
+  // "C" for a concrete real-data case: that letter is ONLY this
+  // function's own bookkeeping id, assigned the moment this engine's
+  // (theory-incomplete) spawn rule fires -- canSpawn only ever checks
+  // "has a BAR SL2 been confirmed," never whether its own SAR 2 ever
+  // arrived. It carries NO theoretical standing by itself. Confirmed
+  // real-data (DIXON.NS): "TZ GREEN(B)" stamped 2022-05-30 the moment
+  // BAR SL2(A.2) confirmed, but that BAR SL2's own SAR 2 never arrives
+  // (reaches INVALID SAR ENTRY 2023-05-23 and stays there) -- so "B" is
+  // not a second lineage at all, start to finish; every event under
+  // "B"/"B.1"/"B.2"/"B.3" (RED, TZ BUY, TZ BUY 2, RED1/RED2, BAR, BAR 2,
+  // BAR SL, BAR SL 2 included) is A's OWN continuing price action,
+  // mislabeled by this one bookkeeping bug. A comment that says "letter
+  // B's own BAR SL2" below is naming which internal object a date came
+  // from, exactly the way a line number names where code lives -- not
+  // asserting that a "B lineage" exists.
   let n = nIn;
   let s = "";
   while (n > 0) {
@@ -217,6 +235,13 @@ function labelOf(ev: string): string {
   return ev.slice(ev.indexOf("(") + 1, -1);
 }
 
+export interface HiddenEventLogEntry {
+  letter: string;
+  label: string | null;
+  date: string;
+  event: "BAR" | "BAR 2" | "BAR SL" | "RED1" | "RED2" | "INVALID RED1";
+}
+
 export class TZEngine {
   branches = new Map<number, ParentCycle>();
   private seqCounter = 0;
@@ -231,11 +256,31 @@ export class TZEngine {
   // to know whether/when a BAR SL2 actually happened (e.g. the misclassified-
   // spawn detection in lib/tarTbar.ts, which otherwise would only ever see
   // a SL2 that happened to be visible). Confirmed real-data (DIXON.NS,
-  // branch B's own silent B.3 sub-lineage): SL2 fired 2025-06-16 with
+  // the internal sub-lineage object this engine itself labeled "B.3" --
+  // see branchLabel's own note on what that letter does and doesn't
+  // mean): SL2 fired 2025-06-16 with
   // nothing shown for it at all, yet it is the exact same "provisional
   // until its own SAR 2" event that governs whether a later TZ GREEN(newLetter)
   // is a genuine new lineage or more noise.
   barSl2Log: { label: string; date: string; low: number }[] = [];
+
+  // Every BAR/BAR 2 formation and top-level RED1/RED2/INVALID RED1,
+  // backend-true regardless of visible output -- same reasoning as
+  // barSl2Log above, generalized to the rest of the vocabulary that
+  // passes through as a misclassified letter's own continuing-lineage
+  // events (lib/tarTbar.ts's own BAR_VOCAB_PASSTHROUGH). A sub-lineage
+  // born while its branch is dormant has its ENTIRE visible existence
+  // withheld -- not just its SL2 -- so its own formation, escalation,
+  // and RED1/RED2 history is otherwise invisible to anything that needs
+  // to know it happened. Confirmed real-data (DIXON.NS, the internal
+  // sub-lineage object this engine itself labeled "B.3" -- see
+  // branchLabel's own note): BAR 2025-04-15, BAR 2 2025-04-21, RED1
+  // 2025-05-05, RED2 2025-05-26, BAR SL 2025-06-09 -- none of it ever
+  // shown, all of it real, and none of it "B's" own history -- it is
+  // A's, per the same letter-has-no-standing rule. `label` is the specific BarLineage's own
+  // label for a BAR/BAR 2/BAR SL event (lineage-specific), null for a
+  // RED1/RED2/INVALID RED1 (buy/branch-level, not tied to one lineage).
+  hiddenEventLog: HiddenEventLogEntry[] = [];
 
   // REVISION, weekly timeframe only: a BAR lineage that never escalated
   // past BAR 1 (bar2 === null) opens REAR eligibility on its own bare BAR
@@ -1094,6 +1139,7 @@ export class TZEngine {
         buy.red1Ever = true;
         buy.red1 = new Red1(cur.h, cur.l);
         ev.push(`RED1(${branchLbl})`);
+        this.hiddenEventLog.push({ letter: branchLbl, label: null, date: cur.date, event: "RED1" });
       }
     } else {
       ev.push(...this.evalRed1Generic(pc, buy, buy, prev, cur));
@@ -1214,6 +1260,7 @@ export class TZEngine {
     const red1 = buy.red1 as Red1;
     if (cur.h >= red1.refHigh && cur.h - red1.refHigh >= THRESH - EPS && cur.c >= red1.refHigh) {
       ev.push(`INVALID RED1(${label})`);
+      this.hiddenEventLog.push({ letter: label, label: null, date: cur.date, event: "INVALID RED1" });
       red1.active = false;
       this.resetRed1Regime(stageObj);
       return ev;
@@ -1229,6 +1276,7 @@ export class TZEngine {
       if (red2Holds) {
         red1.active = false;
         ev.push(`RED2(${label})`);
+        this.hiddenEventLog.push({ letter: label, label: null, date: cur.date, event: "RED2" });
         if (stageObj instanceof BarLineage || stageObj instanceof Rear || stageObj instanceof RearReenter) {
           stageObj.red2Ever = true;
         }
@@ -1259,6 +1307,7 @@ export class TZEngine {
       stageObj.red1Since = true;
       buy.red1 = new Red1(cur.h, cur.l);
       ev.push(`RED1(${branchLabel(pc.id)})`);
+      this.hiddenEventLog.push({ letter: branchLabel(pc.id), label: null, date: cur.date, event: "RED1" });
     }
     return ev;
   }
@@ -1298,6 +1347,7 @@ export class TZEngine {
       const gap = sl.refLow - cur.l;
       if (gap >= THRESH - EPS && cur.c <= sl.refLow + EPS) {
         ev.push(`BAR SL(${lin.label})`);
+        this.hiddenEventLog.push({ letter: lin.label.split(".")[0], label: lin.label, date: cur.date, event: "BAR SL" });
         lin.sl = new BarSL(cur.h, cur.l);
         buy.red1 = null;
       } else {
@@ -1335,6 +1385,7 @@ export class TZEngine {
     if (cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
       const subLabel = this.nextBarLabel(buy, branchLabel(pc.id));
       const newLin = new BarLineage(subLabel, cur.h, cur.l);
+      this.hiddenEventLog.push({ letter: branchLabel(pc.id), label: subLabel, date: cur.date, event: "BAR" });
       // A dormant branch has already been superseded by a newer sibling
       // and must not independently SURFACE a brand-new BAR lineage -- see
       // the matching comment in tz_engine_wtf.py's own checkBarPending for
@@ -1455,6 +1506,7 @@ export class TZEngine {
           lin.bar2 = new Bar2(cur.h, cur.l);
           buy.awaitingBar2SinceRed2 = false;
           ev.push(`BAR 2(${lin.label})`);
+          this.hiddenEventLog.push({ letter: lin.label.split(".")[0], label: lin.label, date: cur.date, event: "BAR 2" });
         }
       }
       return ev;
@@ -1661,6 +1713,7 @@ export class TZEngine {
         if (lin.sl === null) {
           if (cur.l < lin.refLow && lin.refLow - cur.l >= THRESH - EPS && cur.c <= lin.refLow + EPS) {
             linEv.push(`BAR SL(${lin.label})`);
+            this.hiddenEventLog.push({ letter: branchLabel(pc.id), label: lin.label, date: cur.date, event: "BAR SL" });
             lin.sl = new BarSL(cur.h, cur.l);
             if (lin.bar2 === null) {
               // Reverted: a fresh RED1 is not needed here -- once a
@@ -1919,6 +1972,7 @@ export class TZEngine {
       buy.barLineages = surviving;
       const subLabel = this.nextBarLabel(buy, labelId);
       const freshLin = new BarLineage(subLabel, cur.h, cur.l);
+      this.hiddenEventLog.push({ letter: labelId, label: subLabel, date: cur.date, event: "BAR" });
       // Same backend-vs-visible split as checkBarPending: compute and
       // mutate state regardless of dormancy, withhold the text only.
       freshLin.bornDormant = pc.dormant;

@@ -116,7 +116,7 @@
 // did not fire in the PAYTM window verified (TAR ENTRY was reached
 // there).
 
-import { THRESH, EPS, type Day } from "./tzEngineWtf";
+import { THRESH, EPS, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
 import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
@@ -1017,6 +1017,17 @@ function simulateBarLadderContinuation(
   return { wtfEvents, sarCycles, freezeDate, barSl2FreezeDate };
 }
 
+// NOTE on every letter named below ("B", "C", "B.3", ...): these are the
+// raw engine's own internal bookkeeping ids (see tzEngineWtf.ts's own
+// branchLabel), assigned the moment its theory-incomplete spawn rule
+// fires (BAR SL2 confirmed -- never checks whether its own SAR 2 ever
+// arrived). This whole function exists because that stamp is wrong: the
+// letter carries NO theoretical standing of its own. A comment that
+// says "letter B's own BAR SL2" is naming which internal object a real
+// date came from -- not asserting a "B lineage" exists. Every event
+// under such a letter, for as long as misclassifiedLetters says so
+// below, is the ORIGINAL (governing) lineage's own continuing price
+// action, mislabeled by this bookkeeping bug.
 function findReinterpretedWindows(
   wtfDays: Day[],
   dtfDays: Day[]
@@ -1024,9 +1035,11 @@ function findReinterpretedWindows(
   windows: TarTbarWindow[];
   misclassifiedLetters: { letter: string; sinceDate: string; untilDate: string | null }[];
   invalidRearWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
+  hiddenPassthroughEvents: { date: string; label: string }[];
 } {
   const barSl2BackendLog: { label: string; date: string; low: number }[] = [];
-  const wtfTrace = runWtfTrace(wtfDays, barSl2BackendLog);
+  const hiddenEventLog: HiddenEventLogEntry[] = [];
+  const wtfTrace = runWtfTrace(wtfDays, barSl2BackendLog, hiddenEventLog);
   const windows: TarTbarWindow[] = [];
   // The misclassified sibling letter's ENTIRE downstream existence is
   // noise, not just its own "TZ GREEN(" tier -- confirmed real-data
@@ -1310,19 +1323,24 @@ function findReinterpretedWindows(
   // status -- not the original 2022 reference price, frozen forever.
   // Confirmed real-data (DIXON.NS): BAR SL2(A.2) 2022-05-09 on its own
   // never confirms SAR 2 (reaches INVALID SAR ENTRY 2023-05-23 and stays
-  // there) -- by that reading alone, letter B's own exclusion would
-  // never end. But the SAME chain re-arms twice more downstream: BAR
+  // there) -- by that reading alone, the misclassifiedLetters entry for
+  // the engine's own internal id "B" (the 2022-05-30 spawn this BAR SL2
+  // licensed -- see branchLabel's own note: this id has no theoretical
+  // standing, it is A's own continuing lineage throughout) would never
+  // resolve. But the SAME chain re-arms twice more downstream: BAR
   // SL2(B.3) 2025-06-16 (SAR 2 2025-12-26), then a further fresh BAR SL2
   // 2025-12-08 found only by this window's own continuation simulation
   // (SAR 2 2025-12-30). The chain's TRUE resolution is the LATEST of
-  // these -- 2025-12-30 -- not null. Confirmed: "B has never got
-  // activated. TZ GREEN B was activated for the 1st time as on 02/02/26"
-  // -- which this already produces either way (nothing spawns between
-  // 2025-12-30 and 2026-02-02 in the real data), but leaving B's own
-  // entry open-ended forever is a latent bug: on different price data,
-  // where the SAME letter got reused immediately after the chain's own
-  // true resolution, an open-ended untilDate would wrongly keep
-  // suppressing it forever.
+  // these -- 2025-12-30 -- not null. Confirmed: "[the second, genuinely
+  // independent lineage] has never got activated. [It] was activated
+  // for the 1st time as on 02/02/26" (which the engine's own internal
+  // bookkeeping assigns to a REUSE of a different internal id, "C", not
+  // "B" -- the two are unrelated ids) -- this already produces that
+  // either way (nothing spawns between 2025-12-30 and 2026-02-02 in the
+  // real data), but leaving id "B"'s own entry open-ended forever is a
+  // latent bug: on different price data, where the SAME internal id got
+  // reused immediately after the chain's own true resolution, an
+  // open-ended untilDate would wrongly keep suppressing it forever.
   for (const entry of misclassifiedLetters) {
     if (entry.untilDate !== null) continue;
     let latest: string | null = null;
@@ -1340,7 +1358,52 @@ function findReinterpretedWindows(
     if (latest !== null) entry.untilDate = latest;
   }
 
-  return { windows, misclassifiedLetters, invalidRearWindows };
+  // Promoted from the scratch verification table into a real engine
+  // constant: the vocabulary a misclassified letter's own raw ladder
+  // keeps producing that is NOT noise -- it is the SAME continuing
+  // lineage's own BAR/REAR-theory events, just computed under the wrong
+  // bookkeeping label. Confirmed real-data (DIXON.NS): 31/07/23 "BAR"
+  // and 16/10/23 "BAR 2" under letter B are real, fresh A-lineage events.
+  const BAR_VOCAB_PASSTHROUGH = new Set([
+    "BAR", "BAR SL", "BAR SL2", "BAR 2", "BAR 2 SL", "INVALID BAR SL",
+    "REAR", "REAR SL", "REAR 2", "REAR 2 SL", "REAR RE-ENTER", "REAR RE-ENTER 2", "REAR RE-ENTER SL", "REAR RE-ENTER 2 SL",
+    "RED1", "RED2", "INVALID RED1",
+  ]);
+  // Backend-true pass-through events a misclassified letter's own
+  // formation/escalation produced but that never reached visible
+  // output at all (a sub-lineage born while its branch is dormant has
+  // its WHOLE existence withheld, not just BAR SL2 -- see
+  // hiddenEventLog's own comment in tzEngineWtf.ts). Confirmed
+  // real-data (DIXON.NS, the hidden internal sub-lineage "B.3"): BAR 2025-04-15,
+  // BAR 2 2025-04-21, RED1 2025-05-05, RED2 2025-05-26, BAR SL
+  // 2025-06-09 -- all real, none of it ever shown until this.
+  const hiddenPassthroughEvents: { date: string; label: string }[] = [];
+  const hiddenCandidates: { letter: string; label: string | null; date: string; event: string }[] = [
+    ...hiddenEventLog,
+    // BAR SL2 confirmations belong on this SAME pass-through filter --
+    // barSl2BackendLog already carries them (used above for the
+    // misclassification detection itself), they just were never also
+    // checked against BAR_VOCAB_PASSTHROUGH for display. Confirmed
+    // real-data (DIXON.NS): BAR SL2(B.3) 2025-06-16 never shown either.
+    ...barSl2Events.map((e) => ({ letter: e.letter, label: e.label, date: e.date, event: "BAR SL2" })),
+  ];
+  for (const e of hiddenCandidates) {
+    if (!BAR_VOCAB_PASSTHROUGH.has(e.event)) continue;
+    const isMisclassified = misclassifiedLetters.some(
+      (m) => m.letter === e.letter && e.date >= m.sinceDate && (m.untilDate === null || e.date <= m.untilDate)
+    );
+    if (!isMisclassified) continue;
+    // Already reached visible output via the ordinary wtfTrace-text
+    // route (not everything born under a misclassified letter is
+    // bornDormant) -- skip, this only needs to fill in what was
+    // entirely withheld.
+    const eventText = e.label !== null ? `${e.event}(${e.label})` : `${e.event}(${e.letter})`;
+    const traceEntry = wtfTrace.find((t) => t.day.date === e.date);
+    if (traceEntry && traceEntry.events.includes(eventText)) continue;
+    hiddenPassthroughEvents.push({ date: e.date, label: e.event });
+  }
+
+  return { windows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents };
 }
 
 // Additive helper (session of 2026-10-22), NOT yet verified beyond
@@ -1391,10 +1454,16 @@ export function computeTarTbar(
   // misclassified, since REAR's own gating is a property of the BAR SL2
   // it forms off, not of whether a new sibling letter spawned.
   invalidRearWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
+  // Backend-true BAR/BAR 2/BAR SL/RED1/RED2/INVALID RED1 events a
+  // misclassified letter's own hidden (bornDormant) sub-lineage
+  // produced -- see findReinterpretedWindows' own comment. A caller
+  // building a WTF event ledger adds these the same way it adds any
+  // other pass-through event, keyed only by date and event-type label.
+  hiddenPassthroughEvents: { date: string; label: string }[];
 } {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
-  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows } = findReinterpretedWindows(wtfDays, dtfDays);
+  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents } = findReinterpretedWindows(wtfDays, dtfDays);
   // Drop any raw-trace window for a misclassified letter, from its own
   // spawn date onward -- its ENTIRE downstream existence (not just the
   // "TZ GREEN(" tier reinterpretedWindows already covers) is noise,
@@ -1430,5 +1499,5 @@ export function computeTarTbar(
     // "once WTF TZ BUY 2 fails, DTF tracking freezes" everywhere else.
     if (w.endDate === null) live.push(...windowLive);
   }
-  return { windows, results, live, misclassifiedLetters, invalidRearWindows };
+  return { windows, results, live, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents };
 }

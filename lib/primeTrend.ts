@@ -86,7 +86,7 @@
 // DTF SAR -> unrestricted nested BAR1/BAR2, not yet implemented) -- what
 // differs is only the DTF-side response.
 
-import { ANY, branchLabel, Day, EPS, THRESH, TZEngine, ParentCycle } from "./tzEngineWtf";
+import { ANY, branchLabel, Day, EPS, THRESH, TZEngine, ParentCycle, type HiddenEventLogEntry } from "./tzEngineWtf";
 
 export type PrimeTrendFamily = "TZ BUY 2" | "REAR 2" | "REAR RE-ENTER 2";
 
@@ -1634,7 +1634,8 @@ export interface WtfTraceEntry {
  * of use. */
 export function runWtfTrace(
   wtfDays: Day[],
-  barSl2LogOut?: { label: string; date: string; low: number }[]
+  barSl2LogOut?: { label: string; date: string; low: number }[],
+  hiddenEventLogOut?: HiddenEventLogEntry[]
 ): WtfTraceEntry[] {
   // `true`: this always runs on WEEKLY candles (PRIME TREND's fixed
   // WTF=weekly rule; lib/tarTbar.ts's own findWindows, this function's
@@ -1688,6 +1689,7 @@ export function runWtfTrace(
     trace.push({ day: cur, events, preRefLow, preBarSlRefLow, aliveAfter, hasTierAfter });
   }
   if (barSl2LogOut) barSl2LogOut.push(...engine.barSl2Log);
+  if (hiddenEventLogOut) hiddenEventLogOut.push(...engine.hiddenEventLog);
   return trace;
 }
 
