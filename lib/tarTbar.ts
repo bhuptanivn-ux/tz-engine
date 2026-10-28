@@ -180,6 +180,14 @@ export interface TarTbarWindow {
   // The DTF-side SAR cycle(s) this continuation's own RED2 and/or fresh
   // BAR SL2 each arm, tagged by which one anchors them.
   continuationSar?: { anchor: "RED2" | "BAR SL2"; checkpoints: PostBarSl2Checkpoint[] }[];
+  // The SAR 2 confirmed by this window's own FRESH BAR SL2 specifically
+  // (not any RED2-anchored one) -- see simulateBarLadderContinuation's
+  // own barSl2FreezeDate. This is the date that actually resolves the
+  // governing lineage's own provisional status (misclassifiedLetters'
+  // chain-resolution fix reads this), distinct from `endDate`, which can
+  // freeze earlier at a RED2-anchored SAR 2 for BAR-THEORY-tracking
+  // purposes only.
+  chainResolutionDate?: string | null;
 }
 
 export interface TarTbarResult {
@@ -823,6 +831,14 @@ interface BarLadderContinuation {
   // lineage or after REAR once it confirms" -- i.e. this window's own
   // BAR THEORY tracking does not resume on its own past this date.
   freezeDate: string | null;
+  // The SAR 2 confirmed specifically by this window's OWN fresh BAR SL2
+  // (not the RED2-anchored one) -- the one that actually governs
+  // whether a NEW top-level lineage is legitimate yet (see
+  // misclassifiedLetters' own chain-resolution use of this), which is a
+  // narrower question than "BAR THEORY tracking has frozen" above. Null
+  // if this window never reaches its own fresh BAR SL2, or reaches it
+  // but SAR 2 never confirms.
+  barSl2FreezeDate: string | null;
 }
 
 /** What a reinterpreted window's own BAR1->BAR 2 structure keeps doing
@@ -862,6 +878,7 @@ function simulateBarLadderContinuation(
   const wtfEvents: BarLadderContinuation["wtfEvents"] = [];
   const sarCycles: BarLadderContinuation["sarCycles"] = [];
   let freezeDate: string | null = null;
+  let barSl2FreezeDate: string | null = null;
 
   const armSarCycle = (anchor: "RED2" | "BAR SL2", anchorDate: string, anchorLow: number) => {
     // Reuses postBarSl2Race verbatim -- its own daily SAR/INVALID SAR/
@@ -882,6 +899,7 @@ function simulateBarLadderContinuation(
     sarCycles.push({ anchor, checkpoints: result.checkpoints });
     if (result.outcome === "RACE_TRIGGERED" && result.raceTriggeredDate !== null) {
       if (freezeDate === null || result.raceTriggeredDate < freezeDate) freezeDate = result.raceTriggeredDate;
+      if (anchor === "BAR SL2") barSl2FreezeDate = result.raceTriggeredDate;
     }
   };
 
@@ -903,7 +921,7 @@ function simulateBarLadderContinuation(
   let red2Done = false;
 
   const startIdx = wtfDays.findIndex((d) => d.date === formationDate);
-  if (startIdx === -1) return { wtfEvents, sarCycles, freezeDate };
+  if (startIdx === -1) return { wtfEvents, sarCycles, freezeDate, barSl2FreezeDate };
 
   for (let i = startIdx + 1; i < wtfDays.length; i++) {
     const prev = wtfDays[i - 1];
@@ -996,7 +1014,7 @@ function simulateBarLadderContinuation(
     }
   }
 
-  return { wtfEvents, sarCycles, freezeDate };
+  return { wtfEvents, sarCycles, freezeDate, barSl2FreezeDate };
 }
 
 function findReinterpretedWindows(
@@ -1257,6 +1275,7 @@ function findReinterpretedWindows(
               bar2Date,
               continuationEvents: continuation.wtfEvents,
               continuationSar: continuation.sarCycles,
+              chainResolutionDate: continuation.barSl2FreezeDate,
             });
             openWindowEndDate = continuation.freezeDate;
           } else {
@@ -1271,12 +1290,54 @@ function findReinterpretedWindows(
               bar2Date,
               continuationEvents: continuation.wtfEvents,
               continuationSar: continuation.sarCycles,
+              chainResolutionDate: continuation.barSl2FreezeDate,
             });
             openWindowEndDate = null;
           }
         }
       }
     }
+  }
+
+  // Chain-resolution fix: a misclassifiedLetters entry whose OWN
+  // originating BAR SL2 never confirms SAR 2 in isolation (untilDate:
+  // null) is NOT necessarily open forever -- the SAME continuing
+  // lineage can re-arm a FRESH BAR SL2 further downstream (either a
+  // later real one, already its own barSl2Events entry and thus its
+  // own later misclassifiedLetters/window, or a synthetic one found by
+  // this SAME window's own simulateBarLadderContinuation), and THAT one
+  // confirming SAR 2 is what actually ends the whole chain's provisional
+  // status -- not the original 2022 reference price, frozen forever.
+  // Confirmed real-data (DIXON.NS): BAR SL2(A.2) 2022-05-09 on its own
+  // never confirms SAR 2 (reaches INVALID SAR ENTRY 2023-05-23 and stays
+  // there) -- by that reading alone, letter B's own exclusion would
+  // never end. But the SAME chain re-arms twice more downstream: BAR
+  // SL2(B.3) 2025-06-16 (SAR 2 2025-12-26), then a further fresh BAR SL2
+  // 2025-12-08 found only by this window's own continuation simulation
+  // (SAR 2 2025-12-30). The chain's TRUE resolution is the LATEST of
+  // these -- 2025-12-30 -- not null. Confirmed: "B has never got
+  // activated. TZ GREEN B was activated for the 1st time as on 02/02/26"
+  // -- which this already produces either way (nothing spawns between
+  // 2025-12-30 and 2026-02-02 in the real data), but leaving B's own
+  // entry open-ended forever is a latent bug: on different price data,
+  // where the SAME letter got reused immediately after the chain's own
+  // true resolution, an open-ended untilDate would wrongly keep
+  // suppressing it forever.
+  for (const entry of misclassifiedLetters) {
+    if (entry.untilDate !== null) continue;
+    let latest: string | null = null;
+    for (const w of windows) {
+      // Only a window's own chainResolutionDate (a FRESH BAR SL2's own
+      // SAR 2) resolves the chain -- a window's plain `endDate` from a
+      // "BAR SL"/"new BAR" text match just marks where THAT window's
+      // own text ended, unrelated to whether the lineage's exit is
+      // validated.
+      const resolution = w.chainResolutionDate;
+      if (resolution === null || resolution === undefined) continue;
+      if (w.formationDate < entry.sinceDate) continue;
+      if (latest === null || resolution > latest) latest = resolution;
+    }
+    if (latest !== null) entry.untilDate = latest;
   }
 
   return { windows, misclassifiedLetters, invalidRearWindows };
