@@ -1306,6 +1306,18 @@ class InvalidSarState {
   // Seeded at the bare "INVALID SAR SL" day's own Low when entering
   // SEEK_REFORM -- see that case's own comment for why.
   reformFloor = 0;
+  // True from a bare "SAR SL" (SEEK_INVALID's own near-miss) until the
+  // next real SAR fire -- while true, a decisive breach of refLow is
+  // just a FRESH "SAR" (the stopped-out watch restarting), not "SAR 2".
+  // Confirmed real-data (DIXON.NS, the hidden RED2(B.3) 2025-05-26 SAR
+  // cycle): 2025-06-04 SAR SL -> 2025-06-13's decisive breach of the
+  // SAR-SL-ratcheted refLow (14381) is the user's own given "SAR", NOT
+  // "SAR 2" -- SAR 2 only confirms later (2025-06-19) off THIS fresh
+  // SAR's own fresh refLow (14127, itself climbed via the ordinary
+  // 2025-06-16 "SAR LL"). Without this flag the mechanism wrongly
+  // treats the SAR-SL-ratcheted low as if it were an un-stopped-out
+  // SAR's own reference, ending the whole cycle 6 days early.
+  sarSlSinceLastSar = false;
 
   rowEntryDate: string | null = null;
   rowEntryPrice: number | null = null;
@@ -1334,6 +1346,10 @@ function stepInvalidSar(
   invalidSarNow: boolean;
   sarSlNow: boolean;
   sar2Now: boolean;
+  // A decisive refLow breach that is just a FRESH "SAR" re-arm, not
+  // terminal "SAR 2" -- fires only when a "SAR SL" happened since the
+  // last real SAR (see InvalidSarState.sarSlSinceLastSar's own comment).
+  freshSarNow: boolean;
   // The bare, pre-escalation "INVALID SAR SL" (INVALID_SAR_ACTIVE's own
   // decisive SL, reforming unrestricted via SEEK_REFORM) -- a real,
   // named event (see this case's own comment below), but one that
@@ -1350,6 +1366,7 @@ function stepInvalidSar(
   let invalidSarNow = false;
   let sarSlNow = false;
   let sar2Now = false;
+  let freshSarNow = false;
   let invalidSarSlNow = false;
   let opened: { price: number } | null = null;
   let closed: { exitType: string; exitPrice: number } | null = null;
@@ -1386,6 +1403,7 @@ function stepInvalidSar(
         sarSlNow = true;
         s.refHigh = cur.h;
         if (cur.l < s.refLow) s.refLow = cur.l;
+        s.sarSlSinceLastSar = true;
         break;
       }
       if (slShape(cur, s.refLow)) {
@@ -1400,6 +1418,24 @@ function stepInvalidSar(
         // confirming below) -- SAR 2, straight back to plain BAR THEORY.
         // A merely non-decisive lower low (no close confirmation, or too
         // small a gap) stays the ordinary quiet "SAR LL" ratchet below.
+        //
+        // UNLESS a "SAR SL" happened since the last real SAR fired --
+        // then this watch was already stopped out once, and a decisive
+        // breach of its SL-ratcheted reference is just a FRESH "SAR"
+        // (the mechanism restarting), not "SAR 2". Confirmed via DIXON
+        // (hidden RED2(B.3), 2025-05-26): 2025-06-04 SAR SL ratchets
+        // refLow to 14381 -> 2025-06-13 decisively breaches 14381, but
+        // this is the user's own given "SAR" (fresh re-arm, refLow then
+        // reseeded at 2025-06-13's own Low 14203) -- real "SAR 2" only
+        // confirms 2025-06-19, off that fresh SAR's own further-ratcheted
+        // refLow (14127, via 2025-06-16's ordinary "SAR LL").
+        if (s.sarSlSinceLastSar) {
+          freshSarNow = true;
+          s.refHigh = cur.h;
+          s.refLow = cur.l;
+          s.sarSlSinceLastSar = false;
+          break;
+        }
         sar2Now = true;
         break;
       }
@@ -1521,7 +1557,7 @@ function stepInvalidSar(
     }
   }
 
-  return { invalidSarNow, sarSlNow, sar2Now, invalidSarSlNow, opened, closed };
+  return { invalidSarNow, sarSlNow, sar2Now, freshSarNow, invalidSarSlNow, opened, closed };
 }
 
 /** The single, shared checkpoint-recording rule for one stepInvalidSar
@@ -1534,8 +1570,15 @@ function stepInvalidSar(
  * neither of those two transitions actually changes/signals on its own).
  * `modeBefore`/`refHighBefore`/`refLowBefore`/`frozenBefore` must be
  * snapshotted from `s` BEFORE calling stepInvalidSar; `s` and `result`
- * are its state and return value AFTER. Returns null when the step was
- * a pure no-op (no real transition, no ratchet). */
+ * are its state and return value AFTER. Returns [] when the step was a
+ * pure no-op (no real transition, no ratchet). Returns an array, not a
+ * single nullable checkpoint, because a single wide-range day can
+ * ratchet refHigh up AND refLow down at once -- both are real,
+ * independent events (confirmed real-data, DIXON.NS, hidden RED2(B.3)
+ * 2025-06-16: High 14435 clears the live refHigh 14389 while Low 14127
+ * simultaneously undercuts refLow 14203 -- the user's own given trace
+ * has BOTH "SAR HH" and "SAR LL" that same day; returning only the
+ * first would silently drop one of them). */
 function checkpointForInvalidSarStep(
   modeBefore: InvalidSarMode,
   refHighBefore: number,
@@ -1544,22 +1587,24 @@ function checkpointForInvalidSarStep(
   s: InvalidSarState,
   result: ReturnType<typeof stepInvalidSar>,
   cur: Day
-): PostBarSl2Checkpoint | null {
-  if (result.sar2Now) return { date: cur.date, label: "SAR 2", price: cur.l };
-  if (result.invalidSarNow) return { date: cur.date, label: "INVALID SAR", price: cur.h };
-  if (result.invalidSarSlNow) return { date: cur.date, label: "INVALID SAR SL", price: cur.l };
-  if (result.sarSlNow) return { date: cur.date, label: "SAR SL", price: cur.h };
+): PostBarSl2Checkpoint[] {
+  if (result.sar2Now) return [{ date: cur.date, label: "SAR 2", price: cur.l }];
+  if (result.invalidSarNow) return [{ date: cur.date, label: "INVALID SAR", price: cur.h }];
+  if (result.invalidSarSlNow) return [{ date: cur.date, label: "INVALID SAR SL", price: cur.l }];
+  if (result.sarSlNow) return [{ date: cur.date, label: "SAR SL", price: cur.h }];
+  if (result.freshSarNow) return [{ date: cur.date, label: "SAR", price: cur.l }];
   if (result.opened) {
     const label = modeBefore === "SEEK_REACTIVATION" ? "INVALID SAR ENTRY REACTIVATED" : "INVALID SAR ENTRY";
-    return { date: cur.date, label, price: result.opened.price };
+    return [{ date: cur.date, label, price: result.opened.price }];
   }
-  if (result.closed) return { date: cur.date, label: "INVALID SAR ENTRY SL", price: result.closed.exitPrice };
+  if (result.closed) return [{ date: cur.date, label: "INVALID SAR ENTRY SL", price: result.closed.exitPrice }];
+  const out: PostBarSl2Checkpoint[] = [];
   if (modeBefore === "SEEK_INVALID") {
-    if (s.refHigh > refHighBefore) return { date: cur.date, label: "SAR HH", price: s.refHigh };
-    if (s.refLow < refLowBefore) return { date: cur.date, label: "SAR LL", price: s.refLow };
+    if (s.refHigh > refHighBefore) out.push({ date: cur.date, label: "SAR HH", price: s.refHigh });
+    if (s.refLow < refLowBefore) out.push({ date: cur.date, label: "SAR LL", price: s.refLow });
   } else if (modeBefore === "INVALID_SAR_ACTIVE") {
-    if (s.refHigh > refHighBefore) return { date: cur.date, label: "INVALID SAR HH", price: s.refHigh };
-    if (s.refLow < refLowBefore) return { date: cur.date, label: "INVALID SAR LL", price: s.refLow };
+    if (s.refHigh > refHighBefore) out.push({ date: cur.date, label: "INVALID SAR HH", price: s.refHigh });
+    if (s.refLow < refLowBefore) out.push({ date: cur.date, label: "INVALID SAR LL", price: s.refLow });
   } else if (modeBefore === "SEEK_REFORM") {
     // The reform itself (SEEK_REFORM -> INVALID_SAR_ACTIVE) sets neither
     // invalidSarNow nor any other flag -- detected here by the mode
@@ -1567,15 +1612,15 @@ function checkpointForInvalidSarStep(
     // (re-)confirmation. Otherwise, the frozen reform reference's own
     // quiet climb is "SAR HH" (same label the code's own comment at
     // stepInvalidSar's SEEK_REFORM case already uses).
-    if (s.mode === "INVALID_SAR_ACTIVE") return { date: cur.date, label: "INVALID SAR", price: s.refHigh };
-    if (s.refHigh > refHighBefore) return { date: cur.date, label: "SAR HH", price: s.refHigh };
+    if (s.mode === "INVALID_SAR_ACTIVE") return [{ date: cur.date, label: "INVALID SAR", price: s.refHigh }];
+    if (s.refHigh > refHighBefore) out.push({ date: cur.date, label: "SAR HH", price: s.refHigh });
   } else if (modeBefore === "ENTRY_ACTIVE") {
-    if (cur.h === s.rowHH && s.rowHH > refHighBefore) return { date: cur.date, label: "INVALID SAR ENTRY HH", price: s.rowHH };
-    if (s.refLow < refLowBefore) return { date: cur.date, label: "INVALID SAR ENTRY LL", price: s.refLow };
+    if (cur.h === s.rowHH && s.rowHH > refHighBefore) out.push({ date: cur.date, label: "INVALID SAR ENTRY HH", price: s.rowHH });
+    if (s.refLow < refLowBefore) out.push({ date: cur.date, label: "INVALID SAR ENTRY LL", price: s.refLow });
   } else if (modeBefore === "SEEK_REACTIVATION") {
-    if (s.frozenEntryRefHigh > frozenBefore) return { date: cur.date, label: "INVALID SAR ENTRY HH", price: s.frozenEntryRefHigh };
+    if (s.frozenEntryRefHigh > frozenBefore) out.push({ date: cur.date, label: "INVALID SAR ENTRY HH", price: s.frozenEntryRefHigh });
   }
-  return null;
+  return out;
 }
 
 // --------------------------------------------------------------------
@@ -2208,17 +2253,22 @@ export interface PostBarSl2Result {
   freshBarLabel: string | null;
 }
 
-/** Only applicable when `inst` ended via a WTF BAR SL2 -- null otherwise
- * (a TZ BUY 2/REAR 2 SL ending, or an instance still open, has no BAR
- * lineage SL reference low to seed this watch from). `dtfDays` is the
+/** Only applicable when `inst` ended via a WTF BAR SL2, OR is seeded off
+ * a WTF RED2's own confirming-candle Low (the identical "watch for SAR
+ * off a reference low" primitive, just a different anchor event) --
+ * null otherwise (a TZ BUY 2/REAR 2 SL ending, or an instance still
+ * open, has no reference low to seed this watch from). `dtfDays` is the
  * full DTF series; only days strictly after `inst.endDate` are watched.
  * `wtfTrace` is only used to detect a fresh same-letter WTF BAR
  * reforming (the second addition above) -- it does not affect the SAR
- * watch itself. */
+ * watch itself. Generalized to RED2 anchors (confirmed real-data,
+ * DIXON.NS: the hidden RED2(B.3) 2025-05-26, with no visible WtfInstance
+ * of its own for `computePrimeTrendCheckpoints` to anchor against, needs
+ * this exact same mechanism to expose its own 2025-06-03..2025-06-19 SAR
+ * cycle at all). */
 export function postBarSl2Race(dtfDays: Day[], wtfTrace: WtfTraceEntry[], inst: WtfInstance): PostBarSl2Result | null {
-  if (inst.endEvent === null || !inst.endEvent.startsWith("BAR SL2(") || inst.endPrice === null) {
-    return null;
-  }
+  if (inst.endEvent === null || inst.endPrice === null) return null;
+  if (!inst.endEvent.startsWith("BAR SL2(") && !inst.endEvent.startsWith("RED2(")) return null;
 
   const result: PostBarSl2Result = {
     letter: inst.letter,
@@ -2300,8 +2350,8 @@ export function postBarSl2Race(dtfDays: Day[], wtfTrace: WtfTraceEntry[], inst: 
     const frozenBefore = invalidSarState.frozenEntryRefHigh;
 
     const stepResult = stepInvalidSar(invalidSarState, prev, cur);
-    const checkpoint = checkpointForInvalidSarStep(modeBefore, refHighBefore, refLowBefore, frozenBefore, invalidSarState, stepResult, cur);
-    if (checkpoint !== null) result.checkpoints.push(checkpoint);
+    const stepCheckpoints = checkpointForInvalidSarStep(modeBefore, refHighBefore, refLowBefore, frozenBefore, invalidSarState, stepResult, cur);
+    result.checkpoints.push(...stepCheckpoints);
 
     if (stepResult.sar2Now) {
       result.outcome = "RACE_TRIGGERED";
@@ -2996,7 +3046,7 @@ function simulateDtfAll(
       // Same checkpoint rule postBarSl2Race's own standalone simulation
       // of this identical state machine uses -- see checkpointForInvalidSarStep's
       // own comment above.
-      const sarCheckpoint = checkpointForInvalidSarStep(
+      const sarStepCheckpoints = checkpointForInvalidSarStep(
         checkpointModeBefore,
         checkpointRefHighBefore,
         checkpointRefLowBefore,
@@ -3005,7 +3055,7 @@ function simulateDtfAll(
         invalidSarResult,
         cur
       );
-      if (sarCheckpoint !== null) sarCheckpoints.push(sarCheckpoint);
+      sarCheckpoints.push(...sarStepCheckpoints);
       // "SAR 2" via a decisive breach within SEEK_INVALID itself (no
       // fresh RED2 needed) -- same effect as the recurring DTF SAR's own
       // SAR 2 path below: ends THIS cycle (back to plain BAR THEORY,
@@ -3456,13 +3506,33 @@ export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRo
  * show "this stock just cleared its WTF anchor" just as much as "this
  * stock has a confirmed entry", since both are actionable right now. An
  * instance with neither stage currently active (already failed on the
- * DTF side but the WTF anchor itself hasn't failed yet) is omitted. */
-export function computePrimeTrendLive(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): PrimeTrendLiveStatus[] {
+ * DTF side but the WTF anchor itself hasn't failed yet) is omitted.
+ *
+ * `misclassifiedLetters` (from computeTarTbar -- not imported here to
+ * avoid a circular dependency, so the caller must pass it through) is
+ * an OPTIONAL exclusion list: a letter the raw WTF engine spawned as a
+ * new top-level sibling but that's actually noise (the SAME continuing
+ * earlier lineage, misclassified -- see tarTbar.ts's own comment) has no
+ * business being reported live. Confirmed real-data bug (DIXON.NS):
+ * without this, a stale TZ BUY 2(B) spawned 2023-05-29 -- noise, per the
+ * already-confirmed "B has never got activated" finding -- was wrongly
+ * reported as the live instance, crowding out whatever the GENUINE
+ * current lineage (TZ BUY 2(C), 2026-07-06) is actually doing. */
+export function computePrimeTrendLive(
+  wtfRows: OhlcRow[],
+  dtfRows: OhlcRow[],
+  misclassifiedLetters: { letter: string; sinceDate: string; untilDate: string | null }[] = []
+): PrimeTrendLiveStatus[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
 
   const liveStatuses: PrimeTrendLiveStatus[] = [];
   for (const inst of instances) {
     if (inst.endEvent !== null) continue; // this instance already failed on the WTF side -- not "right now"
+    if (
+      misclassifiedLetters.some(
+        (m) => m.letter === inst.letter && inst.formationDate >= m.sinceDate && (m.untilDate === null || inst.formationDate <= m.untilDate)
+      )
+    ) continue;
     const [, live] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
     if (live !== null && (live.stage1Active || live.stage2Active || live.pbarTier1Active || live.pbarActive)) {
       liveStatuses.push(live);

@@ -1036,6 +1036,7 @@ function findReinterpretedWindows(
   misclassifiedLetters: { letter: string; sinceDate: string; untilDate: string | null }[];
   invalidRearWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
   hiddenPassthroughEvents: { date: string; label: string }[];
+  hiddenRed2SarCheckpoints: { letter: string; date: string; label: string }[];
 } {
   const barSl2BackendLog: { label: string; date: string; low: number }[] = [];
   const hiddenEventLog: HiddenEventLogEntry[] = [];
@@ -1403,7 +1404,54 @@ function findReinterpretedWindows(
     hiddenPassthroughEvents.push({ date: e.date, label: e.event });
   }
 
-  return { windows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents };
+  // A hidden RED2's own DTF SAR checkpoint cycle -- same gap as BAR SL2's
+  // own backend-true exposure above, just one anchor type over.
+  // `computePrimeTrendCheckpoints` only ever anchors this watch off a
+  // VISIBLE WtfInstance's own RED2(s); a RED2 that fires for a
+  // sub-lineage born while its branch is dormant has no such instance at
+  // all, so its entire SAR/INVALID SAR/SAR 2 cycle was never exposed
+  // anywhere. Confirmed real-data (DIXON.NS, hidden RED2(B.3)
+  // 2025-05-26): 2025-06-03 SAR, 2025-06-04 SAR SL, 2025-06-05 SAR HH,
+  // 2025-06-13 SAR (a fresh re-arm, NOT "SAR 2" -- see
+  // InvalidSarState.sarSlSinceLastSar's own comment in primeTrend.ts),
+  // 2025-06-16 SAR HH + SAR LL, 2025-06-19 SAR 2 -- none of it shown
+  // until this. postBarSl2Race is the identical mechanism regardless of
+  // anchor event (generalized there to accept a "RED2(" endEvent too).
+  const hiddenRed2SarCheckpoints: { letter: string; date: string; label: string }[] = [];
+  for (const e of hiddenEventLog) {
+    // RED1/RED2 are tracked per top-level letter, never a sub-numbered
+    // label (unlike BAR/BAR 2) -- `label` is always null here; the
+    // letter alone is both this event's identity and its visible-text
+    // argument ("RED2(B)"), confirmed via hiddenEventLog's own push site
+    // in tzEngineWtf.ts.
+    if (e.event !== "RED2") continue;
+    // Only a RED2 that never reached visible output at all -- one that
+    // DID (even displayed under a misclassified letter, passed through
+    // by BAR_VOCAB_PASSTHROUGH) already gets its own SAR cycle from
+    // computePrimeTrendCheckpoints via that letter's own real
+    // WtfInstance; re-deriving it here would double it up. Same
+    // visibility check hiddenPassthroughEvents' own loop above uses.
+    const eventText = `RED2(${e.letter})`;
+    const traceEntry = wtfTrace.find((t) => t.day.date === e.date);
+    if (traceEntry && traceEntry.events.includes(eventText)) continue;
+    const anchorDay = wtfDays.find((d) => d.date === e.date);
+    if (anchorDay === undefined) continue;
+    const inst: WtfInstance = {
+      family: "TZ BUY 2",
+      letter: e.letter,
+      formationDate: wtfDays[0].date,
+      endDate: e.date,
+      endEvent: `RED2(${e.letter})`,
+      endPrice: anchorDay.l,
+    };
+    const sarResult = postBarSl2Race(dtfDays, wtfTrace, inst);
+    if (sarResult === null) continue;
+    for (const c of sarResult.checkpoints) {
+      hiddenRed2SarCheckpoints.push({ letter: e.letter, date: c.date, label: c.label });
+    }
+  }
+
+  return { windows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints };
 }
 
 // Additive helper (session of 2026-10-22), NOT yet verified beyond
@@ -1460,10 +1508,16 @@ export function computeTarTbar(
   // building a WTF event ledger adds these the same way it adds any
   // other pass-through event, keyed only by date and event-type label.
   hiddenPassthroughEvents: { date: string; label: string }[];
+  // A hidden RED2's own DTF SAR/INVALID SAR/SAR 2 checkpoint cycle -- see
+  // findReinterpretedWindows' own comment. Tagged by letter only; a
+  // caller merges these into its DTF ledger the same way it already
+  // merges a visible RED2's own checkpoints (computePrimeTrendCheckpoints),
+  // just tagged by whatever convention it uses for that anchor.
+  hiddenRed2SarCheckpoints: { letter: string; date: string; label: string }[];
 } {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
-  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents } = findReinterpretedWindows(wtfDays, dtfDays);
+  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints } = findReinterpretedWindows(wtfDays, dtfDays);
   // Drop any raw-trace window for a misclassified letter, from its own
   // spawn date onward -- its ENTIRE downstream existence (not just the
   // "TZ GREEN(" tier reinterpretedWindows already covers) is noise,
@@ -1499,5 +1553,5 @@ export function computeTarTbar(
     // "once WTF TZ BUY 2 fails, DTF tracking freezes" everywhere else.
     if (w.endDate === null) live.push(...windowLive);
   }
-  return { windows, results, live, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents };
+  return { windows, results, live, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints };
 }
