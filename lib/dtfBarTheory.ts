@@ -25,8 +25,9 @@
 //   candle.
 // TZ BUY ENTRY SL with TZ BUY still active: REAR C on the next green candle,
 //   then TZ BUY ENTRY above REAR C's high. REAR C SL -> REAR C again on the
-//   next green candle. (default: if RED2 has already armed a BAR, the BAR path
-//   carries on instead of REAR C.) While TZ BUY ENTRY sits SL'd, a higher high
+//   next green candle. BAR is not considered unless TZ BUY ENTRY is active:
+//   TZ BUY ENTRY SL ends the BAR stage (the RED gate keeps running, and BAR1
+//   can only form once TZ BUY ENTRY is active again). While TZ BUY ENTRY sits SL'd, a higher high
 //   is INVALID TZ BUY ENTRY HH and raises its frozen high (default).
 // BAR ENTRY SL with its BAR1 still alive: INVALID BAR ENTRY HH raises its
 //   frozen high; RED2 (before or after) -> BAR1 -> BAR ENTRY; BAR ENTRY re-forms
@@ -441,14 +442,19 @@ export class DtfBarTheoryEngine {
         e.sl = true;
         tz.rearC = null;
         ev.push("TZ BUY ENTRY SL");
-        if (tz.barPending || tz.barLineages.length > 0)
-          this.doubt("RED 2 already received: BAR path carries on, no REAR (c)");
+        // BAR is not considered unless TZ BUY ENTRY is active (user-
+        // confirmed): the BAR stage ends here. The RED gate keeps running.
+        if (tz.barLineages.length > 0)
+          this.doubt("TZ BUY ENTRY SL ends the live BAR stage (BAR not considered while TZ BUY ENTRY is SL'd)");
+        tz.barLineages = [];
+        tz.barPending = false;
+        tz.barEntryEver = false;
         if (s1Name === "REAR A") this.doubt("TZ BUY ENTRY SL under REAR (a): REAR (c) logic applied");
       }
     } else if (e !== null && e.sl) {
       let reformed = false;
       let rearCToday = false;
-      if (!tz.barPending && tz.barLineages.length === 0) {
+      {
         if (tz.rearC !== null && !tz.rearC.sl) {
           if (breaksRef(prev, cur, tz.rearC.refHigh)) {
             tz.entry = new Tier(cur.h, cur.l);
@@ -475,8 +481,8 @@ export class DtfBarTheoryEngine {
       if (reformed) return ev;
     }
 
-    // BAR stage and RED gate under TZ BUY ENTRY.
-    const bar = this.evalBarLineages(cyc, tz, prev, cur);
+    // BAR stage (only while TZ BUY ENTRY is active) and RED gate.
+    const bar = tz.entry !== null && !tz.entry.sl ? this.evalBarLineages(cyc, tz, prev, cur) : [];
     if (!tz.barEntryEver && bar.some((x) => /^BAR2\(/.test(x))) {
       tz.barEntryEver = true;
       ev = ev.filter((x) => x !== "TZ BUY ENTRY HH");
