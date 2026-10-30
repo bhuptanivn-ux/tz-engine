@@ -1319,6 +1319,31 @@ class InvalidSarState {
   // SAR's own reference, ending the whole cycle 6 days early.
   sarSlSinceLastSar = false;
 
+  // The lowest Low ever seen since this SAR first fired -- persists,
+  // monotonically non-increasing, across EVERY later INVALID
+  // SAR/reform/SL cycle, no matter how much the price rallies back up
+  // in between. All the LOCAL, tactical ref/reformFloor reseeds in this
+  // state machine stay exactly as they were (a fresh INVALID SAR/reform
+  // still reseeds to that day's own Low, same as always) -- this value
+  // is used only to GATE SEEK_REFORM's own terminal "fresh SAR" check:
+  // a decisive breach of the LOCAL reformFloor is not yet a real "SAR"
+  // unless it ALSO breaches this persisting historical floor. Per the
+  // user's own rule: "if SAR SL or INVALID SAR occurs, the next SAR
+  // occurs BELOW THE EARLIER SAR's OWN reference low" -- the ORIGINAL
+  // one, not whatever a later, higher-seated local reform happened to
+  // reseed reformFloor to. Confirmed real-data (DIXON.NS, RED2(A)
+  // 2022-01-24): the original SAR ratchets refLow down to 3936.95 by
+  // 2022-02-22; the INVALID SAR/reform/SL chain that follows (through
+  // 2022-04-12's own INVALID SAR SL, reformFloor reseeded locally to
+  // that day's own higher Low, 4315.55) never comes back down near
+  // 3936.95 on its own -- so the OLD code treated 4315.55 as the
+  // decisive floor, firing a (wrong) "SAR" the moment it was merely
+  // LOCALLY breached, on 2022-04-18. The real floor is still 3936.95 --
+  // not breached until 2022-05-04 (Low 3780.00), the user's own given
+  // "SAR" there, with "SAR LL" on 2022-05-06 and the real "SAR 2" only
+  // on 2022-05-10.
+  historicalFloor: number;
+
   rowEntryDate: string | null = null;
   rowEntryPrice: number | null = null;
   rowHH = 0;
@@ -1327,6 +1352,7 @@ class InvalidSarState {
   constructor(refHigh: number, refLow: number) {
     this.refHigh = refHigh;
     this.refLow = refLow;
+    this.historicalFloor = refLow;
   }
 }
 
@@ -1495,17 +1521,52 @@ function stepInvalidSar(
         s.mode = "INVALID_SAR_ACTIVE";
         break;
       }
-      // Symmetric to SEEK_INVALID's own sar2Now check above: a decisive
-      // breach of the bare SL day's own Low, before any reform ever
-      // happens, is SAR 2 -- terminates the INVALID SAR mechanism for
-      // THIS BAR outright ("no INVALID SAR ENTRY possible for this
-      // BAR"), same shape and same reasoning as the original. Confirmed
-      // via COCHINSHIP: 2025-01-10's bare SL (Low 1415.00) -> 2025-01-13
-      // decisively breaks it (Low 1359.55, gap 55.45, Close 1359.55
-      // confirming) -- SAR 2, before the reform that otherwise happens
-      // on 2025-01-16 ever gets a chance.
+      // A decisive breach of the bare SL day's own (LOCAL) Low is a
+      // FRESH "SAR" reactivation -- NOT "SAR 2" directly -- but ONLY
+      // once it ALSO breaches the historical floor (the lowest Low ever
+      // seen since this SAR first fired, persisting across every
+      // reform in between). A local reformFloor reseeded by an
+      // intervening INVALID SAR SL can sit well ABOVE that historical
+      // floor after a big rally-then-pullback; breaching merely that
+      // local value is not yet a real "SAR" -- it's still just this
+      // same reform-floor's own quiet climb downward, same "SAR LL"
+      // ratchet as any other non-decisive day. Confirmed real-data
+      // (DIXON.NS, RED2(A) 2022-01-24): 2022-04-12's own INVALID SAR SL
+      // reseeds reformFloor to that day's Low (4315.55); 2022-04-18
+      // locally breaches it, but the user's own given rule -- "SAR 2
+      // cannot occur below the previous RED2['s SAR reference] ... new
+      // SAR will occur BELOW the earlier SAR ref low" -- means nothing
+      // real happens there: the historical floor (3936.95, set
+      // 2022-02-22) isn't breached until 2022-05-04 (Low 3780.00),
+      // which is the real "SAR"; "SAR LL" on 2022-05-06, "SAR 2" on
+      // 2022-05-10. Per the user's own rule: post SAR, once INVALID SAR
+      // or SAR SL has triggered, SAR must reactivate (below the
+      // breached reference low) before SAR 2 can occur at all; SAR 2 is
+      // reserved for a decisive breach of THAT reactivated watch's own
+      // reference, not this one.
+      //
+      // The historical-floor breach needs its OWN close confirmation
+      // (cur.c <= historicalFloor + EPS), not just the Low -- confirmed
+      // real-data (BSE.NS, RED2(A) 2022-04-18/25-anchored cycle):
+      // 2022-05-06's Low (268.52) clears the local reformFloor (276.83)
+      // AND the historical floor (270.67, set 2022-04-25) alike, but its
+      // Close (274.45) does NOT confirm below 270.67 -- so this is NOT
+      // yet a real "SAR" either, just reformFloor's own further climb
+      // down to 268.52. The real reactivation is 2022-05-09 (Low 257.03,
+      // Close 259.25, both clearing 270.67), with "SAR 2" on 2022-05-10.
       if (slShape(cur, s.reformFloor)) {
-        sar2Now = true;
+        if (cur.l <= s.historicalFloor && cur.c <= s.historicalFloor + EPS) {
+          freshSarNow = true;
+          s.refHigh = cur.h;
+          s.refLow = s.historicalFloor;
+          s.mode = "SEEK_INVALID";
+          s.sarSlSinceLastSar = false;
+          break;
+        }
+        // Locally decisive, but not yet below the historical floor --
+        // just the reform-floor's own quiet climb down, no event.
+        s.reformFloor = cur.l;
+        if (cur.h > s.refHigh) s.refHigh = cur.h;
         break;
       }
       if (cur.l < s.reformFloor) s.reformFloor = cur.l; // quiet ratchet, same as SEEK_INVALID's own "SAR LL"
@@ -1538,6 +1599,23 @@ function stepInvalidSar(
         opened = { price: entryPrice };
         break;
       }
+      // Symmetric downside watch, same shape BarLevelState's own
+      // SEEK_BAR_ENTRY_REACTIVATION uses (BAR's own wider reference kept
+      // alive in the background while waiting for ENTRY to reactivate):
+      // `s.refLow` still holds the ENTRY's own frozen low from the
+      // moment it SL'd (ENTRY_ACTIVE's SL branch never touches it
+      // further) -- a decisive breach of THAT reference, before
+      // reactivation ever happens, is "INVALID SAR SL" (reusing the
+      // existing label), dropping down into SEEK_REFORM exactly like
+      // INVALID_SAR_ACTIVE's own bare SL does. Confirmed real-data
+      // (BSE.NS): 2022-04-29 INVALID SAR ENTRY -> 2022-05-04 INVALID SAR
+      // ENTRY SL (refLow frozen at 290.67) -> 2022-05-06 decisively
+      // breaches 290.67 ("INVALID SAR SL", not silently ignored as the
+      // code previously did) -> SEEK_REFORM -> 2022-05-09 fresh "SAR" ->
+      // 2022-05-10 "SAR 2". Without this, the whole mechanism just sat
+      // in SEEK_REACTIVATION forever, waiting on an upside breakout that
+      // was no longer the right question to be asking.
+      const slNow = slShape(cur, s.refLow);
       // Real-data bug (PAYTM.NS, post-BAR-SL2 DTF SAR, 2026): a High that
       // clears frozenEntryRefHigh without the Close confirming back above
       // it (02/07/26 High 1227.70 Close 1213.40; 03/07/26 High 1231.90
@@ -1550,12 +1628,32 @@ function stepInvalidSar(
       // reactivation two days later (07/07/26, High 1251.00 Close
       // 1246.00) must breakout above the ratcheted 1231.90, not the
       // stale pre-SL 1223.00.
-      if (cur.h > s.frozenEntryRefHigh && cur.h - s.frozenEntryRefHigh >= ANY) {
+      if (!slNow && cur.h > s.frozenEntryRefHigh && cur.h - s.frozenEntryRefHigh >= ANY) {
         s.frozenEntryRefHigh = cur.h;
+      }
+      if (slNow) {
+        s.reformFloor = cur.l;
+        s.mode = "SEEK_REFORM";
+        invalidSarSlNow = true;
       }
       break;
     }
   }
+
+  // Unconditional, mode-independent, and -- critically -- AFTER the
+  // SEEK_REFORM case above has already used historicalFloor's own PRIOR
+  // value: updating it first would make that case's own breach check
+  // self-referential (today's own new low trivially satisfies "cur.l <=
+  // historicalFloor" against itself) and silently defeat the Close
+  // confirmation it's paired with on whichever day happens to set a
+  // fresh all-time low. Confirmed real-data (BSE.NS, RED2(A) 2022-04-18):
+  // 2022-05-09 (Low 257.03, a fresh all-time low for this race) must
+  // compare against 268.52 -- the floor as it stood going INTO today,
+  // set 2022-05-06 -- not against itself; Close 259.25 confirms below
+  // 268.52 (the user's own given "SAR" reactivation) but would wrongly
+  // fail to confirm below its own same-day 257.03. See
+  // InvalidSarState.historicalFloor's own comment.
+  if (cur.l < s.historicalFloor) s.historicalFloor = cur.l;
 
   return { invalidSarNow, sarSlNow, sar2Now, freshSarNow, invalidSarSlNow, opened, closed };
 }
@@ -2216,7 +2314,9 @@ export type PostBarSl2CheckpointLabel =
   | "INVALID SAR ENTRY HH"
   | "INVALID SAR ENTRY LL"
   | "INVALID SAR ENTRY SL"
-  | "SAR 2";
+  | "SAR 2"
+  | "TZ BUY"
+  | "TZ BUY SL";
 
 export interface PostBarSl2Checkpoint {
   date: string;
@@ -2484,7 +2584,7 @@ function simulateDtfAll(
   wtfTrace: WtfTraceEntry[],
   wtfDates: string[],
   inst: WtfInstance
-): [PrimeTrendResult[], PrimeTrendLiveStatus | null, PostBarSl2Checkpoint[]] {
+): [PrimeTrendResult[], PrimeTrendLiveStatus | null, PostBarSl2Checkpoint[], PostBarSl2Checkpoint[]] {
   const checkpoints = wtfCheckpoints(wtfTrace, inst.family, inst.letter, inst.formationDate, inst.endDate);
 
   let startIdx: number | null = null;
@@ -2494,7 +2594,7 @@ function simulateDtfAll(
       break;
     }
   }
-  if (startIdx === null) return [[], null, []];
+  if (startIdx === null) return [[], null, [], []];
 
   let s1: Stage | null = null;
   // The BAR/BAR ENTRY ladder running under the current Stage 1 (TZ BUY)
@@ -2516,6 +2616,17 @@ function simulateDtfAll(
   // the day before, via 2021-08-23's own SAR), so `rows` alone never
   // carries it.
   const sarCheckpoints: PostBarSl2Checkpoint[] = [];
+  // Stage 1 (DTF TZ BUY) is purely an internal gate for the BAR/BAR
+  // ENTRY and PBAR ladders -- it never produces a `rows` entry of its
+  // own (no "TZ BUY" PrimeTrendResult["side"] exists at all), so a bare
+  // TZ BUY -> TZ BUY SL cycle with nothing escalating underneath it was
+  // never visible anywhere, even when computePrimeTrend's own
+  // Stage-2-confirmed filter doesn't apply. Confirmed real-data (BSE):
+  // 2017-06-05 TZ BUY -> 2017-06-06 TZ BUY SL, under the 29/05/17 TZ BUY
+  // 2 instance, never shown. Every activation/SL is recorded here
+  // regardless of what else happens, same backend-truth-exposure
+  // posture as hiddenEventLog/barSl2Log at the WTF level.
+  const stage1Checkpoints: PostBarSl2Checkpoint[] = [];
 
   // --- DTF PBAR / PBAR ENTRY -- own ladder (see this module's header
   // for the full derivation). Requires THREE conditions simultaneously,
@@ -2559,6 +2670,25 @@ function simulateDtfAll(
   let red2EventIdx = 0;
   let sarRefLow: number | null = null;
   let sarFired = false;
+  // The RED2 date currently anchoring sarRefLow/invalidSarState -- used
+  // by the kill-switch below. Null whenever nothing has armed yet.
+  let sarArmedFromRed2Date: string | null = null;
+  // Every "BAR 2(<letter>...)" formation for this lineage, in order --
+  // the kill-switch below fires on BAR 2 (tier 2, the escalation), NOT
+  // bare BAR (tier 1) alone. Confirmed real-data (DIXON.NS): RED2(A)
+  // 2022-01-24's BAR(A) formed 2022-03-14 but NEVER escalated to BAR 2
+  // before SL'ing (2022-05-02) -- that lineage's SAR watch (through its
+  // own SAR 2 on 2022-04-19) was never killed at all; a bare BAR alone
+  // does not retire the earlier RED2's SAR eligibility, only a genuine
+  // BAR 2 does.
+  const bar2FormationDates: string[] = [];
+  {
+    const bar2Re = new RegExp(`^BAR 2\\(${inst.letter}(?:\\.\\d+)?\\)$`);
+    for (const { day, events } of wtfTrace) {
+      if (events.some((e) => bar2Re.test(e))) bar2FormationDates.push(day.date);
+    }
+  }
+  let sarKillBarIdx = 0;
 
   // BAR THEORY -- TAR/TAR ENTRY and the nested BAR1/BAR2 cascade (see the
   // module section comment above). Reuses pbarWindows/pbarWindowIdx/
@@ -2719,6 +2849,16 @@ function simulateDtfAll(
       }
     }
     const isS1Active = s1 !== null && s1.active;
+
+    // Backend-true Stage 1 (DTF TZ BUY) activation/SL ladder -- recorded
+    // regardless of whether anything ever escalates underneath it (see
+    // stage1Checkpoints' own comment above).
+    if (!wasS1Active && isS1Active) {
+      stage1Checkpoints.push({ date: cur.date, label: "TZ BUY", price: (s1 as Stage).refHigh });
+    }
+    if (wasS1Active && !isS1Active) {
+      stage1Checkpoints.push({ date: cur.date, label: "TZ BUY SL", price: (s1 as Stage).refLow });
+    }
 
     // --- TZ BUY's own SL wipes the whole BAR/BAR ENTRY structure outright ---
     if (wasS1Active && !isS1Active) {
@@ -3080,7 +3220,34 @@ function simulateDtfAll(
       containingWeekStart(wtfDates, cur.date) !== red2Events[red2EventIdx].date
     ) {
       sarRefLow = red2Events[red2EventIdx].refLow;
+      sarArmedFromRed2Date = red2Events[red2EventIdx].date;
       red2EventIdx += 1;
+    }
+    // KILL-SWITCH: once a fresh BAR 2 forms for this lineage strictly
+    // after the RED2 currently anchoring the SAR watch, that RED2's own
+    // SAR mechanism is DEAD -- not dormant, not merely paused --
+    // regardless of what state it's in (even mid-INVALID-SAR-ENTRY or
+    // waiting to reactivate). Only a FRESH RED1->RED2 (the ordinary
+    // re-arm above) can open SAR eligibility again; a bare BAR (tier 1,
+    // never escalating) is NOT enough on its own -- confirmed real-data
+    // (DIXON.NS): RED2(A) 2022-01-24's own BAR(A) formed 2022-03-14 but
+    // never escalated to BAR 2 before SL'ing (2022-05-02) -- that SAR
+    // watch's own later SAR (2022-05-04) is genuine, nothing kills it.
+    // Strictly BEFORE cur.date (not <=): the BAR 2's own formation date
+    // is the first day of its WTF week, and that same day's own daily
+    // breakout can simultaneously confirm a real SAR-mechanism event
+    // (e.g. an INVALID SAR ENTRY escalation) -- killing before THIS
+    // day's own stepInvalidSar call ever runs would erase that same-day
+    // event. Confirmed real-data (DIXON.NS, hidden RED2(B) 2024-01-15,
+    // tarTbar.ts's own hiddenRed2SarCheckpoints): BAR 2(B.2) is dated
+    // 2024-02-19, the SAME day INVALID SAR ENTRY decisively confirms.
+    while (sarKillBarIdx < bar2FormationDates.length && bar2FormationDates[sarKillBarIdx] < cur.date) {
+      if (sarArmedFromRed2Date !== null && bar2FormationDates[sarKillBarIdx] > sarArmedFromRed2Date) {
+        sarRefLow = null;
+        invalidSarState = null;
+        sarArmedFromRed2Date = null;
+      }
+      sarKillBarIdx += 1;
     }
     // SAR itself is recurring: it must keep re-arming and firing on EVERY
     // qualifying RED2, not just the first ever -- `sarFired` below is a
@@ -3430,7 +3597,7 @@ function simulateDtfAll(
     pbarHighestHighDate: pbarActive ? (pbarState as PbarLevelState).rowHHDate : null,
   };
 
-  return [rows, live, sarCheckpoints];
+  return [rows, live, sarCheckpoints, stage1Checkpoints];
 }
 
 // --------------------------------------------------------------------
@@ -3487,6 +3654,26 @@ export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRo
   const results: { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
   for (const inst of instances) {
     const [, , checkpoints] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
+    if (checkpoints.length > 0) results.push({ letter: inst.letter, checkpoints });
+  }
+  return results;
+}
+
+/** Stage 1 (DTF TZ BUY)'s own full activation/SL ladder, per instance --
+ * same shape and same reasoning as computePrimeTrendCheckpoints, just
+ * returning simulateDtfAll's 4th element instead of its 3rd. Stage 1
+ * never produces a `computePrimeTrend` row of its own (no "TZ BUY"
+ * PrimeTrendResult["side"] exists -- it is purely an internal gate for
+ * BAR/BAR ENTRY and PBAR), so a bare TZ BUY -> TZ BUY SL cycle with
+ * nothing escalating underneath it was invisible everywhere until this.
+ * Confirmed real-data (BSE.NS): 2017-06-05 TZ BUY -> 2017-06-06 TZ BUY
+ * SL, under the 2017-05-29 TZ BUY 2 instance, never shown anywhere. */
+export function computeStage1Checkpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] {
+  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
+
+  const results: { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
+  for (const inst of instances) {
+    const [, , , checkpoints] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
     if (checkpoints.length > 0) results.push({ letter: inst.letter, checkpoints });
   }
   return results;
