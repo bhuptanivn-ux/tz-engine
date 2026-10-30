@@ -440,14 +440,17 @@ function stepLevel(
   }
 
   // --- independent BAR1->BAR2 entry route, processed unconditionally
-  // every candle regardless of s.mode -- gated on tarSlEverHappened (a
-  // REAL TAR SL, not any of TAR ENTRY's own tighter ones) and doorOpen
-  // (a RED1->RED2 completed at ANY point, before/during/after that SL --
-  // confirmed: "TAR SL and RED1-RED2 are required for the BAR1-BAR2",
-  // not nested inside an already-open TAR ENTRY position; BAR1 can
-  // occur even when TAR never escalated to TAR ENTRY at all. Runs in
-  // parallel with whatever TAR/TAR ENTRY itself does afterward -- never
-  // reset by a later TAR reform or a later TAR ENTRY SL/formation. ---
+  // every candle regardless of s.mode -- gated on tarSlEverHappened
+  // (set by EITHER a real TAR SL -- TAR itself dying -- OR a bare TAR
+  // ENTRY SL -- TAR ENTRY failing while TAR survives, see that branch's
+  // own comment; the user's own correction: TAR ENTRY SL counts "just
+  // like TAR SL" for this unlock) and doorOpen (a RED1->RED2 completed
+  // at ANY point, before/during/after that SL -- confirmed: "TAR SL and
+  // RED1-RED2 are required for the BAR1-BAR2", not nested inside an
+  // already-open TAR ENTRY position; BAR1 can occur even when TAR
+  // never escalated to TAR ENTRY at all. Runs in parallel with whatever
+  // TAR/TAR ENTRY itself does afterward -- never reset by a later TAR
+  // reform or a later TAR ENTRY SL/formation. ---
   if (s.tarSlEverHappened && s.doorOpen && s.nestedMode === "NONE") s.nestedMode = "SEEK_BAR1";
   if (s.nestedMode === "SEEK_BAR1") {
     if (bar1Shape(prev, cur)) {
@@ -634,6 +637,18 @@ function stepLevel(
         s.frozenTarEntryRefHigh = s.tbarRefHigh;
         closed = { exitType: "TAR ENTRY SL", exitPrice: s.tbarRefLow };
         s.mode = "SEEK_TAR_ENTRY_REACTIVATION";
+        // A bare "TAR ENTRY SL" (TAR itself survives, still alive and
+        // continuously tracked above) licenses the independent nested
+        // BAR1->BAR2 route JUST LIKE a real TAR SL does -- per the
+        // user's own correction: whether RED2 completes before or after
+        // this TAR ENTRY SL, once both have happened, BAR/BAR ENTRY is
+        // eligible. Confirmed real-data (BSE.NS, window A.4 formed
+        // 2025-03-17): TAR ENTRY SL and RED2 both confirm 2025-04-07
+        // (same day); the nested route was previously never even
+        // computed here (tarSlEverHappened only set by a REAL TAR SL,
+        // which never happened in this TAR's life) -- 2025-04-08 BAR,
+        // 2025-04-11 BAR ENTRY are real and were missing entirely.
+        s.tarSlEverHappened = true;
       }
       break;
     }
@@ -762,7 +777,19 @@ function markBarTheoryDisplaySides(
   for (const r of windowResults) {
     if (r.side === "TAR ENTRY") {
       events.push({ date: r.entryDate, side: "TAR", kind: "ENTRY_OPEN", ref: [r] });
-      if (r.exitType === "TAR ENTRY SL + TAR SL") events.push({ date: r.exitDate, side: "TAR", kind: "DEATH", ref: [r] });
+      // A bare "TAR ENTRY SL" (TAR itself still alive, seeking
+      // reactivation) frees up active status for a handoff to BAR,
+      // same as the combined "TAR ENTRY SL + TAR SL" full death --
+      // per the user's own correction: TAR ENTRY SL counts "just like
+      // TAR SL" here too, not just for the nested route's own unlock
+      // (see stepLevel's own TAR_ENTRY_ACTIVE comment). TAR's own entry
+      // already spent its one shot the moment it opened (rule 2), so
+      // this never lets TAR reclaim active status later -- only BAR
+      // can now claim it, on BAR's own first entry. Confirmed real-data
+      // (BSE.NS, window A.4): TAR ENTRY SL fires 2025-04-07; BAR ENTRY
+      // (the nested route's own first-ever entry, newly unlocked by
+      // that same SL) fires 2025-04-11 and must display from there.
+      if (r.exitType === "TAR ENTRY SL + TAR SL" || r.exitType === "TAR ENTRY SL") events.push({ date: r.exitDate, side: "TAR", kind: "DEATH", ref: [r] });
     } else {
       events.push({ date: r.exitDate, side: "BAR", kind: "DEATH", ref: [r] });
     }
@@ -787,7 +814,15 @@ function markBarTheoryDisplaySides(
   for (const l of windowLive) {
     if (l.side === "TAR ENTRY") events.push({ date: l.since, side: "TAR", kind: "ENTRY_OPEN", ref: [l] });
   }
-  events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  // On an exact same-day tie between the two sides' own ENTRY_OPEN
+  // events, BAR wins -- per the user's own explicit rule ("In case BAR
+  // ENTRY AND TAR ENTRY OCCURS ON THE SAME DAY, THEN PREFERENCE WILL BE
+  // GIVEN TO BAR ENTRY").
+  events.sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    if (a.kind === "ENTRY_OPEN" && b.kind === "ENTRY_OPEN" && a.side !== b.side) return a.side === "BAR" ? -1 : 1;
+    return 0;
+  });
 
   // Single pass: walk the ENTRY_OPEN/DEATH timeline once, tagging each
   // ref directly and recording the activeSide segment boundaries as we
@@ -1735,17 +1770,35 @@ function findReinterpretedWindows(
     // this scan must check hiddenEventLog too, not just the visible
     // trace.
     const freshBar2Pattern = new RegExp(`^BAR 2\\(${e.letter}(?:\\.\\d+)?\\)$`);
-    let killDate: string | null = null;
+    let bar2KillDate: string | null = null;
     for (const entry of wtfTrace) {
       if (entry.day.date <= e.date) continue;
       if (entry.events.some((ev) => freshBar2Pattern.test(ev))) {
-        killDate = entry.day.date;
+        bar2KillDate = entry.day.date;
         break;
       }
     }
     for (const h of hiddenEventLog) {
       if (h.event !== "BAR 2" || h.letter !== e.letter || h.date <= e.date) continue;
-      if (killDate === null || h.date < killDate) killDate = h.date;
+      if (bar2KillDate === null || h.date < bar2KillDate) bar2KillDate = h.date;
+    }
+    // A FRESH RED2 (same letter) forming after this one supersedes it
+    // UNCONDITIONALLY, escalated or not -- unlike a fresh BAR 2 (a
+    // different, uptrend-continuation signal that does NOT invalidate
+    // an already-escalated INVALID SAR/INVALID SAR ENTRY downtrend
+    // watch, see escapedBeforeKill below), a fresh RED2 is the SAME
+    // kind of signal, just newer, and fully retires the earlier one's
+    // own tracking -- including its own reactivation-after-SL watch.
+    // Confirmed real-data (BSE.NS): RED2(2024-01-23)'s own INVALID SAR
+    // ENTRY (2024-03-26) SL's 2024-07-22 and would otherwise reactivate
+    // 2024-09-16 -- but RED2(2024-07-01) already formed in between
+    // (independently confirming its OWN SAR 2 on 2024-07-09), so by
+    // 2024-09-16 the 2024-01-23 chain is dead, not dormant; that
+    // reactivation must never show.
+    let freshRed2KillDate: string | null = null;
+    for (const h of hiddenEventLog) {
+      if (h.event !== "RED2" || h.letter !== e.letter || h.date <= e.date) continue;
+      if (freshRed2KillDate === null || h.date < freshRed2KillDate) freshRed2KillDate = h.date;
     }
     // Inclusive of killDate itself -- that WTF week's own decisive
     // daily breakout is what CONFIRMS the BAR 2, so excluding it too
@@ -1756,25 +1809,62 @@ function findReinterpretedWindows(
     // daily breakout (High 6810, Close 6743.85) decisively confirms
     // "INVALID SAR ENTRY" too -- excluding that day outright silently
     // dropped a real, already-earned event.
-    // The kill-switch only governs the PLAIN "SAR -> SAR 2" tier (the
-    // user's own rule: "SAR - SAR 2 cannot occur BELOW the previous
-    // RED2") -- once this race has already escalated past that, into
-    // INVALID SAR/INVALID SAR ENTRY, a LATER fresh BAR 2 does not kill
-    // it: that escalated tier's own reactivation (rule f -- INVALID SAR/
-    // INVALID SAR ENTRY reactivating above the highest ref. high seen
-    // since INVALID SAR ENTRY) is a different, independent watch.
-    // Confirmed real-data (BSE.NS, RED2(A) 2026-02-23): INVALID SAR
-    // already fires 2026-03-05, long before BAR 2(A) forms 2026-04-06 --
-    // capping there would silently erase the real 2026-04-08 INVALID SAR
-    // / 2026-04-09 INVALID SAR ENTRY reactivation that follows.
-    const uncappedForKillCheck = killDate === null ? null : postBarSl2Race(dtfDays, wtfTrace, inst);
-    const escapedBeforeKill =
-      uncappedForKillCheck !== null &&
-      uncappedForKillCheck.checkpoints.some((c) => c.label === "INVALID SAR" && c.date < (killDate as string));
-    const cappedDtfDays =
-      killDate === null || escapedBeforeKill ? dtfDays : dtfDays.filter((d) => d.date <= (killDate as string));
-    const sarResult = escapedBeforeKill ? uncappedForKillCheck : postBarSl2Race(cappedDtfDays, wtfTrace, inst);
-    if (sarResult === null) continue;
+    // The BAR-2-based kill-switch only governs the PLAIN "SAR -> SAR 2"
+    // tier (the user's own rule: "SAR - SAR 2 cannot occur BELOW the
+    // previous RED2") -- once this race has already escalated past
+    // that, into INVALID SAR/INVALID SAR ENTRY, a LATER fresh BAR 2
+    // does not kill it: that escalated tier's own reactivation (rule f
+    // -- INVALID SAR/INVALID SAR ENTRY reactivating above the highest
+    // ref. high seen since INVALID SAR ENTRY) is a different,
+    // independent watch. Confirmed real-data (BSE.NS, RED2(A)
+    // 2026-02-23): INVALID SAR already fires 2026-03-05, long before
+    // BAR 2(A) forms 2026-04-06 -- capping there would silently erase
+    // the real 2026-04-08 INVALID SAR / 2026-04-09 INVALID SAR ENTRY
+    // reactivation that follows. The fresh-RED2 kill has NO such
+    // exception (see its own comment above).
+    // Single uncapped simulation -- both kill rules below are applied
+    // as filters on its own checkpoints array afterward (only
+    // `.checkpoints` is read from `sarResult` anywhere past this point,
+    // so this is equivalent to re-simulating against truncated daily
+    // data, without needing two different truncation strategies to
+    // agree inside one re-simulated run).
+    const fullResult = postBarSl2Race(dtfDays, wtfTrace, inst);
+    if (fullResult === null) continue;
+    let checkpoints = fullResult.checkpoints;
+    const escapedBar2Kill = bar2KillDate !== null && checkpoints.some((c) => c.label === "INVALID SAR" && c.date < (bar2KillDate as string));
+    if (bar2KillDate !== null && !escapedBar2Kill) {
+      checkpoints = checkpoints.filter((c) => c.date <= (bar2KillDate as string));
+    }
+    if (freshRed2KillDate !== null) {
+      // Unlike the BAR-2 kill's own blunt date cutoff, a fresh RED2
+      // must NOT retroactively erase the natural close of a position
+      // that was already open before it formed -- only a FRESH
+      // escalation/reactivation starting after the kill date is
+      // blocked. Confirmed real-data (BSE.NS): INVALID SAR ENTRY SL on
+      // 2024-07-22 (closing the SAME position opened 2024-03-26, well
+      // before RED2(2024-07-01) ever formed) is real and must stay;
+      // only the LATER "INVALID SAR ENTRY REACTIVATED" (2024-09-16, a
+      // genuinely NEW escalation) is what the fresh RED2 kills.
+      let openSinceBeforeKill = false;
+      for (const c of checkpoints) {
+        if (c.date > freshRed2KillDate) break;
+        if (c.label === "INVALID SAR ENTRY" || c.label === "INVALID SAR ENTRY REACTIVATED") openSinceBeforeKill = true;
+        else if (c.label === "INVALID SAR ENTRY SL") openSinceBeforeKill = false;
+      }
+      const cutIdx = checkpoints.findIndex((c) => {
+        if (c.date <= freshRed2KillDate) return false;
+        if (openSinceBeforeKill) {
+          if (c.label === "INVALID SAR ENTRY SL") {
+            openSinceBeforeKill = false;
+            return false; // let this natural close itself through, cut starts AFTER it
+          }
+          return false;
+        }
+        return true; // nothing was open at the kill date -- cut the very first thing after it
+      });
+      if (cutIdx !== -1) checkpoints = checkpoints.slice(0, cutIdx);
+    }
+    const sarResult = { ...fullResult, checkpoints };
     // Gating this RED2's own chain on "ever escalated" needs BAR
     // THEORY's own TAR ENTRY history too, which isn't known yet at this
     // point in the pipeline (it's computed per-window, after `windows`
