@@ -25,10 +25,13 @@
 //   candle.
 // TZ BUY ENTRY SL with TZ BUY still active: REAR C on the next green candle,
 //   then TZ BUY ENTRY above REAR C's high. REAR C SL -> REAR C again on the
-//   next green candle. BAR is not considered unless TZ BUY ENTRY is active:
+//   next green candle; REAR C stops being tracked once TZ BUY ENTRY forms above
+//   it. BAR is not considered unless TZ BUY ENTRY is active:
 //   TZ BUY ENTRY SL ends the BAR stage (the RED gate keeps running, and BAR1
-//   can only form once TZ BUY ENTRY is active again). While TZ BUY ENTRY sits SL'd, a higher high
-//   is INVALID TZ BUY ENTRY HH and raises its frozen high (default).
+//   can only form once TZ BUY ENTRY is active again). While TZ BUY ENTRY sits
+//   SL'd, every new high above TZ BUY ENTRY's running reference high (highest
+//   high since the original TZ BUY ENTRY) is INVALID TZ BUY ENTRY HH; the REAR
+//   after a TZ BUY SL must clear that high.
 // BAR ENTRY SL with its BAR1 still alive: INVALID BAR ENTRY HH raises its
 //   frozen high; RED2 (before or after) -> BAR1 -> BAR ENTRY; BAR ENTRY re-forms
 //   directly above its frozen high (default).
@@ -110,6 +113,12 @@ export class TzLevel {
   s1Alive = true;
   bareSl = false;
   entry: Tier | null = null;
+  /** TZ BUY ENTRY's running reference high: the highest high since the
+   * stage 1's first TZ BUY ENTRY, across REAR -> TZ BUY ENTRY reactivations
+   * and INVALID TZ BUY ENTRY HH raises. The REAR after a TZ BUY SL must clear
+   * it (user-confirmed). Reset when a new stage 1 (REAR A) gets its own TZ
+   * BUY ENTRY. */
+  entryTop = 0;
   rearC: Tier | null = null;
   seek: RearSeek | null = null;
   red: Red | null = null;
@@ -361,6 +370,7 @@ export class DtfBarTheoryEngine {
           tz.refHigh = s.rear.refHigh;
           tz.refLow = s.rear.refLow;
           tz.entry = new Tier(cur.h, cur.l);
+          tz.entryTop = cur.h;
           tz.seek = null;
           tz.redSeek = true;
           return ["TZ BUY ENTRY"];
@@ -390,6 +400,7 @@ export class DtfBarTheoryEngine {
     // First TZ BUY ENTRY: above TZ BUY's high.
     if (tz.entry === null && breaksRef(prev, cur, tz.refHigh)) {
       tz.entry = new Tier(cur.h, cur.l);
+      tz.entryTop = cur.h;
       tz.refHigh = cur.h;
       tz.redSeek = true;
       tz.red = null;
@@ -421,7 +432,7 @@ export class DtfBarTheoryEngine {
           this.doubt("TZ BUY SL while this house's BAR SL race is still open");
         // TZ BUY SL, or REAR A SL acting as TZ BUY SL: the next REAR must
         // clear the reference high of the latest TZ BUY ENTRY (user-confirmed).
-        tz.seek = new RearSeek(tz.entry.refHigh, false);
+        tz.seek = new RearSeek(tz.entryTop, false);
         this.openRace(cyc);
       }
       tz.resetBarStage();
@@ -434,6 +445,7 @@ export class DtfBarTheoryEngine {
       const eSl = isSl(cur, e.refLow);
       if (cur.h > e.refHigh) {
         e.refHigh = cur.h;
+        if (cur.h > tz.entryTop) tz.entryTop = cur.h;
         if (!eSl && !tz.barEntryEver) ev.push("TZ BUY ENTRY HH");
       }
       const el = quietLl(cur, e.refLow);
@@ -456,11 +468,11 @@ export class DtfBarTheoryEngine {
       }
     } else if (e !== null && e.sl) {
       let reformed = false;
-      let rearCToday = false;
       {
         if (tz.rearC !== null && !tz.rearC.sl) {
           if (breaksRef(prev, cur, tz.rearC.refHigh)) {
             tz.entry = new Tier(cur.h, cur.l);
+            if (cur.h > tz.entryTop) tz.entryTop = cur.h;
             tz.rearC = null;
             tz.redSeek = true;
             ev.push("TZ BUY ENTRY");
@@ -471,15 +483,13 @@ export class DtfBarTheoryEngine {
         } else if (green(prev, cur)) {
           tz.rearC = new Tier(cur.h, cur.l);
           ev.push("REAR C");
-          rearCToday = true;
         }
       }
-      if (!reformed && cur.h > e.refHigh) {
-        e.refHigh = cur.h;
-        if (!rearCToday && (tz.rearC === null || tz.rearC.sl)) {
-          ev.push("INVALID TZ BUY ENTRY HH");
-          this.doubt("INVALID TZ BUY ENTRY HH recorded while TZ BUY is still active");
-        }
+      // Every new high above TZ BUY ENTRY's running reference high is
+      // INVALID TZ BUY ENTRY HH and raises it (user-confirmed).
+      if (!reformed && cur.h > tz.entryTop) {
+        tz.entryTop = cur.h;
+        ev.push("INVALID TZ BUY ENTRY HH");
       }
       if (reformed) return ev;
     }
