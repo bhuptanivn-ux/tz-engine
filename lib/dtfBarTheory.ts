@@ -37,8 +37,10 @@
 //     REAR A's high. REAR A then acts as stage 1.
 //   BAR level: REAR B above BAR ENTRY's frozen high, then BAR ENTRY above
 //     REAR B's high. REAR B then acts as stage 1.
-//   After a REAR A/B SL the next REAR must clear that REAR's own high
-//   (INVALID REAR HH raises it) (default for REAR B).
+//   A REAR A/B SL before its stage 2 re-forms: the next REAR must clear that
+//   REAR's own high (INVALID REAR HH raises it) (default for REAR B). A REAR A
+//   SL after its TZ BUY ENTRY acts as TZ BUY SL: the next REAR must clear that
+//   TZ BUY ENTRY's reference high, and the race re-opens.
 // Race: a stage 1 SL after stage 2 opens a race between this house's REAR
 //   (A or B) and a new house's TZ BUY (default for the BAR level). REAR first,
 //   or on the same day: REAR wins and the new house stops. New house's TZ BUY
@@ -417,8 +419,9 @@ export class DtfBarTheoryEngine {
         ev.push(`${s1Name} SL`);
         if (cyc.race !== null && !cyc.race.won && !cyc.race.lost)
           this.doubt("TZ BUY SL while this house's BAR SL race is still open");
-        tz.seek =
-          s1Name === "REAR A" ? new RearSeek(tz.refHigh, true) : new RearSeek(tz.entry.refHigh, false);
+        // TZ BUY SL, or REAR A SL acting as TZ BUY SL: the next REAR must
+        // clear the reference high of the latest TZ BUY ENTRY (user-confirmed).
+        tz.seek = new RearSeek(tz.entry.refHigh, false);
         this.openRace(cyc);
       }
       tz.resetBarStage();
