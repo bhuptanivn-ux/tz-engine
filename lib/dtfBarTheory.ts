@@ -520,6 +520,8 @@ export class DtfBarTheoryEngine {
   private evalBarLineages(cyc: Cycle, tz: TzLevel, prev: Day, cur: Day): string[] {
     // RED2 arms BAR1 whether or not BAR ENTRY is active.
     if (tz.barPending && green(prev, cur)) {
+      if (cyc.race?.open)
+        this.doubt("old house BAR 1 during the race (not via REAR): can it lead to the race win?");
       const label = this.nextBarLabel(tz);
       tz.barLineages = tz.barLineages.filter((l) => l.bar2 !== null);
       tz.barLineages.push(new BarLineage(label, cur.h, cur.l));
@@ -548,6 +550,8 @@ export class DtfBarTheoryEngine {
         // cycle ends here.
         const earlier = tz.barLineages.find((x) => x !== lin && x.bar2 !== null);
         const name = earlier !== undefined && earlier.bar2!.sl ? "BAR 2" : "BAR2";
+        if (cyc.race?.open)
+          this.doubt("old house reaches BAR 2 / BAR ENTRY without REAR: does it win the race?");
         lin.bar2 = new Tier(cur.h, cur.l);
         lin.barTop = cur.h;
         tz.barLineages = [lin];
