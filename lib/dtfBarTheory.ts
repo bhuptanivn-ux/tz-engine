@@ -14,8 +14,10 @@
 // `dayDoubts` so a report can show it):
 //
 // House: TZ GREEN (green candle) -> RED1 -> RED2 -> TZ BUY (green candle).
-//   TZ GREEN SL (SL of TZ GREEN's reference low) is possible every day the
-//   house is live and ends it. TZ GREEN HH is tracked, not recorded.
+//   TZ GREEN SL (SL of TZ GREEN's reference low) does not end the house: the
+//   SL candle's low becomes the reference (TZ GREEN SL LL lowers it), and only
+//   TZ GREEN SL 2 (a decisive close below it) ends the house, after which a
+//   new TZ GREEN may start. TZ GREEN HH is tracked, not recorded.
 // Two levels, each with a stage 1 and a stage 2:
 //   TZ level:  stage 1 = TZ BUY (or REAR A), stage 2 = TZ BUY ENTRY.
 //   BAR level: stage 1 = BAR1 (or REAR B),   stage 2 = BAR ENTRY (BAR2).
@@ -45,7 +47,8 @@
 //     HH raises it), then BAR ENTRY above that REAR's high. No race.
 //   BAR SL 2 (old rule: BAR SL LL lowers the BAR SL low; a decisive close
 //     below it is BAR SL 2): opens the race; REAR above BAR ENTRY's running
-//     reference high, then BAR ENTRY above that REAR's high.
+//     reference high, then BAR ENTRY above that REAR's high. Until then the
+//     house moves only via REAR -> BAR ENTRY (no new BAR1, RED gate stopped).
 //   REAR SL (REAR does not act as BAR1): the next REAR must clear the earlier
 //     REAR's running high (INVALID REAR HH raises it).
 // TZ level stage 1 SL after TZ BUY ENTRY (both SLs recorded): REAR A above
@@ -174,6 +177,9 @@ export class Cycle {
   red: Red | null = null;
   tz: TzLevel | null = null;
   race: Race | null = null;
+  /** TZ GREEN SL: the SL candle's low becomes the reference (TZ GREEN SL LL
+   * lowers it). The house carries on; only TZ GREEN SL 2 ends it. */
+  greenSl: Tier | null = null;
   /** Lost a race: keeps running in the background, nothing of it is shown. */
   dormant = false;
   constructor(public seq: number, public refHigh: number, public refLow: number) {}
@@ -255,14 +261,30 @@ export class DtfBarTheoryEngine {
     const ev: string[] = [];
     const tz = cyc.tz;
     if (cur.h > cyc.refHigh) cyc.refHigh = cur.h; // TZ GREEN HH: not recorded
-    if (isSl(cur, cyc.refLow)) {
-      cyc.active = false;
-      return ["TZ GREEN SL"];
-    }
-    const low = quietLl(cur, cyc.refLow);
-    if (low !== null) {
-      cyc.refLow = low;
-      if (tz === null || !tz.s1Alive) ev.push("TZ GREEN LL");
+    if (cyc.greenSl === null) {
+      if (isSl(cur, cyc.refLow)) {
+        // TZ GREEN SL no longer ends the house (user-confirmed).
+        cyc.greenSl = new Tier(cur.h, cur.l);
+        ev.push("TZ GREEN SL");
+      } else {
+        const low = quietLl(cur, cyc.refLow);
+        if (low !== null) {
+          cyc.refLow = low;
+          if (tz === null || !tz.s1Alive) ev.push("TZ GREEN LL");
+        }
+      }
+    } else {
+      // TZ GREEN SL 2 (same old SL -> SL 2 rule): ends the house, and a new
+      // TZ GREEN may start.
+      if (isSl(cur, cyc.greenSl.refLow)) {
+        cyc.active = false;
+        return ["TZ GREEN SL2"];
+      }
+      const low = quietLl(cur, cyc.greenSl.refLow);
+      if (low !== null) {
+        cyc.greenSl.refLow = low;
+        ev.push("TZ GREEN SL LL");
+      }
     }
 
     if (tz === null) {
@@ -519,9 +541,9 @@ export class DtfBarTheoryEngine {
 
   private evalBarLineages(cyc: Cycle, tz: TzLevel, prev: Day, cur: Day): string[] {
     // RED2 arms BAR1 whether or not BAR ENTRY is active.
-    if (tz.barPending && green(prev, cur)) {
-      if (cyc.race?.open)
-        this.doubt("old house BAR 1 during the race (not via REAR): can it lead to the race win?");
+    // After BAR SL 2 the house only moves via REAR -> BAR ENTRY: no new BAR1.
+    const inSl2 = tz.barLineages.some((l) => l.sl2);
+    if (tz.barPending && !inSl2 && green(prev, cur)) {
       const label = this.nextBarLabel(tz);
       tz.barLineages = tz.barLineages.filter((l) => l.bar2 !== null);
       tz.barLineages.push(new BarLineage(label, cur.h, cur.l));
@@ -550,8 +572,6 @@ export class DtfBarTheoryEngine {
         // cycle ends here.
         const earlier = tz.barLineages.find((x) => x !== lin && x.bar2 !== null);
         const name = earlier !== undefined && earlier.bar2!.sl ? "BAR 2" : "BAR2";
-        if (cyc.race?.open)
-          this.doubt("old house reaches BAR 2 / BAR ENTRY without REAR: does it win the race?");
         lin.bar2 = new Tier(cur.h, cur.l);
         lin.barTop = cur.h;
         tz.barLineages = [lin];
@@ -637,6 +657,12 @@ export class DtfBarTheoryEngine {
         lin.sl2 = true;
         lin.rear = null;
         lin.rearHigh = null;
+        // From BAR SL 2 the house only moves via REAR -> BAR ENTRY (user-
+        // confirmed): other BAR rounds and the RED gate stop until then.
+        tz.barLineages = [lin];
+        tz.barPending = false;
+        tz.redSeek = false;
+        tz.red = null;
         ev.push(`BAR SL2(${L})`);
         this.openRace(cyc);
         if (cur.h > lin.barTop) lin.barTop = cur.h;
