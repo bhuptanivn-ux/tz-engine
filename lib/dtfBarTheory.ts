@@ -14,7 +14,8 @@
 // `dayDoubts` so a report can show it):
 //
 // House: TZ GREEN (green candle) -> RED1 -> RED2 -> TZ BUY (green candle).
-//   TZ GREEN SL (SL of TZ GREEN's reference low) does not end the house: the
+//   Before RED2, TZ GREEN SL ends the house and a new TZ GREEN may start.
+//   After RED2, TZ GREEN SL (SL of TZ GREEN's reference low) does not: the
 //   SL candle's low becomes the reference (TZ GREEN SL LL lowers it), and only
 //   TZ GREEN SL 2 (a decisive close below it) ends the house, after which a
 //   new TZ GREEN may start. TZ GREEN HH is tracked, not recorded.
@@ -296,7 +297,14 @@ export class DtfBarTheoryEngine {
     if (cur.h > cyc.refHigh) cyc.refHigh = cur.h; // TZ GREEN HH: not recorded
     if (cyc.greenSl === null) {
       if (isSl(cur, cyc.refLow)) {
-        // TZ GREEN SL no longer ends the house (user-confirmed).
+        // Before RED2 (bare TZ GREEN, or RED1 only) TZ GREEN SL ends the house
+        // and a new one may start. After RED2 it does not; only TZ GREEN SL 2
+        // does (user-confirmed).
+        const red2Done = tz !== null || (cyc.red !== null && !cyc.red.active);
+        if (!red2Done) {
+          cyc.active = false;
+          return ["TZ GREEN SL"];
+        }
         cyc.greenSl = new Tier(cur.h, cur.l);
         ev.push("TZ GREEN SL");
       } else {
