@@ -43,8 +43,8 @@
 //   BAR1's high) while the earlier BAR ENTRY is active, or BAR 2 of a new BAR
 //   cycle while it is not; either way the earlier BAR cycle ends there. Bare
 //   BAR1 SL: BAR1 again on the next green candle.
-//   BAR ENTRY SL: REAR above BAR ENTRY's running reference high (INVALID BAR
-//     ENTRY HH raises it), then BAR ENTRY above that REAR's high.
+//   BAR ENTRY SL: no re-entry yet (not coded, user); INVALID BAR ENTRY HH
+//     keeps BAR ENTRY's running reference high for the REAR after BAR SL 2.
 //   BAR SL (BAR ENTRY SL included): first from the anchor BAR1's low; after
 //     BAR ENTRY has re-formed, again from the earlier BAR SL candle's low
 //     (moved down by BAR SL LL). REAR above the BAR SL candle's high (BAR SL
@@ -852,7 +852,10 @@ export class DtfBarTheoryEngine {
       kind = "bar2";
       target = lin.barTop;
     }
-    if (breaksRef(prev, cur, target)) {
+    // A plain BAR ENTRY SL makes no re-entry (not coded yet, user): only the
+    // running high is kept (INVALID BAR ENTRY HH), for the REAR after BAR SL 2.
+    const reentry = kind !== "bar2" || lin.sl2;
+    if (reentry && breaksRef(prev, cur, target)) {
       lin.rear = new Tier(cur.h, cur.l);
       ev.push(`REAR B(${L})`);
     } else if (cur.h > target) {
