@@ -966,6 +966,24 @@ export class TZEngine {
         buy.rearReenter = null;
         buy.tzBuy2 = null;
         buy.tzBuy2HhMuted = false;
+        // A RED2 that confirmed under this now-dead generation, with its
+        // own BAR never escalating to BAR 2 before TZ BUY itself SL'd,
+        // must not permanently block every LATER TZ BUY reactivation (or
+        // a wholly fresh TZ BUY under this same, reused letter) from ever
+        // attaching a new top-level RED1 again -- `buy` is one persistent
+        // object across this branch's entire life, reused verbatim across
+        // every TZ BUY SL/reactivation, so nothing else ever resets this.
+        // Confirmed real-data bug (MAZDOCK.NS, letter A): RED2 confirms
+        // 2021-11-22 under the SECOND TZ BUY 2(A) generation, whose own
+        // BAR (formed 2021-12-27) never escalates to BAR 2 before TZ BUY
+        // 2 itself SL's (2022-02-21) -- the STALE flag that leaves then
+        // silently blocked the THIRD generation (TZ BUY 2(A) reforms
+        // 2022-08-29) from ever attaching a fresh RED1 again, for the
+        // rest of this engine's life: the real 2022-12-12 RED1(A) (and
+        // everything downstream of it -- RED2 2022-12-19, SAR/SAR 2 on
+        // 2023-03-14/15, and the whole BAR THEORY cascade that follows)
+        // never fired at all.
+        buy.awaitingBar2SinceRed2 = false;
       }
     } else {
       const ref = buy.reentryThreshold !== null ? buy.reentryThreshold : preTodayBuyRef;
@@ -1125,24 +1143,30 @@ export class TZEngine {
       ev.push(...this.checkBarPending(pc, buy, prev, cur, true));
     } else if (!buy.active) {
       // pass
-    } else if (buy.red1 === null || !buy.red1.active) {
-      if (
-        !buy.awaitingBar2SinceRed2 &&
-        buy.tzBuy2 !== null &&
-        !buy.tzBuy2.slActive &&
-        cur.h <= prev.h &&
-        cur.l < prev.l &&
-        prev.l - cur.l >= THRESH - EPS &&
-        cur.c <= prev.l
-      ) {
-        if (!buy.red1Ever) buy.refHighAtRed1 = buy.refHigh;
-        buy.red1Ever = true;
-        buy.red1 = new Red1(cur.h, cur.l);
-        ev.push(`RED1(${branchLbl})`);
-        this.hiddenEventLog.push({ letter: branchLbl, label: null, date: cur.date, event: "RED1" });
-      }
     } else {
-      ev.push(...this.evalRed1Generic(pc, buy, buy, prev, cur));
+      ev.push(...this.progressTopLevelRed1(pc, buy, branchLbl, prev, cur));
+    }
+
+    // Per the user's own rule: "Once BAR 2 confirms, NEXT RED1-RED2 will
+    // open the gate to BAR followed by BAR 2." The dispatch chain above
+    // is a single if/else-if, so as long as `buy.barLineages.length >
+    // 0` (the branch above this comment), the top-level RED1 tracker
+    // above was NEVER reached at all -- not once, for as long as ANY
+    // lineage stayed tracked, even one that escalated past BAR 2 years
+    // ago and is now just quietly climbing toward its own eventual BAR
+    // SL 2. That is the actual gap: it is not that an event fired and
+    // got filtered, it is that the code could structurally never reach
+    // the attachment check to begin with. This runs the SAME top-level
+    // RED1 logic a SECOND time per candle, IN PARALLEL with whatever
+    // `evalBarLineagesProgress` just did above -- never instead of it,
+    // and never for a lineage that hasn't reached BAR 2 yet (pre-BAR-2,
+    // the original gate -- RED1 stays blocked until this lineage either
+    // dies or escalates -- is unchanged). Confirmed real-data
+    // (DIXON.NS, letter A): BAR 2(A.5) confirms 2022-07-11; RED1(A) only
+    // fires 2022-09-19, RED2(A) 2022-12-05 -- impossible before this
+    // fix, since A.5 stays in `buy.barLineages` for years afterward.
+    if (buy.active && buy.barLineages.length > 0 && buy.barLineages.some((l) => l.bar2 !== null)) {
+      ev.push(...this.progressTopLevelRed1(pc, buy, branchLbl, prev, cur));
     }
 
     if (buy.rearReenter !== null && buy.rearReenter.dormant && buy.rearReenter.sl === null) {
@@ -1251,6 +1275,39 @@ export class TZEngine {
     }
 
     return ev;
+  }
+
+  // -----------------------------------------------------------------
+  /** The top-level, buy-wide RED1->RED2 attach-or-progress step --
+   * factored out of the main dispatch chain so it can run from TWO
+   * sites: its own ordinary dispatch slot (no BAR lineage currently
+   * tracked at all), and, per the user's own rule ("once BAR 2
+   * confirms, next RED1-RED2 will open the gate to BAR followed by BAR
+   * 2"), a SECOND site that runs it IN PARALLEL with an already-
+   * escalated lineage's own continued progress -- see that call site's
+   * own comment for the real-data gap this closes. Identical logic
+   * either way; only the caller's own gating differs. */
+  private progressTopLevelRed1(pc: ParentCycle, buy: Buy, branchLbl: string, prev: Day, cur: Day): string[] {
+    if (buy.red1 === null || !buy.red1.active) {
+      const ev: string[] = [];
+      if (
+        !buy.awaitingBar2SinceRed2 &&
+        buy.tzBuy2 !== null &&
+        !buy.tzBuy2.slActive &&
+        cur.h <= prev.h &&
+        cur.l < prev.l &&
+        prev.l - cur.l >= THRESH - EPS &&
+        cur.c <= prev.l
+      ) {
+        if (!buy.red1Ever) buy.refHighAtRed1 = buy.refHigh;
+        buy.red1Ever = true;
+        buy.red1 = new Red1(cur.h, cur.l);
+        ev.push(`RED1(${branchLbl})`);
+        this.hiddenEventLog.push({ letter: branchLbl, label: null, date: cur.date, event: "RED1" });
+      }
+      return ev;
+    }
+    return this.evalRed1Generic(pc, buy, buy, prev, cur);
   }
 
   // -----------------------------------------------------------------
@@ -1485,6 +1542,16 @@ export class TZEngine {
         buy.rear = null;
         buy.rearReenter = null;
         buy.red1 = null;
+        // Same stale-flag fix as "TZ BUY SL"'s own reset above -- TZ BUY 2
+        // can reactivate DIRECTLY from here (via b2.slActive, never going
+        // through a fresh "TZ BUY SL") while the SAME `buy` object (and
+        // its own awaitingBar2SinceRed2) persists untouched, so this is
+        // the ACTUAL reset site real MAZDOCK.NS data exercises: letter A's
+        // own RED2 (2021-11-22) and un-escalated BAR never reach "TZ BUY
+        // SL(A)" at all -- TZ BUY 2 SL's here (2022-02-21), then
+        // reactivates directly (2022-08-29) via INVALID TZ BUY 2 HH's own
+        // quiet climb in between, the whole time on this one buy object.
+        buy.awaitingBar2SinceRed2 = false;
         return ev;
       }
       b2.refLow = cur.l;
@@ -1863,6 +1930,24 @@ export class TZEngine {
             sl.sl2 = true;
             sl2ConfirmedToday = true;
             buy.barPending = false;
+            // This lineage's own BAR 2 DID confirm before ultimately
+            // failing here -- "once BAR 2 confirms, next RED1-RED2 will
+            // open the gate to BAR followed by BAR 2" (the same rule
+            // the parallel top-level RED1 check in the main dispatch
+            // enforces) applies regardless of whether this lineage goes
+            // on to recover via REAR. Without this, a lineage that
+            // reaches BAR SL2 without REAR ever clearing its own (very
+            // real, correctly unforgiving) all-time-high bar stays
+            // permanently stuck -- awaitingBar2SinceRed2 was last set by
+            // the RED2 that originally licensed THIS bar, and nothing
+            // else under this buy object will ever reach a fresh BAR 2
+            // to clear it again, permanently jamming the top-level RED1
+            // tracker. Confirmed real-data (DIXON.NS, letter A): BAR
+            // SL2(A.2) 2022-05-09 -- REAR never clears A.2's own
+            // 6243.6 all-time-high reference (genuinely correct, not a
+            // bug) -- but the real, price-verified RED1(A) 2022-09-19 /
+            // RED2(A) 2022-12-05 must still be reachable.
+            buy.awaitingBar2SinceRed2 = false;
             // Backend-truth log, independent of bornDormant text
             // suppression below -- confirmed real-data (DIXON.NS branch
             // B.3): a BAR SL2 can fire for a sub-lineage that was itself

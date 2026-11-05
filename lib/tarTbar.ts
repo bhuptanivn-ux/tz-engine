@@ -117,7 +117,7 @@
 // there).
 
 import { THRESH, EPS, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
-import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
+import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, stage1ActiveIntervals, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
   return cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h;
@@ -332,6 +332,16 @@ class LevelState {
   nestedHH = 0;
   nestedHHDate: string | null = null;
 
+  // Permanent, one-way flag -- set the moment SAR force-closes whatever
+  // of TAR ENTRY/the nested BAR1->BAR2 route is open (see stepLevel's own
+  // top-of-function SAR check). Per the user's own rule ("SAR is
+  // actually exit for any PRIME TREND theory or BAR theory entry... All
+  // the re entry will be again through BAR THEORY"): once SAR fires,
+  // THIS window's BAR THEORY is done for good, exactly like TAR reaching
+  // "DONE" the ordinary way -- only a fresh WTF BAR (a wholly new
+  // `simulateWindow` call) can start BAR THEORY again. Checked first,
+  // before anything else, on every later candle.
+  sarKilled = false;
   // Backend-true checkpoint ladder for this window's own TAR/TAR SL and
   // its nested RED1/RED2 tracker -- recorded regardless of whether
   // anything escalates underneath (no row is ever pushed for a bare TAR
@@ -365,15 +375,49 @@ function trackHH(s: LevelState, cur: Day) {
 function stepLevel(
   s: LevelState,
   prev: Day,
-  cur: Day
+  cur: Day,
+  sarExitPrice: number | null
 ): {
   opened: { price: number } | null;
   closed: { exitType: string; exitPrice: number } | null;
-  nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null;
+  nestedClosed: { exitType: string; entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null;
 } {
   let opened: { price: number } | null = null;
   let closed: { exitType: string; exitPrice: number } | null = null;
-  let nestedClosed: { entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null = null;
+  let nestedClosed: { exitType: string; entryDate: string; entryPrice: number; exitPrice: number; hh: number; hhDate: string } | null = null;
+
+  // SAR is an exit for ANY currently-open BAR-theory entry -- TAR ENTRY
+  // (the outer route) or BAR ENTRY (the independent nested BAR1->BAR2
+  // route) alike -- per the user's own rule: "SAR is actually exit for
+  // any PRIME TREND theory or BAR theory entry." Checked first, pre-empting
+  // everything else this candle (same ordering `realTarSlNow` below uses
+  // for its own decisive-SL pre-emption): whichever of the two routes is
+  // open at this exact moment closes here, at the SAR's own price, and
+  // this window's BAR THEORY goes permanently dormant from here on ("All
+  // the re entry will be again through BAR THEORY" -- i.e. only a fresh
+  // WTF BAR, a wholly new window, can start it again; nothing more ever
+  // happens in THIS window once SAR has fired). Once `sarKilled`, every
+  // later candle short-circuits immediately below, so this block only
+  // ever actually does anything once per window.
+  if (s.sarKilled) return { opened, closed, nestedClosed };
+  if (sarExitPrice !== null) {
+    if (s.mode === "TAR_ENTRY_ACTIVE") {
+      closed = { exitType: "TAR EXIT", exitPrice: sarExitPrice };
+    }
+    if (s.nestedMode === "BAR2_ACTIVE") {
+      nestedClosed = {
+        exitType: "BAR EXIT",
+        entryDate: s.nestedEntryDate as string,
+        entryPrice: s.nestedEntryPrice as number,
+        exitPrice: sarExitPrice,
+        hh: s.nestedHH,
+        hhDate: s.nestedHHDate as string,
+      };
+    }
+    s.sarKilled = true;
+    s.mode = "DONE";
+    return { opened, closed, nestedClosed };
+  }
 
   // Snapshot BEFORE the unconditional continuous tracker below updates
   // tarRefHigh -- TAR_ONLY's own escalation check further down needs
@@ -508,6 +552,7 @@ function stepLevel(
       // visible row, overlapping whatever the outer TAR ENTRY row is
       // doing.
       nestedClosed = {
+        exitType: "BAR ENTRY SL",
         entryDate: s.nestedEntryDate as string,
         entryPrice: s.nestedEntryPrice as number,
         exitPrice: s.nestedRefLow,
@@ -797,7 +842,7 @@ function markBarTheoryDisplaySides(
       // (BSE.NS, window A.4): TAR ENTRY SL fires 2025-04-07; BAR ENTRY
       // (the nested route's own first-ever entry, newly unlocked by
       // that same SL) fires 2025-04-11 and must display from there.
-      if (r.exitType === "TAR ENTRY SL + TAR SL" || r.exitType === "TAR ENTRY SL") events.push({ date: r.exitDate, side: "TAR", kind: "DEATH", ref: [r] });
+      if (r.exitType === "TAR ENTRY SL + TAR SL" || r.exitType === "TAR ENTRY SL" || r.exitType === "TAR EXIT") events.push({ date: r.exitDate, side: "TAR", kind: "DEATH", ref: [r] });
     } else {
       events.push({ date: r.exitDate, side: "BAR", kind: "DEATH", ref: [r] });
     }
@@ -897,7 +942,25 @@ function markBarTheoryDisplaySides(
     // conflict yet -- both sides' bare formation history displays
     // freely (sideAt returns null, meaning "undecided", not "neither").
     const owner = sideAt(c.date);
-    c.displaySuppressed = owner !== null && owner !== side;
+    // Once a side has spent its one shot (rule 2/6) and is no longer
+    // the current owner, ANY later bare formation checkpoint on that
+    // SAME side is a second, backend-only attempt that can never
+    // reclaim active status (the ENTRY_OPEN handler above never lets a
+    // spent side re-claim) -- it must not display either, even though
+    // `owner` reads back to null (freed up, not "settled" -- settling
+    // needs BOTH sides spent, which a window whose other side never
+    // even reached its own entry, like TAR dying at bare "TAR SL", may
+    // never satisfy). Per the user's own correction: "2nd time BAR
+    // should not occur, so BAR should not reflect" -- confirmed
+    // real-data (MAZDOCK.NS, window A.5): BAR ENTRY 2025-10-03 spends
+    // BAR's one shot, dies via its own SL 2025-10-08 (TAR never even
+    // reached TAR ENTRY, so the window never formally "settles"); the
+    // nested route's own reform still runs internally and produces a
+    // bare "BAR" checkpoint 2025-11-10 before its own (already-
+    // suppressed) second "BAR ENTRY" 2025-11-11 -- that bare "BAR" must
+    // not display either, not just the entry it leads to.
+    const sideAlreadySpent = side === "TAR" ? tarSpent : barSpent;
+    c.displaySuppressed = (owner !== null && owner !== side) || (owner === null && sideAlreadySpent);
   }
 
   // Expose this window's own "BAR currently holds active display
@@ -928,7 +991,9 @@ function simulateWindow(
   wtfFormationDate: string,
   formationHigh: number,
   rows: TarTbarResult[],
-  checkpointsOut?: { wtfLabel: string; date: string; label: string; price: number; displaySuppressed?: boolean }[]
+  checkpointsOut?: { wtfLabel: string; date: string; label: string; price: number; displaySuppressed?: boolean }[],
+  stage1ActiveAt?: (date: string) => boolean,
+  sarExitAt?: (date: string) => number | null
 ): TarTbarLiveStatus[] {
   const liveStatuses: TarTbarLiveStatus[] = [];
   const s = new LevelState(formationHigh);
@@ -936,7 +1001,19 @@ function simulateWindow(
   for (let i = startIdx; i < endIdxExclusive; i++) {
     const prev = dtfDays[i - 1];
     const cur = dtfDays[i];
-    const { opened, closed, nestedClosed } = stepLevel(s, prev, cur);
+    // Per the user's own rule: "if TZ BUY is not active no BAR THEORY
+    // can occur, including SAR and other events related to it." The
+    // whole simulation freezes exactly in place while DTF TZ BUY (Stage
+    // 1, Prime Trend's own governing precondition for this window's
+    // letter) is inactive -- same freeze PRIME_TREND_RULEBOOK.md already
+    // documents for DTF generally ("DTF's own tracking freezes
+    // regardless of what DTF price does in the meantime") -- and resumes
+    // untouched once TZ BUY reactivates. `prev`/`cur` still advance
+    // normally day by day so the breakout-shape comparisons never see a
+    // false adjacency gap when it resumes.
+    if (stage1ActiveAt !== undefined && !stage1ActiveAt(cur.date)) continue;
+    const sarExitPrice = sarExitAt ? sarExitAt(cur.date) : null;
+    const { opened, closed, nestedClosed } = stepLevel(s, prev, cur, sarExitPrice);
     if (opened) {
       s.rowEntryDate = cur.date;
       s.rowEntryPrice = opened.price;
@@ -965,7 +1042,7 @@ function simulateWindow(
         side: "BAR ENTRY",
         entryDate: nestedClosed.entryDate,
         entryPrice: nestedClosed.entryPrice,
-        exitType: "BAR ENTRY SL",
+        exitType: nestedClosed.exitType,
         exitDate: cur.date,
         exitPrice: nestedClosed.exitPrice,
         highestHigh: nestedClosed.hh,
@@ -1321,13 +1398,14 @@ function simulateBarLadderContinuation(
 // action, mislabeled by this bookkeeping bug.
 function findReinterpretedWindows(
   wtfDays: Day[],
-  dtfDays: Day[]
+  dtfDays: Day[],
+  stage1ActiveAtFor: (letter: string) => (date: string) => boolean
 ): {
   windows: TarTbarWindow[];
   misclassifiedLetters: { letter: string; sinceDate: string; untilDate: string | null }[];
   invalidRearWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
   hiddenPassthroughEvents: { date: string; label: string }[];
-  hiddenRed2SarCheckpoints: { letter: string; date: string; label: string; red2Date: string }[];
+  hiddenRed2SarCheckpoints: { letter: string; date: string; label: string; price: number; red2Date: string }[];
   firstSarByGroup: { letter: string; red2Date: string; firstSarDate: string }[];
   everEscalatedDates: Map<string, string[]>;
 } {
@@ -1410,6 +1488,45 @@ function findReinterpretedWindows(
     (e) => ({ letter: e.label.split(".")[0], label: e.label, date: e.date, low: e.low })
   );
 
+  // A letter can have MULTIPLE BAR SL2 events over its history (DIXON.NS,
+  // letter A: 2022-05-09 and 2025-06-16) -- the loop below processes each
+  // one's own misclassification regime independently. Without this
+  // ownership check, an EARLIER group whose own sar2Date is still
+  // null/unconfirmed (DIXON.NS's own BAR SL2(A.2) 2022-05-09, never
+  // confirming in isolation) keeps scanning indefinitely and so ALSO
+  // claims a spawn that a LATER, chronologically closer BAR SL2
+  // (2025-06-16) independently claims too -- confirmed real-data bug
+  // (DIXON.NS): "TZ GREEN(B)" 2025-06-30 was being reinterpreted TWICE,
+  // once under each group, producing two separate TarTbarWindow entries
+  // ("A.6" and "A.9") for the IDENTICAL underlying price action, each
+  // simulating and emitting its own BAR THEORY output independently -- a
+  // genuine double-count (one of them, A.9, even escalated into a BAR
+  // ENTRY its own correctly-bounded sibling A.6 does not).
+  //
+  // `owningSl2DateForLetter` resolves this: for a given letter and date,
+  // the OWNING group is ALWAYS the LATEST BAR SL2 strictly before that
+  // date, period -- NEVER an earlier one, even if that earlier one's own
+  // direct race is still "OPEN" (undecided, not yet "never confirms").
+  // Per the user's own explicit rule: "Once the SAR 2 is confirmed AFTER
+  // the BAR SL 2, it means race with new lineage and REAR will start" --
+  // the LATEST BAR SL2's own SAR 2 confirming is a TERMINAL event for the
+  // WHOLE lineage, not merely a reason to fall back to an older,
+  // still-undecided race. Once that latest group's own SAR 2 confirms,
+  // NOBODY owns any later date any more (returns null) -- this is NOT
+  // "ownership reverting to the next-most-recent unresolved group"; a
+  // date past the latest group's own resolution belongs to whatever the
+  // raw engine legitimately does next (a genuinely new, independent
+  // lineage), never back to history. Confirmed real-data (DIXON.NS):
+  // BAR SL2(A.1) 2025-06-16's own DIRECT race (computed in total
+  // isolation, ignoring BAR SL2(A.2) 2022-05-09 entirely) decisively
+  // confirms SAR 2 2025-12-30 -- "TZ GREEN(B)" 2026-02-02, AFTER that,
+  // must NOT be reinterpreted as a continuing "BAR" under EITHER group
+  // (even though BAR SL2(A.2)'s own race is still "OPEN", undecided,
+  // not "never confirms") -- it is the start of a genuinely new,
+  // independent lineage instead, exactly as the user's own earlier
+  // real-data confirmation already established ("[the next lineage] was
+  // activated for the 1st time as on 02/02/26").
+  const sar2DateBySl2Label = new Map<string, string | null>();
   for (const sl2 of barSl2Events) {
     const inst: WtfInstance = {
       family: "TZ BUY 2",
@@ -1419,7 +1536,31 @@ function findReinterpretedWindows(
       endEvent: `BAR SL2(${sl2.label})`,
       endPrice: sl2.low,
     };
-    const sarResult = postBarSl2Race(dtfDays, wtfTrace, inst);
+    const r = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(sl2.letter));
+    sar2DateBySl2Label.set(sl2.label, r !== null && r.outcome === "RACE_TRIGGERED" ? r.raceTriggeredDate : null);
+  }
+  function owningSl2DateForLetter(letter: string, date: string): string | null {
+    let latest: { date: string; label: string } | null = null;
+    for (const s of barSl2Events) {
+      if (s.letter !== letter || s.date >= date) continue;
+      if (latest === null || s.date > latest.date) latest = s;
+    }
+    if (latest === null) return null;
+    const sar2 = sar2DateBySl2Label.get(latest.label) ?? null;
+    const stillActive = sar2 === null || sar2 > date;
+    return stillActive ? latest.date : null;
+  }
+
+  for (const sl2 of barSl2Events) {
+    const inst: WtfInstance = {
+      family: "TZ BUY 2",
+      letter: sl2.letter,
+      formationDate: wtfDays[0].date,
+      endDate: sl2.date,
+      endEvent: `BAR SL2(${sl2.label})`,
+      endPrice: sl2.low,
+    };
+    const sarResult = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(sl2.letter));
     if (sarResult === null) continue;
 
     // NOT just the first sibling spawn -- for as long as THIS SAME BAR
@@ -1439,13 +1580,16 @@ function findReinterpretedWindows(
     // only governs whether a NEW sibling letter's spawn is noise. REAR
     // forms directly under THIS SAME `sl2.letter`, no new letter
     // involved, so it needs its own, simpler check: any REAR-family text
-    // for `sl2.letter` strictly after this BAR SL2 and before its own
-    // SAR 2 (or forever, if SAR 2 never confirms) is invalid.
+    // for `sl2.letter`, strictly after this BAR SL2, on a date THIS
+    // GROUP actually owns (see `owningSl2DateForLetter`'s own comment --
+    // skips rather than breaks, since ownership can revert back to this
+    // same group later), is invalid.
     const rearPattern = new RegExp(`^REAR(?: RE-ENTER)?(?: 2)?(?: SL)?\\(${sl2.letter}\\)$`);
     let firstInvalidRear: string | null = null;
     for (const entry of wtfTrace) {
       if (entry.day.date <= sl2.date) continue;
       if (sar2Date !== null && entry.day.date >= sar2Date) break;
+      if (owningSl2DateForLetter(sl2.letter, entry.day.date) !== sl2.date) continue;
       if (firstInvalidRear === null && entry.events.some((e) => rearPattern.test(e))) {
         firstInvalidRear = entry.day.date;
       }
@@ -1463,7 +1607,7 @@ function findReinterpretedWindows(
       if (entry.day.date <= sl2.date) continue;
       for (const e of entry.events) {
         const m = /^TZ GREEN\(([A-Z]+)\)$/.exec(e);
-        if (m === null || m[1] === sl2.letter || !(sar2Date === null || entry.day.date < sar2Date)) continue;
+        if (m === null || m[1] === sl2.letter || owningSl2DateForLetter(sl2.letter, entry.day.date) !== sl2.date) continue;
         // Unconditional, regardless of sar2Date or how much the new
         // letter goes on to look like a genuinely separate, sustained
         // structure (its own HH, further reforms, escalations) -- per
@@ -1557,12 +1701,19 @@ function findReinterpretedWindows(
       // though the raw engine's own id bookkeeping underneath may not be
       // one continuous pid end to end.
       //
-      // What DOES need bounding is `sar2Date`: once THIS SAME BAR SL2's
-      // own SAR cycle has decisively confirmed SAR 2, the reinterpretation
-      // regime it governs is OVER -- any letter-reuse at or after that
-      // point (even of `spawn.letter` itself) belongs to whatever the raw
-      // engine legitimately does next, not to this chain. Confirmed
-      // real-data bug (DIXON.NS): without this bound, the 2025-06-30
+      // What DOES need bounding is ownership (see
+      // `owningSl2DateForLetter`'s own comment): once THIS SAME BAR SL2's
+      // own SAR cycle has decisively confirmed SAR 2, OR ownership has
+      // passed to a different (chronologically closer) BAR SL2 for this
+      // same letter, the reinterpretation regime THIS group governs is
+      // OVER for that date -- any letter-reuse there (even of
+      // `spawn.letter` itself) belongs to whatever the raw engine
+      // legitimately does next, not to this chain. `continue`, not
+      // `break`: ownership can revert back to this same group on a LATER
+      // date once an intervening group's own regime concludes (see that
+      // same comment), so a later entry in this scan may belong to this
+      // group again even after an earlier one did not. Confirmed
+      // real-data bug (DIXON.NS): without this check, the 2025-06-30
       // TZ GREEN(C) window kept scanning straight through SAR 2's own
       // 2025-12-26 confirmation and wrongly swallowed an unrelated LATER
       // branch's own reuse of letter "C" on 2026-02-02 as if it were the
@@ -1574,6 +1725,7 @@ function findReinterpretedWindows(
       for (const entry of wtfTrace) {
         if (entry.day.date < spawn.date) continue;
         if (sar2Date !== null && entry.day.date >= sar2Date) break;
+        if (owningSl2DateForLetter(sl2.letter, entry.day.date) !== sl2.date) continue;
         for (const e of entry.events) {
           if (spawnFormMatch.test(e)) spawnFormations.push({ date: entry.day.date, formationHigh: entry.day.h, formationLow: entry.day.l });
           if (spawnSlMatch.test(e)) spawnSls.push({ date: entry.day.date });
@@ -1756,7 +1908,7 @@ function findReinterpretedWindows(
   // 2025-06-16 SAR HH + SAR LL, 2025-06-19 SAR 2. postBarSl2Race is the
   // identical mechanism regardless of anchor event (generalized there
   // to accept a "RED2(" endEvent too).
-  const hiddenRed2SarCheckpoints: { letter: string; date: string; label: string; red2Date: string }[] = [];
+  const hiddenRed2SarCheckpoints: { letter: string; date: string; label: string; price: number; red2Date: string }[] = [];
   const firstSarByGroup: { letter: string; red2Date: string; firstSarDate: string }[] = [];
   for (const e of hiddenEventLog) {
     if (e.event !== "RED2") continue;
@@ -1855,10 +2007,20 @@ function findReinterpretedWindows(
     // so this is equivalent to re-simulating against truncated daily
     // data, without needing two different truncation strategies to
     // agree inside one re-simulated run).
-    const fullResult = postBarSl2Race(dtfDays, wtfTrace, inst);
+    const fullResult = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(e.letter));
     if (fullResult === null) continue;
     let checkpoints = fullResult.checkpoints;
-    const escapedBar2Kill = bar2KillDate !== null && checkpoints.some((c) => c.label === "INVALID SAR" && c.date < (bar2KillDate as string));
+    // Inclusive ("<="), not strict ("<"): the WTF week's own BAR 2
+    // formation date and the DTF day's own INVALID SAR confirmation can
+    // legitimately land on the exact same calendar date (weekly vs daily
+    // granularity coincidence) -- that is still "already escalated past
+    // the plain SAR -> SAR 2 tier before this BAR 2 formed", not evidence
+    // it hadn't. Confirmed real-data (ICICIBANK.NS, RED2(C) 2005-10-10):
+    // INVALID SAR confirms 2005-11-14, the SAME day BAR 2(C.3) forms -- a
+    // strict "<" wrongly failed to escape the kill, silently erasing the
+    // real 2005-11-16 INVALID SAR ENTRY, 2005-11-21 SL, and 2005-12-12
+    // reactivation that follow.
+    const escapedBar2Kill = bar2KillDate !== null && checkpoints.some((c) => c.label === "INVALID SAR" && c.date <= (bar2KillDate as string));
     if (bar2KillDate !== null && !escapedBar2Kill) {
       checkpoints = checkpoints.filter((c) => c.date <= (bar2KillDate as string));
     }
@@ -1901,7 +2063,7 @@ function findReinterpretedWindows(
     const firstSar = sarResult.checkpoints.find((c) => c.label === "SAR");
     if (firstSar !== undefined) firstSarByGroup.push({ letter: e.letter, red2Date: e.date, firstSarDate: firstSar.date });
     for (const c of sarResult.checkpoints) {
-      hiddenRed2SarCheckpoints.push({ letter: e.letter, date: c.date, label: c.label, red2Date: e.date });
+      hiddenRed2SarCheckpoints.push({ letter: e.letter, date: c.date, label: c.label, price: c.price, red2Date: e.date });
     }
   }
 
@@ -1967,7 +2129,7 @@ export function computeTarTbar(
   // caller merges these into its DTF ledger the same way it already
   // merges a visible RED2's own checkpoints (computePrimeTrendCheckpoints),
   // just tagged by whatever convention it uses for that anchor.
-  hiddenRed2SarCheckpoints: { letter: string; date: string; label: string; red2Date: string }[];
+  hiddenRed2SarCheckpoints: { letter: string; date: string; label: string; price: number; red2Date: string }[];
   // Backend-true TAR/TAR SL + its nested RED1/RED2 tracker, per window
   // -- see LevelState.checkpoints' own comment. No row is ever pushed
   // for a bare TAR that never escalates to TAR ENTRY (same Filter rule
@@ -1977,17 +2139,36 @@ export function computeTarTbar(
   // Per-(letter, triggering RED2) "INVALID SAR ENTRY active" windows --
   // see this field's own comment at its computation site below.
   invalidSarEntryActiveWindows: { letter: string; red2Date: string; sinceDate: string; untilDate: string | null }[];
+  // Same as invalidSarEntryActiveWindows, for the BAR-SL2-anchored
+  // ladder instead of the RED2-anchored one -- see this field's own
+  // comment at its computation site below.
+  invalidSarEntryActiveWindowsBarSl2: { letter: string; barSl2Date: string; sinceDate: string; untilDate: string | null }[];
   // Which RED2 governs each BAR-theory window -- see this field's own
   // comment at its computation site below.
   windowGoverningRed2: { wtfLabel: string; red2Date: string | null }[];
+  // Which BAR SL2 governs each BAR-theory window -- see this field's own
+  // comment at its computation site below.
+  windowGoverningBarSl2: { wtfLabel: string; barSl2Date: string | null }[];
   // Per-window "BAR currently holds active display status" intervals
   // (BAR-side only, never TAR) -- see this field's own comment at its
   // computation site below.
   barTheoryActiveWindows: { wtfLabel: string; sinceDate: string; untilDate: string | null }[];
+  // Per-letter "a BAR THEORY entry is currently open" intervals -- see
+  // this field's own comment at its computation site below.
+  barTheoryOpenIntervals: { letter: string; sinceDate: string; untilDate: string | null }[];
 } {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
-  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints: hiddenRed2SarCheckpointsUngated, firstSarByGroup, everEscalatedDates } = findReinterpretedWindows(wtfDays, dtfDays);
+  // Per the user's own rule: "if TZ BUY is not active no BAR THEORY can
+  // occur, including SAR and other events related to it" -- see
+  // stage1ActiveIntervals' own comment. Computed once per letter, reused
+  // by every window/anchor that letter governs, everywhere in this file.
+  const stage1Intervals = stage1ActiveIntervals(wtfRows, dtfRows);
+  function stage1ActiveAtFor(letter: string): (date: string) => boolean {
+    const intervals = stage1Intervals.get(letter) ?? [];
+    return (date: string) => intervals.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
+  }
+  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints: hiddenRed2SarCheckpointsUngated, firstSarByGroup, everEscalatedDates } = findReinterpretedWindows(wtfDays, dtfDays, stage1ActiveAtFor);
   // Drop any raw-trace window for a misclassified letter, from its own
   // spawn date onward -- its ENTIRE downstream existence (not just the
   // "TZ GREEN(" tier reinterpretedWindows already covers) is noise,
@@ -2008,6 +2189,81 @@ export function computeTarTbar(
     a.formationDate < b.formationDate ? -1 : a.formationDate > b.formationDate ? 1 : 0
   );
 
+  // SAR (the FIRST breach after RED2, not SAR 2) is an exit for ANY
+  // currently-open BAR-theory entry (TAR ENTRY or the nested BAR1->BAR2
+  // route's own "BAR ENTRY"), not just PRIME TREND's own BAR ENTRY
+  // ladder -- per the user's own rule: "SAR is actually exit for any
+  // PRIME TREND theory or BAR theory entry. All the re entry will be
+  // again through BAR THEORY" -- later briefly changed to a SAR-2-only
+  // exit, then EXPLICITLY REVERTED back to this original first-SAR rule:
+  // "I want to go back to EXIT FOR PRIME TREND ENTRY and BAR THEORY
+  // entry at SAR and not SAR 2," with INVALID SAR ENTRY (reactivation of
+  // the same BAR ENTRY) possible afterward unless SAR 2 confirms (PRIME
+  // TREND's own analogous exit in primeTrend.ts's simulateDtfAll uses
+  // the identical first-SAR gate). Built here, ONCE per letter, from
+  // EVERY "SAR" firing this letter's own lineage ever produces --
+  // RED2-anchored (hiddenRed2SarCheckpointsUngated; the UNGATED list,
+  // not the later `everEscalatedBefore`-filtered one, since that filter
+  // answers a different question -- whether to DISPLAY this RED2's own
+  // SAR mechanism at all -- and is computed too late in this pipeline
+  // besides (it depends on `results`, which this feeds) -- a SAR that
+  // fires is a real price event regardless, and if nothing was open at
+  // that moment this lookup is simply never consulted) AND BAR-SL2-
+  // anchored (recomputed here directly, same shape the merge scripts'
+  // own standalone `barSl2Events` loop already uses; per the user's own
+  // rule D, the exit for whichever is active post-BAR-SL2 is likewise
+  // the FIRST SAR after the BAR SL2, not SAR 2). Confirmed real-data
+  // (IRCTC.NS, letter D): TAR ENTRY 2023-04-18, left open through window
+  // D.3's own "new BAR" end (2024-07-08) -- RED2 (2024-06-03)'s own
+  // watch fires SAR 2024-10-22; that first SAR is the real exit.
+  const wtfTrace = runWtfTrace(wtfDays);
+  const sarExitsByLetter = new Map<string, { date: string; price: number }[]>();
+  function addSarExit(letter: string, date: string, price: number) {
+    const list = sarExitsByLetter.get(letter);
+    if (list) list.push({ date, price });
+    else sarExitsByLetter.set(letter, [{ date, price }]);
+  }
+  for (const c of hiddenRed2SarCheckpointsUngated) {
+    if (c.label === "SAR") addSarExit(c.letter, c.date, c.price);
+  }
+  const barSl2Events: { letter: string; label: string; date: string; low: number }[] = [];
+  for (const { day, events } of wtfTrace) {
+    for (const e of events) {
+      const m = /^BAR SL2\(([^)]+)\)$/.exec(e);
+      if (m) barSl2Events.push({ letter: m[1].split(".")[0], label: m[1], date: day.date, low: day.l });
+    }
+  }
+  // This same BAR-SL2-anchored SAR cycle's FULL checkpoint ladder
+  // (every label, not just "SAR"), kept per {letter, barSl2Date} so
+  // `invalidSarEntryActiveWindowsBarSl2` below can be built from it the
+  // same way `invalidSarEntryActiveWindows` is built from the RED2
+  // ladder -- see that field's own comment. Per the user's own rule
+  // ("INVALID SAR/INVALID SAR ENTRY WILL WIN OVER TAR/TAR ENTRY...
+  // BAR/BAR ENTRY IF OCCURS BUT INVALID SAR ENTRY IS ACTIVE THAN [it]
+  // will be recorded [at the backend]"), this must apply whichever
+  // ladder (RED2-anchored or BAR-SL2-anchored) is currently active, not
+  // only the RED2 one.
+  const barSl2SarCheckpoints: { letter: string; barSl2Date: string; date: string; label: string; price: number }[] = [];
+  for (const sl2 of barSl2Events) {
+    const inst: WtfInstance = { family: "TZ BUY 2", letter: sl2.letter, formationDate: wtfDays[0].date, endDate: sl2.date, endEvent: `BAR SL2(${sl2.label})`, endPrice: sl2.low };
+    const sarResult = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(sl2.letter));
+    if (sarResult === null) continue;
+    for (const c of sarResult.checkpoints) {
+      if (c.label === "SAR") addSarExit(sl2.letter, c.date, c.price);
+      barSl2SarCheckpoints.push({ letter: sl2.letter, barSl2Date: sl2.date, date: c.date, label: c.label, price: c.price });
+    }
+  }
+  for (const list of sarExitsByLetter.values()) list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  function sarExitAtFor(wtfLabel: string, formationDate: string, endDate: string | null): (date: string) => number | null {
+    const letter = wtfLabel.split(".")[0];
+    const sars = sarExitsByLetter.get(letter) ?? [];
+    const byDate = new Map<string, number>();
+    for (const sar of sars) {
+      if (sar.date > formationDate && (endDate === null || sar.date <= endDate)) byDate.set(sar.date, sar.price);
+    }
+    return (date: string) => byDate.get(date) ?? null;
+  }
+
   const results: TarTbarResult[] = [];
   const live: TarTbarLiveStatus[] = [];
   const barTheoryCheckpoints: { wtfLabel: string; date: string; label: string; price: number; displaySuppressed?: boolean }[] = [];
@@ -2018,7 +2274,144 @@ export function computeTarTbar(
   // date the active side's own death frees the window back to
   // "nobody", which is itself never part of the active interval.
   const barTheoryActiveWindows: { wtfLabel: string; sinceDate: string; untilDate: string | null }[] = [];
+  // Window-level eligibility gate: a WTF BAR's own TAR/BAR ENTRY (and
+  // the whole RED1/RED2/BAR/BAR ENTRY nested cascade under it) can only
+  // be "considered" if its OWN governing RED2 had ALREADY confirmed a
+  // SAR 2 strictly before this window's own formation -- per the
+  // user's own rule: "BAR THEORY, i.e. TAR/BAR ENTRY after WTF BAR can
+  // occur only if SAR 2 confirms after RED 2... BAR THEORY will not be
+  // considered till SAR 2 confirms after RED 2," later made fully
+  // concrete: "BAR as on 14/03 is without SAR 2, hence BAR THEORY entry
+  // cannot occur unless a BAR OCCURS AFTER SAR 2... 10/05/22, SAR 2
+  // occurs. Now next BAR can have a BAR THEORY ENTRY." The WTF BAR
+  // itself (and its own BAR 2/BAR SL, etc.) is UNCONDITIONAL and always
+  // recorded -- only the DTF-side TAR/BAR ENTRY cascade is gated here,
+  // same "continue" shape (zero output, not even backend) as
+  // stage1ActiveAtFor's own gate just below. Once a RED2 has its own
+  // SAR 2 confirmed, EVERY later window still governed by that SAME
+  // RED2 (no fresher RED2 has superseded it) stays eligible -- "AFTER
+  // 1ST SAR 2... BAR THEORY CAN OCCUR MULTIPLE TIMES... AS LONG AS BAR
+  // SL2->SAR->SAR2 DOES NOT OCCUR" -- a BAR-SL2-anchored SAR 2 ends
+  // eligibility by spawning a genuinely NEW lineage (a different
+  // letter), already handled by `shouldBeBar`/`misclassifiedLetters`
+  // elsewhere, not by this per-letter gate. Built from
+  // `hiddenRed2SarCheckpointsUngated` (independent of `results`/`live`,
+  // so safe to use before the main loop runs) rather than re-deriving
+  // RED2 dates from wtfTrace text, since a RED2 can be hidden
+  // (bornDormant) and never reach visible text at all. Confirmed
+  // real-data (DIXON.NS, letter A): RED2 2022-02-24 never gets its own
+  // SAR 2 (killed by this lineage's own later escalation) -- the BAR
+  // formed 2022-03-14 under it must produce ZERO TAR/RED1/RED2(BAR
+  // THEORY)/BAR ENTRY output; RED2 2022-05-?? on (SAR 2 confirming
+  // 2022-05-10) opens eligibility for the NEXT fresh BAR (2022-05-30)
+  // onward.
+  const red2DatesByLetterForGate = new Map<string, string[]>();
+  const sar2DateByRed2Group = new Map<string, string>();
+  for (const c of hiddenRed2SarCheckpointsUngated) {
+    const list = red2DatesByLetterForGate.get(c.letter);
+    if (list) { if (!list.includes(c.red2Date)) list.push(c.red2Date); }
+    else red2DatesByLetterForGate.set(c.letter, [c.red2Date]);
+    if (c.label === "SAR 2" && !sar2DateByRed2Group.has(`${c.letter}|${c.red2Date}`)) {
+      sar2DateByRed2Group.set(`${c.letter}|${c.red2Date}`, c.date);
+    }
+  }
+  for (const list of red2DatesByLetterForGate.values()) list.sort();
+  function governingRed2For(letter: string, formationDate: string): string | null {
+    const dates = red2DatesByLetterForGate.get(letter) ?? [];
+    let governing: string | null = null;
+    for (const d of dates) { if (d < formationDate) governing = d; else break; }
+    return governing;
+  }
+  // Per the user's own rule: "Once SAR 2 POST RED 2 confirms for the
+  // earlier BAR then BAR THEORY FOR THE EARLIER BAR THEORY CANNOT
+  // OCCUR... Earlier BAR LINEAGE CANNOT HAVE BAR ENTRY once SAR 2 is
+  // confirmed after RED 2 for earlier Lineage... BAR THEORY ENTRY CAN
+  // OCCUR FOR NEW BAR only." Distinct from `governingRed2For`'s own
+  // ELIGIBILITY check (a ONE-TIME test at the window's OWN formation,
+  // whether ITS OWN governing RED2 already had SAR 2 by then): this is
+  // an ONGOING cutoff for a window that was already eligible at
+  // formation but is still alive when a FRESHER RED2 (same letter,
+  // dated after this window's own governing RED2) goes on to confirm
+  // ITS OWN SAR 2 -- confirmed real-data (DIXON.NS, letter A): window
+  // formed 2025-06-30 is governed by RED2 2025-05-26 (SAR 2 already
+  // confirmed 2025-06-19, so eligible at formation); it opens its own
+  // TAR ENTRY 2025-07-09, TAR ENTRY SL 2025-10-24 (unlocking the nested
+  // BAR1->BAR2 route) -- but by then a FRESH top-level RED2 has already
+  // formed 2025-10-20, and ITS OWN SAR 2 confirms 2025-11-06. From that
+  // date on, this (now-superseded) window's own BAR THEORY ladder must
+  // produce ZERO further entries -- the nested route's own "BAR ENTRY"
+  // on 2025-11-12 must not occur at all; only a genuinely NEW WTF BAR
+  // formed after 2025-11-06 may produce a fresh BAR THEORY ENTRY.
+  // Returns the EARLIEST such fresher-RED2 SAR-2 date for this letter
+  // strictly after `governingRed2`, or null if none (not yet
+  // superseded). Combined with `stage1ActiveAtFor` via the SAME freeze
+  // mechanism simulateWindow already uses for Stage-1-inactive
+  // stretches -- once superseded, the freeze never lifts again (the
+  // cutoff date never changes), so this window's simulation halts there
+  // permanently rather than merely pausing.
+  function theorySupersededFrom(letter: string, governingRed2: string | null): string | null {
+    if (governingRed2 === null) return null;
+    const dates = red2DatesByLetterForGate.get(letter) ?? [];
+    let earliest: string | null = null;
+    for (const d of dates) {
+      if (d <= governingRed2) continue;
+      const sar2 = sar2DateByRed2Group.get(`${letter}|${d}`);
+      if (sar2 !== undefined && (earliest === null || sar2 < earliest)) earliest = sar2;
+    }
+    return earliest;
+  }
+  // Per-letter "is an EARLIER TAR ENTRY/BAR ENTRY (BAR THEORY) still
+  // open" tracker -- per the user's own rule: "Unless there is no exit
+  // for earlier BAR THEORY, new BAR ENTRY will not be possible... No
+  // new TAR ENTRY/BAR ENTRY until then." A fresh WTF BAR's own window
+  // is genuinely INELIGIBLE (not merely display-suppressed -- same
+  // "continue" shape as stage1ActiveAtFor's own gate just below, zero
+  // output, not even backend) for its entire life if its own formation
+  // falls while an earlier window's own TAR ENTRY (same letter) is
+  // still open. `undefined` = no TAR ENTRY has ever opened for this
+  // letter yet; `null` = one opened and has no known exit anywhere in
+  // the given data (blocks every later window forever); a date string
+  // = blocks only window formations strictly before that date.
+  // Confirmed real-data (MAZDOCK.NS, letter A): TAR ENTRY 2023-04-21
+  // stays open until SAR 2 2024-08-20 -- the WTF BAR(2024-04-01)/BAR
+  // 2(2024-04-22) cascade's own window forms 2024-04-01, well before
+  // that, so its entire TAR/RED1/RED2/BAR/BAR ENTRY output (and their
+  // own SL/exit events) must not occur at all.
+  const openTarEntryUntilByLetter = new Map<string, string | null>();
   for (const w of windows) {
+    const gateLetter = w.wtfLabel.split(".")[0];
+    const governingRed2 = governingRed2For(gateLetter, w.formationDate);
+    const governingSar2Date = governingRed2 !== null ? sar2DateByRed2Group.get(`${gateLetter}|${governingRed2}`) : undefined;
+    if (governingSar2Date === undefined || governingSar2Date >= w.formationDate) continue;
+    const openUntil = openTarEntryUntilByLetter.get(gateLetter);
+    if (openUntil !== undefined && (openUntil === null || w.formationDate < openUntil)) continue;
+    // Window-level eligibility gate, per the user's own correction: "We
+    // cannot have TAR or BAR along with TZ BUY. TZ BUY needs to be active
+    // in DTF. Later, once RED 1/ RED 2 OCCURS IN WTF followed by BAR, TAR
+    // /BAR CAN OCCUR FOR THAT BAR THEORY. In nutshell BAR THEORY is
+    // possible ONLY for the BAR that after TZ BUY is validated." This is a
+    // ONE-TIME check at the window's own formation -- unlike
+    // stage1ActiveAtFor's per-candle freeze inside simulateWindow below
+    // (which only suppresses stepping while TZ BUY is INACTIVE, resuming
+    // the moment it reactivates), this decides whether the window is
+    // eligible AT ALL: a WTF BAR that formed while TZ BUY was NOT yet
+    // active (or sitting SL'd) produces ZERO TAR/TAR ENTRY/RED1/RED2/
+    // BAR/BAR ENTRY output for its entire life, even if TZ BUY happens to
+    // reactivate later while this same window is still nominally open.
+    // Confirmed real-data (IRCTC.NS): the WTF cascade BAR(26/04/21) ->
+    // BAR SL(03/05/21) -> BAR(17/05/21) -> BAR 2(24/05/21) formed entirely
+    // while TZ BUY sat SL'd (18/03/21 TZ BUY SL -> 07/06/21 TZ BUY
+    // reactivation) -- the OLD per-candle-only freeze still let this
+    // window produce a 07/06/21 "TAR" (BAR THEORY) and a 05/07/21 "BAR
+    // ENTRY" (BAR THEORY) once TZ BUY happened to reactivate mid-window,
+    // running in parallel with PRIME TREND's OWN "TZ BUY"/"BAR ENTRY" on
+    // the exact same dates -- wrong: the user's own hand-derived event
+    // list for this window has ONLY the single PRIME TREND ladder, no BAR
+    // THEORY at all. A LATER, fresh WTF BAR formation (e.g. BAR(11/07/22),
+    // once TZ BUY has stayed active since 07/06/21 with no intervening SL)
+    // is unaffected and remains eligible, exactly as given.
+    if (!stage1ActiveAtFor(w.wtfLabel.split(".")[0])(w.formationDate)) continue;
+
     let startIdx = dtfDays.findIndex((d) => d.date > w.formationDate);
     if (startIdx <= 0) continue;
     // For a decisive "BAR SL" ending, the daily candle landing ON the
@@ -2039,9 +2432,38 @@ export function computeTarTbar(
     if (endIdx <= startIdx) continue;
     const resultsBefore = results.length;
     const checkpointsBefore = barTheoryCheckpoints.length;
-    const windowLive = simulateWindow(dtfDays, startIdx, endIdx, w.wtfLabel, w.formationDate, w.formationHigh, results, barTheoryCheckpoints);
+    const supersededFrom = theorySupersededFrom(gateLetter, governingRed2);
+    const baseActiveAt = stage1ActiveAtFor(w.wtfLabel.split(".")[0]);
+    const eligibleAt = supersededFrom === null ? baseActiveAt : (date: string) => baseActiveAt(date) && date < supersededFrom;
+    const windowLive = simulateWindow(
+      dtfDays,
+      startIdx,
+      endIdx,
+      w.wtfLabel,
+      w.formationDate,
+      w.formationHigh,
+      results,
+      barTheoryCheckpoints,
+      eligibleAt,
+      sarExitAtFor(w.wtfLabel, w.formationDate, w.endDate)
+    );
     const activeIntervals = markBarTheoryDisplaySides(results.slice(resultsBefore), barTheoryCheckpoints.slice(checkpointsBefore), windowLive);
     for (const iv of activeIntervals) barTheoryActiveWindows.push({ wtfLabel: w.wtfLabel, ...iv });
+    // Feed THIS window's own TAR ENTRY open/close status into the
+    // gate above, for whatever LATER window (same letter) comes next.
+    // A within-window close (results) already correctly reflects a
+    // SAR 2 that fell inside this window's own bound (simulateWindow's
+    // own sarExitAtFor); one that falls AFTER this window's own bound
+    // is picked up here via the same unbounded `sarExitsByLetter` the
+    // later live-widening pass below also uses.
+    const thisWindowTarEntry = results.slice(resultsBefore).find((r) => r.side === "TAR ENTRY");
+    const thisWindowTarEntryLive = windowLive.find((l) => l.side === "TAR ENTRY");
+    if (thisWindowTarEntry !== undefined) {
+      openTarEntryUntilByLetter.set(gateLetter, thisWindowTarEntry.exitDate);
+    } else if (thisWindowTarEntryLive !== undefined) {
+      const laterSar = (sarExitsByLetter.get(gateLetter) ?? []).find((s) => s.date > thisWindowTarEntryLive.since);
+      openTarEntryUntilByLetter.set(gateLetter, laterSar ? laterSar.date : null);
+    }
     // Live status is suppressed only when THIS window's own TAR/TAR
     // ENTRY genuinely died with it -- "BAR SL"/"SAR 2 confirmed" are
     // decisive WTF-side failures, same "once WTF fails, DTF tracking
@@ -2056,6 +2478,49 @@ export function computeTarTbar(
     // nowhere at all, because this check only ever looked at
     // `endDate === null`.
     if (w.endDate === null || w.endReason === "new BAR") live.push(...windowLive);
+  }
+
+  // A TAR ENTRY left "live" above (window superseded by a fresh "new
+  // BAR", per that branch's own comment -- NOT a decisive WTF failure,
+  // so the position's own DTF tracking does not freeze) can still have
+  // a REAL SAR exit waiting for it, dated AFTER this window's own
+  // endDate -- `sarExitAtFor` above is bounded to `[formationDate,
+  // w.endDate]`, the same bound `simulateWindow` itself runs under, so
+  // a SAR firing later (off either a FRESH RED2's own watch, or a
+  // BAR-SL2-anchored one from a later WTF BAR/BAR2/BAR SL2 cascade) is
+  // never even looked up for this window, let alone applied. Per the
+  // user's own rule: "the exit [for a TAR ENTRY still open when a new
+  // BAR forms] will be either TAR ENTRY SL or next RED2->SAR->SAR2 or
+  // RED2->BAR->BAR2->BAR SL2->SAR->SAR2." `sarExitsByLetter` is already
+  // the UNBOUNDED, whole-letter list (same one `sarExitAtFor` reads
+  // from) -- this just re-consults it without the window's own cutoff.
+  // Confirmed real-data (IRCTC.NS, letter D): TAR ENTRY 2023-04-18 is
+  // left "live" through window D.3's own "new BAR" end (2024-07-08,
+  // that fresh BAR's own bare SL 2024-07-15, no SAR 2 -- no entry from
+  // IT at all), but RED2(2024-06-03)'s OWN SAR watch (never killed by a
+  // fresh BAR 2, since that RED2's own BAR never escalated past BAR 1)
+  // fires SAR 2024-10-22 -> SAR 2 2024-10-23 -- THAT is the real exit
+  // for the 2023-04-18 TAR ENTRY, not "still open" forever.
+  for (let li = live.length - 1; li >= 0; li--) {
+    const l = live[li];
+    if (l.side !== "TAR ENTRY") continue;
+    const letter = l.wtfLabel.split(".")[0];
+    const laterSar = (sarExitsByLetter.get(letter) ?? []).find((s) => s.date > l.since);
+    if (laterSar === undefined) continue;
+    live.splice(li, 1);
+    results.push({
+      wtfLabel: l.wtfLabel,
+      wtfFormationDate: l.wtfFormationDate,
+      side: "TAR ENTRY",
+      entryDate: l.since,
+      entryPrice: l.activationPrice,
+      exitType: "TAR EXIT",
+      exitDate: laterSar.date,
+      exitPrice: laterSar.price,
+      highestHigh: l.highestHigh,
+      highestHighDate: l.highestHighDate,
+      displaySuppressed: l.displaySuppressed,
+    });
   }
 
   // Fold BAR THEORY's own TAR ENTRY dates into the SAME per-letter
@@ -2137,6 +2602,40 @@ export function computeTarTbar(
     }
   }
 
+  // The SAME "INVALID SAR ENTRY active" tracking as above, just for the
+  // OTHER ladder: BAR-SL2-anchored (`barSl2SarCheckpoints`, built above
+  // from the identical postBarSl2Race checkpoints `sarExitsByLetter`
+  // already reads) rather than RED2-anchored. Per the user's own rule,
+  // both ladders independently win over TAR/TAR ENTRY and BAR/BAR ENTRY
+  // the same way -- a window governed by a BAR SL2 (not a RED2) must be
+  // muted the identical way while THAT BAR SL2's own INVALID SAR ENTRY
+  // is active. Scoped to {letter, barSl2Date}, mirroring
+  // invalidSarEntryActiveWindows' own {letter, red2Date} scoping.
+  const invalidSarEntryActiveWindowsBarSl2: { letter: string; barSl2Date: string; sinceDate: string; untilDate: string | null }[] = [];
+  {
+    const byGroup = new Map<string, { date: string; label: string }[]>();
+    for (const c of barSl2SarCheckpoints) {
+      const key = `${c.letter}|${c.barSl2Date}`;
+      const list = byGroup.get(key);
+      if (list) list.push(c);
+      else byGroup.set(key, [c]);
+    }
+    for (const [key, list] of byGroup) {
+      const [letter, barSl2Date] = key.split("|");
+      list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      let openSince: string | null = null;
+      for (const c of list) {
+        if (c.label === "INVALID SAR ENTRY" || c.label === "INVALID SAR ENTRY REACTIVATED") {
+          if (openSince === null) openSince = c.date;
+        } else if (c.label === "INVALID SAR ENTRY SL" && openSince !== null) {
+          invalidSarEntryActiveWindowsBarSl2.push({ letter, barSl2Date, sinceDate: openSince, untilDate: c.date });
+          openSince = null;
+        }
+      }
+      if (openSince !== null) invalidSarEntryActiveWindowsBarSl2.push({ letter, barSl2Date, sinceDate: openSince, untilDate: null });
+    }
+  }
+
   // Which RED2 governs each BAR-theory window -- "the BAR that occurred
   // after the RED 2" (the user's own phrase): the LATEST RED2(letter)
   // dated strictly before this window's own formation. A caller matches
@@ -2169,6 +2668,96 @@ export function computeTarTbar(
     windowGoverningRed2.push({ wtfLabel: w.wtfLabel, red2Date: governing });
   }
 
+  // Which BAR SL2 governs each BAR-theory window -- the mirror of
+  // `windowGoverningRed2` above, for the OTHER anchor a window's own
+  // INVALID SAR ENTRY suppression can come from (see
+  // invalidSarEntryActiveWindowsBarSl2's own comment). The LATEST
+  // BAR-SL2(letter) dated strictly before this window's own formation.
+  const barSl2DatesByLetter = new Map<string, string[]>();
+  for (const sl2 of barSl2Events) {
+    const list = barSl2DatesByLetter.get(sl2.letter);
+    if (list) {
+      if (!list.includes(sl2.date)) list.push(sl2.date);
+    } else {
+      barSl2DatesByLetter.set(sl2.letter, [sl2.date]);
+    }
+  }
+  for (const list of barSl2DatesByLetter.values()) list.sort();
+  const windowGoverningBarSl2: { wtfLabel: string; barSl2Date: string | null }[] = [];
+  for (const w of windows) {
+    const letter = w.wtfLabel.split(".")[0];
+    const dates = barSl2DatesByLetter.get(letter) ?? [];
+    let governing: string | null = null;
+    for (const d of dates) {
+      if (d < w.formationDate) governing = d;
+      else break;
+    }
+    windowGoverningBarSl2.push({ wtfLabel: w.wtfLabel, barSl2Date: governing });
+  }
+
+  // Per-letter "a BAR THEORY entry (TAR ENTRY or the nested BAR1->BAR2
+  // route's own BAR ENTRY) is currently open" intervals -- EITHER track,
+  // OR'd together, across every window this letter's own lineage ever
+  // produces. Per the user's own rule: "If BAR THEORY entry is in
+  // progress and has occurred before the PRIME TREND BAR ENTRY then
+  // PRIME TREND entry cannot overlap the BAR ENTRY." A caller (currently
+  // only computePrimeTrend, via its own optional `barTheoryOpenAt`
+  // parameter) uses this to hold PRIME TREND's own BAR/BAR ENTRY ladder
+  // back from escalating into a real BAR ENTRY while BAR THEORY already
+  // holds an older, still-open position for the SAME letter -- "the BAR
+  // ENTRY higher high will keep rising" (climbing quietly, never
+  // escalating) until that BAR THEORY position itself closes, whether
+  // naturally or via SAR (which, per postBarSl2Race's own SAR-exit rule,
+  // then also permanently retires PRIME TREND's own ladder for the rest
+  // of this instance anyway -- "new entry will be from the BAR THEORY").
+  // Confirmed real-data (ICICIBANK.NS, letter C): TAR ENTRY opens
+  // 2004-09-21 and is still open when PRIME TREND's own BAR/BAR ENTRY
+  // ladder would otherwise have escalated on 2004-12-24 and again on
+  // 2005-03-02/03 -- both must stay suppressed (quiet climb only) for as
+  // long as this TAR ENTRY (or whatever BAR-theory position eventually
+  // takes over its own active-display slot) remains open.
+  const barTheoryOpenIntervals: { letter: string; sinceDate: string; untilDate: string | null }[] = [];
+  {
+    type Ev = { date: string; letter: string; delta: 1 | -1 };
+    const events: Ev[] = [];
+    for (const r of results) {
+      if (r.side !== "TAR ENTRY" && r.side !== "BAR ENTRY") continue;
+      const letter = r.wtfLabel.split(".")[0];
+      events.push({ date: r.entryDate, letter, delta: 1 });
+      events.push({ date: r.exitDate, letter, delta: -1 });
+    }
+    for (const l of live) {
+      if (l.side !== "TAR ENTRY") continue;
+      events.push({ date: l.since, letter: l.wtfLabel.split(".")[0], delta: 1 });
+      // No matching -1 -- still open through the end of this data.
+    }
+    const byLetter = new Map<string, Ev[]>();
+    for (const e of events) {
+      const list = byLetter.get(e.letter);
+      if (list) list.push(e);
+      else byLetter.set(e.letter, [e]);
+    }
+    for (const [letter, list] of byLetter) {
+      // Opens (+1) sort before closes (-1) on the SAME date -- a position
+      // that both opens and closes the same day as another track's own
+      // open/close must never register a false "both closed" gap.
+      list.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : b.delta - a.delta));
+      let depth = 0;
+      let openSince: string | null = null;
+      for (const e of list) {
+        const wasOpen = depth > 0;
+        depth += e.delta;
+        const isOpen = depth > 0;
+        if (!wasOpen && isOpen) openSince = e.date;
+        else if (wasOpen && !isOpen) {
+          barTheoryOpenIntervals.push({ letter, sinceDate: openSince as string, untilDate: e.date });
+          openSince = null;
+        }
+      }
+      if (openSince !== null) barTheoryOpenIntervals.push({ letter, sinceDate: openSince, untilDate: null });
+    }
+  }
+
   return {
     windows,
     results,
@@ -2179,7 +2768,10 @@ export function computeTarTbar(
     hiddenRed2SarCheckpoints,
     barTheoryCheckpoints,
     invalidSarEntryActiveWindows,
+    invalidSarEntryActiveWindowsBarSl2,
     windowGoverningRed2,
+    windowGoverningBarSl2,
     barTheoryActiveWindows,
+    barTheoryOpenIntervals,
   };
 }
