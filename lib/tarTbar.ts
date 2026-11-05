@@ -1408,6 +1408,7 @@ function findReinterpretedWindows(
   hiddenRed2SarCheckpoints: { letter: string; date: string; label: string; price: number; red2Date: string }[];
   firstSarByGroup: { letter: string; red2Date: string; firstSarDate: string }[];
   everEscalatedDates: Map<string, string[]>;
+  letterLineageConcludedWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
 } {
   const barSl2BackendLog: { label: string; date: string; low: number }[] = [];
   const hiddenEventLog: HiddenEventLogEntry[] = [];
@@ -1539,16 +1540,123 @@ function findReinterpretedWindows(
     const r = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(sl2.letter));
     sar2DateBySl2Label.set(sl2.label, r !== null && r.outcome === "RACE_TRIGGERED" ? r.raceTriggeredDate : null);
   }
-  function owningSl2DateForLetter(letter: string, date: string): string | null {
-    let latest: { date: string; label: string } | null = null;
-    for (const s of barSl2Events) {
-      if (s.letter !== letter || s.date >= date) continue;
-      if (latest === null || s.date > latest.date) latest = s;
+  // A later BAR SL2 for the SAME letter only ever supersedes an earlier
+  // one's own governance if a GENUINE reengagement (a REAR-family event,
+  // or a fresh "TZ BUY 2(letter)" Stage 1 restart) actually happened in
+  // between -- per the user's own rule ("BAR SL 2 has occurred still you
+  // are showing another BAR SL 2 without any active new lineage or
+  // REAR... after BAR SL2 only race can start") -- see
+  // letterLineageConcludedWindows' own comment for the real-data
+  // confirmation. Shared here so BOTH `owningSl2DateForLetter` (a
+  // SIBLING letter's own misclassified-spawn ownership) and
+  // letterLineageConcludedWindows (this SAME letter's own raw-ladder
+  // noise) agree on exactly which BAR SL2 is real and which is noise --
+  // confirmed real-data (DIXON.NS): BAR SL2(A.2) 2022-05-09's own race
+  // never resolves in isolation, but REAR(A) 2023-12-11 genuinely
+  // reengages before BAR SL2(A.1) 2025-06-16 forms, so that one legitimately
+  // supersedes it; without a REAR/restart check here too, a future
+  // dataset where the SAME pattern plays out with NO such reengagement
+  // would have let a noise-born later BAR SL2 silently transfer sibling
+  // ownership the same way MAZDOCK.NS's own raw ladder noise was.
+  function hasLegitimateReengagement(letter: string, fromExclusive: string, toExclusive: string): boolean {
+    const rearPattern = new RegExp(`^REAR(?: RE-ENTER)?(?: 2)?(?: SL)?\\(${letter}\\)$`);
+    const restartPattern = new RegExp(`^TZ BUY 2\\(${letter}\\)$`);
+    for (const entry of wtfTrace) {
+      if (entry.day.date <= fromExclusive) continue;
+      if (entry.day.date >= toExclusive) break;
+      if (entry.events.some((e) => rearPattern.test(e) || restartPattern.test(e))) return true;
     }
-    if (latest === null) return null;
-    const sar2 = sar2DateBySl2Label.get(latest.label) ?? null;
+    return false;
+  }
+  function owningSl2DateForLetter(letter: string, date: string): string | null {
+    const relevant = barSl2Events
+      .filter((s) => s.letter === letter && s.date < date)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    if (relevant.length === 0) return null;
+    let governor = relevant[0];
+    for (let i = 1; i < relevant.length; i++) {
+      const candidate = relevant[i];
+      // Measured from the governor's own FORMATION date, not whether its
+      // own isolated race ever resolved -- that race can stay "OPEN"
+      // (genuinely undecided in isolation) forever, precisely because a
+      // later, genuinely reengaged structure took over; waiting for it
+      // to "conclude" first would mean it never can. Confirmed real-data
+      // (DIXON.NS): BAR SL2(A.2) 2022-05-09's own isolated race stays
+      // OPEN indefinitely, yet REAR(A) 2023-12-11 is a real, legitimate
+      // reengagement and BAR SL2(A.1) 2025-06-16 (whose OWN direct race
+      // DOES resolve) must still supersede it.
+      if (hasLegitimateReengagement(letter, governor.date, candidate.date)) {
+        governor = candidate;
+      }
+    }
+    const sar2 = sar2DateBySl2Label.get(governor.label) ?? null;
     const stillActive = sar2 === null || sar2 > date;
-    return stillActive ? latest.date : null;
+    return stillActive ? governor.date : null;
+  }
+
+  // Per the user's own rule: "Once the SAR 2 is confirmed AFTER the BAR
+  // SL 2, it means race with new lineage and REAR will start... You are
+  // still forming the BAR [and] generated RED1-RED2 after bare BAR" --
+  // and, explicitly, that a LATER same-letter BAR SL2 does NOT by itself
+  // end this: "BAR SL 2 has occurred still you are showing another BAR
+  // SL 2 without any active new lineage or REAR. It is clearly coded
+  // that after BAR SL2 only race can start." `owningSl2DateForLetter`
+  // above already governs this for a SIBLING letter's own misclassified
+  // spawn (DIXON.NS) -- but the GOVERNING letter's own TOP-LEVEL
+  // RED1/RED2/BAR/BAR2 tracker (tzEngineWtf.ts's own buy.red1/buy.red2,
+  // wholly independent of any specific BAR lineage's own pid) has NO
+  // concept of this rule at all -- confirmed real-data (MAZDOCK.NS,
+  // letter A): BAR SL2(A.1) 2026-01-19's own SAR 2 confirms 2026-02-24,
+  // yet the raw engine keeps producing RED1(A) -> RED2(A) -> BAR(A.7) ->
+  // BAR 2(A.7) -> ... -> BAR SL2(A.7) indefinitely afterward, off the
+  // SAME now-concluded buy object, with no REAR and no fresh Stage 1
+  // restart anywhere in between -- that whole chain is noise too, its
+  // own eventual BAR SL2 included, not a legitimate reopening just
+  // because SOME later BAR SL2 event exists. Per the SAME "zero output,
+  // not even backend" convention every other invalidated structure in
+  // this file already gets: once a letter's OWN latest BAR SL2 has its
+  // SAR 2 confirmed, that letter's entire RED1/RED2/BAR-family
+  // vocabulary (the SAME BAR_VOCAB_PASSTHROUGH set a misclassified
+  // SIBLING's own downstream existence already passes through as real
+  // price action) is noise until a GENUINE reengagement -- a REAR-family
+  // event (REAR-family text is deliberately never itself suppressed --
+  // per the user's own words, REAR is exactly what SHOULD start once the
+  // race begins) or a fresh Stage 1 restart ("TZ BUY 2(letter)" forming
+  // again, a wholly new escalation) -- actually occurs for this SAME
+  // letter. A later BAR SL2 with no such reengagement before it is
+  // skipped over entirely, folded into the SAME still-open noise window,
+  // not treated as a fresh boundary.
+  const letterLineageConcludedWindows: { letter: string; sinceDate: string; untilDate: string | null }[] = [];
+  {
+    const sl2ByLetter = new Map<string, { date: string; sar2Date: string | null }[]>();
+    for (const sl2 of barSl2Events) {
+      const sar2 = sar2DateBySl2Label.get(sl2.label) ?? null;
+      const list = sl2ByLetter.get(sl2.letter);
+      if (list) list.push({ date: sl2.date, sar2Date: sar2 });
+      else sl2ByLetter.set(sl2.letter, [{ date: sl2.date, sar2Date: sar2 }]);
+    }
+    for (const [letter, list] of sl2ByLetter) {
+      list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      let i = 0;
+      while (i < list.length) {
+        const cur = list[i];
+        if (cur.sar2Date === null) {
+          i += 1;
+          continue;
+        }
+        let until: string | null = null;
+        let nextIdx = -1;
+        for (let j = i + 1; j < list.length; j++) {
+          if (hasLegitimateReengagement(letter, cur.sar2Date, list[j].date)) {
+            until = list[j].date;
+            nextIdx = j;
+            break;
+          }
+        }
+        letterLineageConcludedWindows.push({ letter, sinceDate: cur.sar2Date, untilDate: until });
+        i = nextIdx === -1 ? list.length : nextIdx;
+      }
+    }
   }
 
   for (const sl2 of barSl2Events) {
@@ -1912,6 +2020,25 @@ function findReinterpretedWindows(
   const firstSarByGroup: { letter: string; red2Date: string; firstSarDate: string }[] = [];
   for (const e of hiddenEventLog) {
     if (e.event !== "RED2") continue;
+    // A RED2 that itself forms while this SAME letter's own lineage is
+    // "concluded" (see letterLineageConcludedWindows' own comment) is
+    // noise -- the raw engine's own top-level tracker producing it at
+    // all is the bug this gate exists for; it must not arm a SAR/SAR 2
+    // race of its own either. Confirmed real-data (MAZDOCK.NS): RED2(A)
+    // 2026-05-11 forms well inside the 2026-02-24..2026-09-15 concluded
+    // window (BAR SL2(A.1) 2026-01-19's own SAR 2 already confirmed
+    // 2026-02-24) -- without this, its own SAR/SAR 2 race still ran to
+    // completion (SAR 2026-06-10, SAR 2 2026-06-11) and, landing on the
+    // SAME calendar dates as the legitimate 2026-02-23 group's own tail
+    // end, silently merged into it in the displayed ledger as if it
+    // were one continuing, genuine ladder.
+    if (
+      letterLineageConcludedWindows.some(
+        (w) => w.letter === e.letter && e.date >= w.sinceDate && (w.untilDate === null || e.date < w.untilDate)
+      )
+    ) {
+      continue;
+    }
     // RED1/RED2 are tracked per top-level letter, never a sub-numbered
     // label (unlike BAR/BAR 2) -- `label` is always null here; the
     // letter alone is both this event's identity and its visible-text
@@ -2067,7 +2194,7 @@ function findReinterpretedWindows(
     }
   }
 
-  return { windows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints, firstSarByGroup, everEscalatedDates };
+  return { windows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints, firstSarByGroup, everEscalatedDates, letterLineageConcludedWindows };
 }
 
 // Additive helper (session of 2026-10-22), NOT yet verified beyond
@@ -2156,6 +2283,12 @@ export function computeTarTbar(
   // Per-letter "a BAR THEORY entry is currently open" intervals -- see
   // this field's own comment at its computation site below.
   barTheoryOpenIntervals: { letter: string; sinceDate: string; untilDate: string | null }[];
+  // Per-letter "this letter's own governing BAR SL2 already confirmed
+  // SAR 2, race begins" windows -- see this field's own comment at its
+  // computation site inside findReinterpretedWindows above. A caller's
+  // WTF ledger must drop this letter's own RED1/RED2/BAR-family text
+  // (never REAR) for this stretch, same as a misclassified sibling's.
+  letterLineageConcludedWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
 } {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
@@ -2168,7 +2301,7 @@ export function computeTarTbar(
     const intervals = stage1Intervals.get(letter) ?? [];
     return (date: string) => intervals.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
   }
-  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints: hiddenRed2SarCheckpointsUngated, firstSarByGroup, everEscalatedDates } = findReinterpretedWindows(wtfDays, dtfDays, stage1ActiveAtFor);
+  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints: hiddenRed2SarCheckpointsUngated, firstSarByGroup, everEscalatedDates, letterLineageConcludedWindows } = findReinterpretedWindows(wtfDays, dtfDays, stage1ActiveAtFor);
   // Drop any raw-trace window for a misclassified letter, from its own
   // spawn date onward -- its ENTIRE downstream existence (not just the
   // "TZ GREEN(" tier reinterpretedWindows already covers) is noise,
@@ -2179,10 +2312,23 @@ export function computeTarTbar(
   // would otherwise be double-counted as a second, genuine, parallel
   // family alongside the reinterpreted window already covering that
   // same stretch.
+  // Same drop, for the GOVERNING letter's own raw "BAR(" formations once
+  // its own lineage has concluded (see letterLineageConcludedWindows'
+  // own comment) -- a raw window produced here feeds simulateWindow's
+  // own TAR/RED1/RED2/BAR DTF tracking regardless of what the WTF-ledger
+  // text display itself shows, so suppressing just the ledger text (as
+  // every merge script now does) is NOT enough on its own. Confirmed
+  // real-data (MAZDOCK.NS): BAR SL2(A.1) 2026-01-19's own SAR 2 confirms
+  // 2026-02-24, yet "BAR(A.8)" 2026-08-03 (formed well after, with no
+  // newer BAR SL2 in between) was still producing a real BAR-theory
+  // "TAR"/"RED1"/"RED2"/"BAR"/"BAR SL" DTF cascade.
   const rawWindows = findWindows(wtfDays).filter(
     (w) =>
       !misclassifiedLetters.some(
         (m) => w.wtfLabel.split(".")[0] === m.letter && w.formationDate >= m.sinceDate && (m.untilDate === null || w.formationDate <= m.untilDate)
+      ) &&
+      !letterLineageConcludedWindows.some(
+        (c) => w.wtfLabel.split(".")[0] === c.letter && w.formationDate >= c.sinceDate && (c.untilDate === null || w.formationDate < c.untilDate)
       )
   );
   const windows = [...rawWindows, ...reinterpretedWindows].sort((a, b) =>
@@ -2672,9 +2818,21 @@ export function computeTarTbar(
   // `windowGoverningRed2` above, for the OTHER anchor a window's own
   // INVALID SAR ENTRY suppression can come from (see
   // invalidSarEntryActiveWindowsBarSl2's own comment). The LATEST
-  // BAR-SL2(letter) dated strictly before this window's own formation.
+  // BAR-SL2(letter) dated strictly before this window's own formation --
+  // excluding any BAR SL2 that is itself noise (formed with no genuine
+  // REAR/Stage-1-restart reengagement after this letter's own prior
+  // conclusion -- see letterLineageConcludedWindows' and
+  // owningSl2DateForLetter's own comments, same consistency fix applied
+  // here): a window can only ever have FORMED outside such a gap to
+  // begin with (rawWindows/reinterpretedWindows already exclude a
+  // formation inside one), so a noise BAR SL2 sitting inside that same
+  // gap must never be picked as "governing" it either.
   const barSl2DatesByLetter = new Map<string, string[]>();
   for (const sl2 of barSl2Events) {
+    const isNoise = letterLineageConcludedWindows.some(
+      (c) => c.letter === sl2.letter && sl2.date >= c.sinceDate && (c.untilDate === null || sl2.date < c.untilDate)
+    );
+    if (isNoise) continue;
     const list = barSl2DatesByLetter.get(sl2.letter);
     if (list) {
       if (!list.includes(sl2.date)) list.push(sl2.date);
@@ -2773,5 +2931,6 @@ export function computeTarTbar(
     windowGoverningBarSl2,
     barTheoryActiveWindows,
     barTheoryOpenIntervals,
+    letterLineageConcludedWindows,
   };
 }

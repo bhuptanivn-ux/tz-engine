@@ -1016,6 +1016,20 @@ export class TZEngine {
     }
     const preTodayRearRef = buy.rear !== null ? buy.rear.refHigh : null;
     const preTodayRreRef = buy.rearReenter !== null ? buy.rearReenter.refHigh : null;
+    // Snapshot BEFORE today's dispatch chain runs -- a bare, still-alive
+    // lineage can be silently swept from buy.barLineages THIS SAME
+    // candle (the "whichever lineage's SL2 fires first wins... every
+    // other lineage terminates immediately" rule in
+    // evalBarLineagesProgress), with no BAR SL event of its own at all.
+    // Reading buy.barLineages AFTER dispatch (as the outer parallel
+    // RED1 gate below originally did) would then wrongly see "no bare
+    // lineage" and let that gate fire on the EXACT candle the sweep
+    // happened. Confirmed real-data bug (MAZDOCK.NS, letter A): BAR(A.6)
+    // is bare and alive through 2026-01-12; on 2026-01-19, BAR SL2(A.5)
+    // confirms and sweeps A.6 out of the array in the SAME candle --
+    // RED1(A) then fired on that very candle, reading the post-sweep
+    // state as if A.6 had never been there.
+    const hasLiveBareLineageAtStart = buy.barLineages.some((l) => l.bar2 === null && l.sl === null);
 
     const newestLin = this.newestLiveLineage(buy.barLineages);
     if (newestLin !== null && !this.barHhSuppressedToday(buy, newestLin, prev, cur)) {
@@ -1161,11 +1175,39 @@ export class TZEngine {
     // `evalBarLineagesProgress` just did above -- never instead of it,
     // and never for a lineage that hasn't reached BAR 2 yet (pre-BAR-2,
     // the original gate -- RED1 stays blocked until this lineage either
-    // dies or escalates -- is unchanged). Confirmed real-data
-    // (DIXON.NS, letter A): BAR 2(A.5) confirms 2022-07-11; RED1(A) only
-    // fires 2022-09-19, RED2(A) 2022-12-05 -- impossible before this
-    // fix, since A.5 stays in `buy.barLineages` for years afterward.
-    if (buy.active && buy.barLineages.length > 0 && buy.barLineages.some((l) => l.bar2 !== null)) {
+    // dies or escalates -- is unchanged).
+    //
+    // `some(l => l.bar2 !== null)` alone is NOT that gate -- it answers
+    // "has ANY lineage EVER reached BAR 2 at ANY point in this buy's
+    // whole history," which stays true forever the instant it is ever
+    // true once (a lineage past BAR 2 is never pruned from
+    // buy.barLineages -- see newestLiveLineage's own comment), even
+    // while a COMPLETELY SEPARATE, still-bare, still-alive lineage
+    // (never escalated, never SL'd) sits in the SAME array right now.
+    // Confirmed real-data bug (MAZDOCK.NS, letter A): BAR(A.6) forms
+    // 2025-12-22 and is still bare and alive (never reaches its own
+    // BAR 2, never SL's) through 2026-01-12 -- unlocked anyway because
+    // A.5, a wholly unrelated lineage that escalated and died back in
+    // September 2025, still satisfies `bar2 !== null` -- a direct
+    // violation of "RED1-RED2 cannot occur for BARE BAR," the exact
+    // pre-BAR-2 gate this comment already claims is unchanged. The real
+    // condition also requires NO currently bare-and-alive lineage (bar2
+    // still null, not yet SL'd either way) anywhere in the array --
+    // that lineage's own slot is still "occupied" by an unresolved BAR 1
+    // attempt, so the parallel top-level tracker must wait for it to
+    // either escalate or die, same as the original gate always
+    // required. Reads the PRE-dispatch snapshot
+    // (hasLiveBareLineageAtStart), not buy.barLineages as it stands
+    // now -- see that snapshot's own comment: A.6 was swept out of the
+    // array entirely on this SAME candle (A.5's own BAR SL 2
+    // confirming), so checking the post-dispatch array here would see
+    // "no bare lineage" one candle too late.
+    if (
+      buy.active &&
+      buy.barLineages.length > 0 &&
+      !hasLiveBareLineageAtStart &&
+      buy.barLineages.some((l) => l.bar2 !== null)
+    ) {
       ev.push(...this.progressTopLevelRed1(pc, buy, branchLbl, prev, cur));
     }
 
@@ -1809,7 +1851,19 @@ export class TZEngine {
             }
             continue;
           }
-          if (lin === newestForRed1) {
+          // Per the user's own rule: "RED1-RED2 will NOT be required to
+          // be tracked if only BAR 1 has formed and SL'd. RED1-RED2 will
+          // form once BAR 1-BAR 2 is completed" -- i.e. once BAR 1-BAR 2
+          // is completed, never before. `evalBar2` confirms BAR 2 on a
+          // plain breakout alone, with no RED1/RED2 precondition of its
+          // own, so gating this on `lin.bar2 !== null` only withholds
+          // the top-level RED1/RED2 tracker itself -- it cannot stop
+          // this SAME bare lineage from escalating normally. Confirmed
+          // real-data bug (MAZDOCK.NS, letter A): BAR(A.6) forms
+          // 2025-12-22, still bare (never escalates, never SL's) when
+          // this branch kept re-arming RED1(A) for it anyway (2026-01-19)
+          // -- "RED1-RED2 cannot occur for BARE BAR."
+          if (lin === newestForRed1 && lin.bar2 !== null) {
             const red1Preexisting = buy.red1 !== null && buy.red1.active;
             if (red1Preexisting) {
               linEv.push(...this.evalRed1Generic(pc, buy, lin, prev, cur));
