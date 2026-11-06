@@ -681,10 +681,28 @@ export class InvalidSarState {
   rowHH = 0;
   rowHHDate: string | null = null;
 
+  // INVALID SAR's own reference low, frozen at the moment INVALID SAR
+  // escalates into INVALID SAR ENTRY (ENTRY_ACTIVE overwrites `refLow`
+  // with the entry day's own low for its own SL/HH mechanics -- this
+  // keeps INVALID SAR's own, separate reference alive underneath).
+  // User's own rule: "INVALID SAR SL will occur below INVALID SAR
+  // REFERENCE LOW and INVALID SAR ENTRY SL will occur below the INVALID
+  // SAR ENTRY REFERENCE LOW... INVALID SAR SL CAN ONLY OCCUR BELOW
+  // INVALID SAR REFERENCE LOW." Confirmed real-data (ICICIBANK.NS):
+  // INVALID SAR 2005-11-14 seeds refLow 94.16 -> INVALID SAR ENTRY
+  // 2005-11-16 overwrites refLow to 95.45 (its own entry-day low) ->
+  // INVALID SAR ENTRY SL 2005-11-21 (exit 95.45) -> SEEK_REACTIVATION.
+  // 2005-11-22's Close (94.54) sits BELOW 95.45 but ABOVE 94.16 -- not a
+  // real "INVALID SAR SL" since it never breaches INVALID SAR's own
+  // 94.16 reference; the old code wrongly fired SL here by comparing
+  // against the ENTRY's frozen 95.45 instead.
+  invalidSarOwnRefLow: number;
+
   constructor(refHigh: number, refLow: number) {
     this.refHigh = refHigh;
     this.refLow = refLow;
     this.historicalFloor = refLow;
+    this.invalidSarOwnRefLow = refLow;
   }
 }
 
@@ -804,6 +822,7 @@ function stepInvalidSar(
       // 07/03/22 INVALID SAR SL.
       if (breakoutShape(prev, cur, s.refHigh)) {
         const entryPrice = s.refHigh + THRESH;
+        s.invalidSarOwnRefLow = s.refLow;
         s.refHigh = cur.h;
         s.refLow = cur.l;
         s.rowHH = cur.h;
@@ -926,20 +945,23 @@ function stepInvalidSar(
       // Symmetric downside watch, same shape BarLevelState's own
       // SEEK_BAR_ENTRY_REACTIVATION uses (BAR's own wider reference kept
       // alive in the background while waiting for ENTRY to reactivate):
-      // `s.refLow` still holds the ENTRY's own frozen low from the
-      // moment it SL'd (ENTRY_ACTIVE's SL branch never touches it
-      // further) -- a decisive breach of THAT reference, before
-      // reactivation ever happens, is "INVALID SAR SL" (reusing the
-      // existing label), dropping down into SEEK_REFORM exactly like
-      // INVALID_SAR_ACTIVE's own bare SL does. Confirmed real-data
-      // (BSE.NS): 2022-04-29 INVALID SAR ENTRY -> 2022-05-04 INVALID SAR
-      // ENTRY SL (refLow frozen at 290.67) -> 2022-05-06 decisively
-      // breaches 290.67 ("INVALID SAR SL", not silently ignored as the
-      // code previously did) -> SEEK_REFORM -> 2022-05-09 fresh "SAR" ->
-      // 2022-05-10 "SAR 2". Without this, the whole mechanism just sat
-      // in SEEK_REACTIVATION forever, waiting on an upside breakout that
-      // was no longer the right question to be asking.
-      const slNow = slShape(cur, s.refLow);
+      // a decisive breach of INVALID SAR's OWN reference low (frozen in
+      // `s.invalidSarOwnRefLow` at the moment ENTRY first escalated --
+      // NOT the ENTRY's own frozen low, `s.refLow`), before reactivation
+      // ever happens, is "INVALID SAR SL" (reusing the existing label),
+      // dropping down into SEEK_REFORM exactly like INVALID_SAR_ACTIVE's
+      // own bare SL does. Per the user's own rule: "INVALID SAR SL will
+      // occur below INVALID SAR REFERENCE LOW and INVALID SAR ENTRY SL
+      // will occur below the INVALID SAR ENTRY REFERENCE LOW" -- these
+      // are two independent references, and INVALID SAR SL must never be
+      // measured against INVALID SAR ENTRY's own reference. Confirmed
+      // real-data (ICICIBANK.NS): INVALID SAR 2005-11-14 (refLow 94.16)
+      // -> INVALID SAR ENTRY 2005-11-16 (refLow reset to 95.45) -> INVALID
+      // SAR ENTRY SL 2005-11-21 (exit 95.45) -> 2005-11-22's Close (94.54)
+      // sits below 95.45 but ABOVE 94.16 -- not a real breach of INVALID
+      // SAR's own 94.16 reference, so no "INVALID SAR SL" here; the old
+      // code wrongly fired it by comparing against 95.45 instead.
+      const slNow = slShape(cur, s.invalidSarOwnRefLow);
       // Real-data bug (PAYTM.NS, post-BAR-SL2 DTF SAR, 2026): a High that
       // clears frozenEntryRefHigh without the Close confirming back above
       // it (02/07/26 High 1227.70 Close 1213.40; 03/07/26 High 1231.90
