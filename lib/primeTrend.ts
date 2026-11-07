@@ -464,10 +464,18 @@ function stepBarLevel(
         // already uses), not the literal Low of the SL day. Confirmed
         // exact match via KALYANKJIL (ref 117.70 -> exit 117.50) and
         // COCHINSHIP (ref 266.50 -> exit 266.30).
+        // Per the user's own rule: BAR reactivates ABOVE THE HIGHEST
+        // HIGH reached at any point between the original BAR ENTRY and
+        // this BAR SL -- including every intermediate BAR ENTRY SL/
+        // reactivation cycle in between, even one whose own high was
+        // LOWER than an earlier cycle's (the earlier, higher one still
+        // governs). `topRef` is exactly this accumulated max -- gated
+        // reform via SEEK_REACTIVATION, never unrestricted.
         s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
+        s.gateEstablished = true;
         const exitType = entrySlNow ? "DTF BAR SL + DTF BAR ENTRY SL" : "DTF BAR SL (wipes ENTRY)";
         closed = { exitType, exitPrice: s.barEntryRefLow - THRESH };
-        s.mode = "SEEK_BAR";
+        s.mode = "SEEK_REACTIVATION";
         s.nestedMode = "NONE";
         break;
       }
@@ -479,7 +487,11 @@ function stepBarLevel(
         // touched, so no new "BAR" instance forms in this path --
         // irrespective of whether RED2 has confirmed, before or after
         // this SL: as long as BAR itself is intact, next green is BAR
-        // ENTRY.
+        // ENTRY. `topRef` still accumulates this instance's own peak
+        // (Math.max, never shrinks) so that IF a later BAR SL ever does
+        // follow -- this cycle or a later reactivation's -- the correct,
+        // highest-ever reference is still on record for that reform.
+        s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
         closed = { exitType: "DTF BAR ENTRY SL", exitPrice: s.barEntryRefLow - THRESH };
         s.mode = "SEEK_BAR_ENTRY_REACTIVATION";
         s.nestedMode = "NONE";
@@ -557,6 +569,28 @@ function stepBarLevel(
       break;
     }
     case "SEEK_BAR_ENTRY_REACTIVATION": {
+      // BAR itself is still alive while waiting here -- its own SL can
+      // still happen before BAR ENTRY ever reactivates. If it does, BAR
+      // has now died too (a sequential combined failure, same as if
+      // both had failed on the same candle) -- fall back to SEEK_BAR
+      // (fresh, unrestricted BAR reform) instead of reactivating BAR
+      // ENTRY directly. Confirmed real-data (ICICIBANK.NS): BAR ENTRY SL
+      // 2015-02-02 (BAR itself still alive, barRefLow 315.86) -> BAR
+      // itself SL's 2015-02-03 (Low 313.73, closes 315.09 below 315.86)
+      // -- BAR ENTRY cannot simply reactivate after that; a fresh BAR
+      // must reform first.
+      const barSlNow = slShape(cur, s.barRefLow);
+      if (!barSlNow && cur.h > s.barRefHigh && cur.h - s.barRefHigh >= ANY) s.barRefHigh = cur.h;
+      if (!barSlNow && cur.l < s.barRefLow) s.barRefLow = cur.l;
+      if (barSlNow) {
+        // BAR reactivates above the accumulated highest-ever high
+        // (topRef), gated via SEEK_REACTIVATION -- same rule as the
+        // same-candle combined case above, not unrestricted.
+        s.topRef = Math.max(s.topRef, s.barRefHigh);
+        s.gateEstablished = true;
+        s.mode = "SEEK_REACTIVATION";
+        break;
+      }
       // "Next green" -- plain day-over-day breakout, no reference level
       // to clear at all (same unrestricted shape a virgin BAR formation
       // uses, NOT TAR ENTRY's own frozen-reference reactivation -- that
