@@ -117,7 +117,7 @@
 // there).
 
 import { THRESH, EPS, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
-import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, stage1ActiveIntervals, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
+import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, stage1ActiveIntervals, containingWeekStart, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
   return cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h;
@@ -2289,6 +2289,12 @@ export function computeTarTbar(
   // WTF ledger must drop this letter's own RED1/RED2/BAR-family text
   // (never REAR) for this stretch, same as a misclassified sibling's.
   letterLineageConcludedWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
+  // A standalone, fresh top-level TZ GREEN/RED/TZ BUY ladder simulated
+  // over each letterLineageConcludedWindows stretch -- see this field's
+  // own computation site below for the full derivation. A caller's WTF
+  // ledger adds these in place of (not alongside) the blank noise it
+  // already drops for that same letter/date range.
+  letterLineageConcludedSimEvents: { letter: string; date: string; label: string }[];
 } {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
@@ -2400,6 +2406,76 @@ export function computeTarTbar(
     }
   }
   for (const list of sarExitsByLetter.values()) list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  // Per the user's own rule: once a letter's lineage has concluded (its
+  // governing BAR SL2's own SAR 2 confirmed, per letterLineageConcludedWindows)
+  // and REAR is not active, the raw engine's own RED1/RED2/BAR-family
+  // vocabulary for that letter is noise (already suppressed by callers,
+  // via letterLineageConcludedWindows) -- but something real is still
+  // happening on the chart: "TZ GREEN Occurrence if REAR IS NOT ACTIVE
+  // after BAR SL2-SAR2. We cannot have another BAR below the active BAR
+  // SL2." The correct reading of that stretch is a BRAND NEW top-level
+  // TZ GREEN/RED/TZ BUY ladder, exactly as if a fresh TZEngine had
+  // started from that moment -- so that is literally what this computes:
+  // a standalone TZEngine run over the weekly series SLICED to start at
+  // the weekly candle containing `sinceDate`, through (not including)
+  // `untilDate` (the real reengagement -- REAR/fresh TZ BUY 2 -- which
+  // takes back over from there; open-ended if untilDate is null). Only
+  // non-HH/LL milestone events are kept (same convention the real WTF
+  // ledger display already uses), re-tagged under the REAL governing
+  // letter regardless of which fresh letter(s) the isolated simulation
+  // itself assigns internally -- this is a pure read-only observer, like
+  // reinterpretPostBarSl2Spawn above; it never touches the live engine
+  // or its own buy/lineage objects. Confirmed real-data (ICICIBANK.NS,
+  // letter C): sliced from 2008-06-30 (BAR SL2(C.5)'s own SAR 2 date)
+  // produces TZ GREEN(A) 2008-07-21, 2008-11-03, 2008-12-08, 2009-02-09,
+  // 2009-03-16 -- the user's own given correct dates -- climbing all the
+  // way to TZ BUY(A) 2010-04-05, the SAME date the corrected
+  // REAR(C) (tzEngineWtf.ts's own rearWinnerLabel fix) takes back over,
+  // so that final TZ BUY(A)/TZ BUY SL(A) pair is correctly cut off by
+  // the window boundary below and never shown.
+  const letterLineageConcludedSimEvents: { letter: string; date: string; label: string }[] = [];
+  {
+    const wtfDates = wtfDays.map((d) => d.date);
+    // The window's own `untilDate` (from letterLineageConcludedWindows)
+    // answers a DIFFERENT question -- whether a LATER BAR SL2 legitimately
+    // supersedes THIS one as governor -- and is null whenever no such
+    // later BAR SL2 exists, even once a real REAR/fresh TZ BUY 2 has
+    // since reactivated this letter outright (confirmed real-data,
+    // ICICIBANK.NS letter C: REAR(C) 2010-04-05, with no later BAR SL2
+    // at all, leaves that field null forever). The simulated ladder needs
+    // the ACTUAL chronological reengagement date instead, found the same
+    // way hasLegitimateReengagement itself scans, just with no upper
+    // bound -- otherwise the simulation runs on indefinitely past the
+    // point the real engine has already taken back over, producing a
+    // parallel, conflicting narrative.
+    const rearOrRestartPattern = (letter: string) => new RegExp(`^REAR(?: RE-ENTER)?(?: 2)?(?: SL)?\\(${letter}\\)$|^TZ BUY 2\\(${letter}\\)$`);
+    function firstReengagementAfter(letter: string, fromExclusive: string): string | null {
+      const pattern = rearOrRestartPattern(letter);
+      for (const entry of wtfTrace) {
+        if (entry.day.date <= fromExclusive) continue;
+        if (entry.events.some((e) => pattern.test(e))) return entry.day.date;
+      }
+      return null;
+    }
+    for (const w of letterLineageConcludedWindows) {
+      const startDate = containingWeekStart(wtfDates, w.sinceDate);
+      if (startDate === null) continue;
+      const startIdx = wtfDays.findIndex((d) => d.date === startDate);
+      if (startIdx === -1) continue;
+      const realUntil = firstReengagementAfter(w.letter, w.sinceDate);
+      const simTrace = runWtfTrace(wtfDays.slice(startIdx));
+      for (const entry of simTrace) {
+        if (realUntil !== null && entry.day.date >= realUntil) break;
+        for (const e of entry.events) {
+          const base = e.replace(/\([^)]*\)$/, "");
+          if (/HH$/.test(base) || /LL$/.test(base)) continue;
+          letterLineageConcludedSimEvents.push({ letter: w.letter, date: entry.day.date, label: base });
+        }
+      }
+    }
+  }
+
   function sarExitAtFor(wtfLabel: string, formationDate: string, endDate: string | null): (date: string) => number | null {
     const letter = wtfLabel.split(".")[0];
     const sars = sarExitsByLetter.get(letter) ?? [];
@@ -2932,5 +3008,6 @@ export function computeTarTbar(
     barTheoryActiveWindows,
     barTheoryOpenIntervals,
     letterLineageConcludedWindows,
+    letterLineageConcludedSimEvents,
   };
 }

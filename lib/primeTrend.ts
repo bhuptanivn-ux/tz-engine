@@ -218,7 +218,7 @@ export function isBarRed1Shape(prev: Day, cur: Day): boolean {
   return cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l;
 }
 
-type BarMode = "SEEK_LEVEL_ENTRY" | "SEEK_BAR" | "BAR_ACTIVE" | "BAR_ENTRY_ACTIVE" | "SEEK_REACTIVATION";
+type BarMode = "SEEK_LEVEL_ENTRY" | "SEEK_BAR" | "BAR_ACTIVE" | "BAR_ENTRY_ACTIVE" | "SEEK_REACTIVATION" | "SEEK_BAR_ENTRY_REACTIVATION";
 
 function sideForBarLevel(level: number): "BAR ENTRY" | "REAR ENTRY" | "REAR RE-ENTER" {
   return level === 0 ? "BAR ENTRY" : level === 1 ? "REAR ENTRY" : "REAR RE-ENTER";
@@ -238,6 +238,15 @@ class BarLevelState {
   nestedDoorOpen = false;
   red: BarRedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves -- unlocks BAR-seeking permanently
+  // Persists once RED2 has EVER confirmed in this BarLevelState's life --
+  // before or after a given BAR ENTRY SL does not matter. Per the user's
+  // own rule: a clean BAR ENTRY SL (BAR itself untouched) only
+  // reactivates directly via "next green" (SEEK_BAR_ENTRY_REACTIVATION)
+  // when RED2 has NEVER confirmed; once it has (whether that was long
+  // before this SL, or confirms later while still waiting to
+  // reactivate), direct reactivation is off the table and a fresh BAR
+  // must reform instead (SEEK_BAR, unrestricted).
+  everSawRed2 = false;
   // Set true the first time a COMBINED BAR ENTRY SL (BAR's own SL also
   // breached, same candle or sequential) establishes `topRef` as a real
   // reactivation gate, never reset while this BarLevelState lives. A
@@ -254,6 +263,15 @@ class BarLevelState {
   // virgin, never-gated one.
   gateEstablished = false;
   topRef: number;
+
+  // Frozen at the moment a CLEAN BAR ENTRY SL fires (BAR itself still
+  // active, not also breached) -- per the user's own rule: BAR ENTRY
+  // reactivates directly, one step, the moment this clears and closes
+  // above it (quietly climbing while waiting), exactly mirroring
+  // lib/tarTbar.ts's own frozenTarEntryRefHigh/SEEK_TAR_ENTRY_REACTIVATION.
+  // No new "BAR" instance forms in this path at all -- BAR was never
+  // touched, so there is nothing to reform.
+  frozenBarEntryRefHigh = 0;
 
   barRefHigh = 0;
   barRefLow = 0;
@@ -356,6 +374,18 @@ function stepBarLevel(
       s.red = null;
       s.doorOpen = true;
       if (s.mode === "BAR_ENTRY_ACTIVE") s.nestedDoorOpen = true;
+      s.everSawRed2 = true;
+      // Per the user's own rule: clean BAR ENTRY SL reactivation
+      // (SEEK_BAR_ENTRY_REACTIVATION's own direct, one-step reform) is
+      // "NEXT GREEN provided there is no RED 2" -- before or after the
+      // SL does not matter. A RED2 confirming while already waiting
+      // here means a fresh BAR is licensed instead -- abandon the
+      // direct reactivation and fall back to reforming a brand-new BAR
+      // unrestricted (the same path a combined BAR SL already takes).
+      // The "RED2 already happened before this SL" half of the rule is
+      // handled where the SL itself is detected, via this same
+      // everSawRed2 flag.
+      if (s.mode === "SEEK_BAR_ENTRY_REACTIVATION") s.mode = "SEEK_BAR";
     } else if (result === "invalid") {
       s.red = null;
     }
@@ -443,39 +473,53 @@ function stepBarLevel(
       if (barSlNow) {
         // Decisive (combined): BAR's own SL always means BAR ENTRY is
         // gone too -- BAR ENTRY is an escalation of BAR, it cannot
-        // outlive it. Reforms via SEEK_REACTIVATION -- above the BAR
-        // ENTRY reference high, not unrestricted (REAR is deferred for
-        // now: entry-only scope, no promotion). Exit price is ALWAYS BAR
-        // ENTRY's own (tighter) reference, same as the clean case below,
-        // not BAR's own wider one -- whether both breach the same candle
-        // or not, the trade's own exit is defined by its own entry-level
-        // stop; the "BAR SL" half of a combined event is a structural
-        // signal for how reformation proceeds, not a different exit
-        // price. Modeled at the exact qualifying threshold distance below
-        // that reference (same "ref +/- THRESH" convention entry price
+        // outlive it. Per the user's own rule: "NEXT GREEN WILL BE BAR
+        // FOLLOWED BY BAR ENTRY WHICH WILL BE ABOVE THE BAR reference
+        // high... irrespective of whether RED1-RED2 has completed" --
+        // BAR itself died too, so it reforms unrestricted (the 1st
+        // qualifying breakout candle, same shape as a virgin SEEK_BAR
+        // formation, no reference to clear first), then BAR ENTRY
+        // escalates ordinarily above *this new* BAR's own reference
+        // high, via the unchanged BAR_ACTIVE escalation path below.
+        // `topRef` still accumulates (read by the outer TZ BUY-level
+        // reactivation threshold) even though it no longer gates THIS
+        // reform. Exit price is ALWAYS BAR ENTRY's own (tighter)
+        // reference, same as the clean case below, not BAR's own wider
+        // one -- whether both breach the same candle or not, the
+        // trade's own exit is defined by its own entry-level stop; the
+        // "BAR SL" half of a combined event is a structural signal for
+        // how reformation proceeds, not a different exit price.
+        // Modeled at the exact qualifying threshold distance below that
+        // reference (same "ref +/- THRESH" convention entry price
         // already uses), not the literal Low of the SL day. Confirmed
         // exact match via KALYANKJIL (ref 117.70 -> exit 117.50) and
         // COCHINSHIP (ref 266.50 -> exit 266.30).
         s.topRef = Math.max(s.topRef, s.barRefHigh, s.barEntryRefHigh);
-        s.gateEstablished = true;
         const exitType = entrySlNow ? "DTF BAR SL + DTF BAR ENTRY SL" : "DTF BAR SL (wipes ENTRY)";
         closed = { exitType, exitPrice: s.barEntryRefLow - THRESH };
-        s.mode = "SEEK_REACTIVATION";
+        s.mode = "SEEK_BAR";
         s.nestedMode = "NONE";
         break;
       }
       if (entrySlNow) {
         // Clean (BAR itself not also breached, still active): per the
-        // user's latest correction, this no longer follows the combined
-        // case's gated SEEK_REACTIVATION. Since BAR itself is still
-        // alive, BAR reforms immediately on the 1st qualifying breakout
-        // candle after this SL (unrestricted, same shape as a virgin
-        // SEEK_BAR formation -- no reference to clear first). BAR ENTRY
-        // then escalates above THIS new BAR's own reference high, via
-        // the ordinary, unchanged BAR_ACTIVE escalation path below. No
-        // gate is established via this clean path.
+        // user's own rule, BAR ENTRY reactivates directly, one step, on
+        // the next qualifying candle -- clearing the FROZEN BAR ENTRY
+        // reference high (quietly climbing while waiting) and closing
+        // above it, exactly mirroring lib/tarTbar.ts's own
+        // SEEK_TAR_ENTRY_REACTIVATION. BAR itself was never touched, so
+        // no new "BAR" instance forms at all in this path -- UNLESS
+        // RED2 has ever confirmed in this BarLevelState's life already
+        // (before this SL, not just after): then direct reactivation is
+        // off the table and a fresh BAR must reform instead
+        // (s.everSawRed2's own comment).
         closed = { exitType: "DTF BAR ENTRY SL", exitPrice: s.barEntryRefLow - THRESH };
-        s.mode = "SEEK_BAR";
+        if (s.everSawRed2) {
+          s.mode = "SEEK_BAR";
+        } else {
+          s.frozenBarEntryRefHigh = s.barEntryRefHigh;
+          s.mode = "SEEK_BAR_ENTRY_REACTIVATION";
+        }
         s.nestedMode = "NONE";
         break;
       }
@@ -547,6 +591,26 @@ function stepBarLevel(
         s.mode = "BAR_ACTIVE";
       } else if (cur.h > s.topRef) {
         s.topRef = cur.h;
+      }
+      break;
+    }
+    case "SEEK_BAR_ENTRY_REACTIVATION": {
+      // Pure price, no RED gate at all -- same shape as
+      // lib/tarTbar.ts's own SEEK_TAR_ENTRY_REACTIVATION. Reactivates
+      // BAR ENTRY directly, one step, same candle (BAR itself is
+      // untouched the whole time).
+      if (breakoutShape(prev, cur, s.frozenBarEntryRefHigh)) {
+        const entryPrice = s.frozenBarEntryRefHigh + THRESH;
+        s.barEntryRefHigh = cur.h;
+        s.barEntryRefLow = cur.l;
+        s.rowHH = cur.h;
+        s.rowHHDate = cur.date;
+        s.mode = "BAR_ENTRY_ACTIVE";
+        s.nestedDoorOpen = false;
+        s.nestedMode = "NONE";
+        opened = { price: entryPrice };
+      } else if (cur.h > s.frozenBarEntryRefHigh) {
+        s.frozenBarEntryRefHigh = cur.h;
       }
       break;
     }

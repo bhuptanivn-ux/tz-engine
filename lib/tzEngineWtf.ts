@@ -145,6 +145,25 @@ export class Buy {
   barLineages: BarLineage[] = [];
   barSubCounter = 0;
   barDeadLabels = new Set<number>();
+  // The FIRST lineage (by label) under this buy to confirm genuine BAR
+  // SL2 since the last fresh BAR/BAR 2 window -- "winner takes all":
+  // per evalBarLineagesProgress's own docstring, whichever lineage's
+  // SL2 condition fires first wins, and every OTHER lineage terminates
+  // immediately -- REAR forms off the WINNER's own reference, never a
+  // later lineage's. Confirmed real-data (ICICIBANK.NS, letter C): BAR
+  // SL2(C.5) 2008-06-02 is the winner (reference 176.55); the raw
+  // RED1->RED2 unsticking mechanism (see barSl2Log's own comment) keeps
+  // mechanically forming more lineages afterward (C.6, C.7, C.8) to
+  // avoid permanently jamming the top-level RED1 tracker, and C.6 even
+  // reaches its OWN genuine BAR SL2 (2009-02-24) -- but without this
+  // field, the REAR-eligibility check treated C.6 as independently
+  // eligible too, off its own far lower 97.93 reference, firing a
+  // spurious REAR(C) 2009-05-18 that should not have been possible
+  // until 176.55 itself cleared. Reset to null everywhere a genuinely
+  // fresh BAR/BAR 2 numbering window starts (same sites that reset
+  // barSubCounter/barDeadLabels), so a later, separate TZ BUY 2/REAR
+  // 2/REAR RE-ENTER 2 era gets its own winner again.
+  rearWinnerLabel: string | null = null;
   barPending = false;
   rear: Rear | null = null;
   rearReenter: RearReenter | null = null;
@@ -962,6 +981,7 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
+        buy.rearWinnerLabel = null;
         buy.rear = null;
         buy.rearReenter = null;
         buy.tzBuy2 = null;
@@ -1223,6 +1243,7 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
+        buy.rearWinnerLabel = null;
         buy.barPending = false;
       }
     } else if (buy.rear !== null && buy.rear.dormant && buy.rear.sl === null) {
@@ -1236,6 +1257,7 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
+        buy.rearWinnerLabel = null;
         buy.red1 = null;
         buy.barPending = false;
       }
@@ -1580,6 +1602,7 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
+        buy.rearWinnerLabel = null;
         buy.barPending = false;
         buy.rear = null;
         buy.rearReenter = null;
@@ -1720,6 +1743,7 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
+        buy.rearWinnerLabel = null;
         buy.barPending = false;
         return ev;
       }
@@ -1780,6 +1804,7 @@ export class TZEngine {
         buy.barLineages = [];
         buy.barSubCounter = 0;
         buy.barDeadLabels = new Set();
+        buy.rearWinnerLabel = null;
         buy.barPending = false;
         return ev;
       }
@@ -1984,6 +2009,10 @@ export class TZEngine {
             sl.sl2 = true;
             sl2ConfirmedToday = true;
             buy.barPending = false;
+            // "Winner takes all": only the FIRST lineage to reach genuine
+            // BAR SL2 in this window is REAR-eligible -- see
+            // buy.rearWinnerLabel's own comment.
+            if (buy.rearWinnerLabel === null) buy.rearWinnerLabel = lin.label;
             // This lineage's own BAR 2 DID confirm before ultimately
             // failing here -- "once BAR 2 confirms, next RED1-RED2 will
             // open the gate to BAR followed by BAR 2" (the same rule
@@ -2018,25 +2047,31 @@ export class TZEngine {
           // only once this lineage has confirmed genuine BAR SL2 (sl.sl2
           // true -- the else branch of the !sl.sl2 check above). A bare
           // BAR SL alone never opens REAR eligibility.
-          const preRef = preTodayBar2Ref.get(lin.label);
-          const rearRef = preRef !== undefined && preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
-          const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
-          // Deliberately NOT gated by milestoneBlocked, OR by whether a
-          // newer sibling has already won the race (racedOutByNewerTzBuy2)
-          // -- confirmed real-data case, ETERNAL.NS: branch B's own BAR
-          // 2(B.1) chain reaches REAR purely off its own reference high
-          // (304.70 -> 314.45), the SAME weeks an unrelated sibling
-          // branch is independently making its own TZ BUY/TZ BUY 2
-          // progress. REAR above BAR 2's own high is a property of this
-          // chain's own lineage, not a cross-branch leadership contest.
-          // Confirmed (ICICIBANK.NS hypothetical): even once a sibling
-          // HAS already won, REAR must still confirm and keep tracking
-          // its own reference internally -- "RECORDED AT THE BACKEND" --
-          // so the state is correct if the race ever reopens. Only
-          // process()'s own output filter decides whether this shows.
-          if (isRear) {
-            rearWinner = [cur.h, cur.l];
-            break;
+          // "Winner takes all": only the FIRST lineage under THIS buy to
+          // reach genuine BAR SL2 is REAR-eligible -- a later lineage
+          // reaching its own independent BAR SL2 afterward (the raw
+          // RED1->RED2 unsticking mechanism keeps forming these, see
+          // barSl2Log's own comment) must NOT reopen REAR off its own,
+          // typically far lower, reference. Confirmed real-data
+          // (ICICIBANK.NS, letter C): BAR SL2(C.5) 2008-06-02 (reference
+          // 176.55) is the winner; BAR SL2(C.6) 2009-02-24 (reference
+          // only 97.93) is noise -- without this gate, REAR(C) wrongly
+          // fired 2009-05-18 off C.6's 97.93 the moment that cleared,
+          // instead of waiting for C.5's own 176.55 (the real clearance
+          // only comes in 2010). This is scoped to lineages under THIS
+          // SAME buy object -- it does not touch the separate, confirmed
+          // cross-BRANCH case (ETERNAL.NS, branch B's own BAR 2(B.1)
+          // reaching REAR independently of an unrelated sibling branch's
+          // own TZ BUY/TZ BUY 2 progress), since each branch has its own
+          // Buy instance and thus its own independent rearWinnerLabel.
+          if (lin.label === buy.rearWinnerLabel) {
+            const preRef = preTodayBar2Ref.get(lin.label);
+            const rearRef = preRef !== undefined && preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
+            const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
+            if (isRear) {
+              rearWinner = [cur.h, cur.l];
+              break;
+            }
           }
         }
       }
@@ -2063,6 +2098,7 @@ export class TZEngine {
       buy.barLineages = [];
       buy.barSubCounter = 0;
       buy.barDeadLabels = new Set();
+      buy.rearWinnerLabel = null;
       buy.barPending = false;
       return ev;
     }
@@ -2178,6 +2214,7 @@ export class TZEngine {
       buy.barLineages = [];
       buy.barSubCounter = 0;
       buy.barDeadLabels = new Set();
+      buy.rearWinnerLabel = null;
       buy.red1 = null;
       buy.barPending = false;
       return ev;
@@ -2262,6 +2299,7 @@ export class TZEngine {
       buy.barLineages = [];
       buy.barSubCounter = 0;
       buy.barDeadLabels = new Set();
+      buy.rearWinnerLabel = null;
       buy.barPending = false;
       return ev;
     }
