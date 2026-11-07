@@ -687,8 +687,13 @@ function stepLevel(
       if (!tbarSlNow && cur.l < s.tbarRefLow) s.tbarRefLow = cur.l;
       if (tbarSlNow) {
         s.topRef = Math.max(s.topRef, s.tbarRefHigh);
-        s.frozenTarEntryRefHigh = s.tbarRefHigh;
         closed = { exitType: "TAR ENTRY SL", exitPrice: s.tbarRefLow };
+        // Per the user's own rule: TAR ENTRY reactivates directly, one
+        // step, next green -- irrespective of RED1-RED2 having occurred
+        // in between -- as long as TAR itself (not just TAR ENTRY)
+        // stays intact. Can repeat any number of times (multiple TAR
+        // ENTRY SL cycles) before TAR itself ever dies.
+        s.frozenTarEntryRefHigh = s.tbarRefHigh;
         s.mode = "SEEK_TAR_ENTRY_REACTIVATION";
         // A bare "TAR ENTRY SL" (TAR itself survives, still alive and
         // continuously tracked above) licenses the independent nested

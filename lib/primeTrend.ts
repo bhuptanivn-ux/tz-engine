@@ -238,15 +238,6 @@ class BarLevelState {
   nestedDoorOpen = false;
   red: BarRedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves -- unlocks BAR-seeking permanently
-  // Persists once RED2 has EVER confirmed in this BarLevelState's life --
-  // before or after a given BAR ENTRY SL does not matter. Per the user's
-  // own rule: a clean BAR ENTRY SL (BAR itself untouched) only
-  // reactivates directly via "next green" (SEEK_BAR_ENTRY_REACTIVATION)
-  // when RED2 has NEVER confirmed; once it has (whether that was long
-  // before this SL, or confirms later while still waiting to
-  // reactivate), direct reactivation is off the table and a fresh BAR
-  // must reform instead (SEEK_BAR, unrestricted).
-  everSawRed2 = false;
   // Set true the first time a COMBINED BAR ENTRY SL (BAR's own SL also
   // breached, same candle or sequential) establishes `topRef` as a real
   // reactivation gate, never reset while this BarLevelState lives. A
@@ -263,15 +254,6 @@ class BarLevelState {
   // virgin, never-gated one.
   gateEstablished = false;
   topRef: number;
-
-  // Frozen at the moment a CLEAN BAR ENTRY SL fires (BAR itself still
-  // active, not also breached) -- per the user's own rule: BAR ENTRY
-  // reactivates directly, one step, the moment this clears and closes
-  // above it (quietly climbing while waiting), exactly mirroring
-  // lib/tarTbar.ts's own frozenTarEntryRefHigh/SEEK_TAR_ENTRY_REACTIVATION.
-  // No new "BAR" instance forms in this path at all -- BAR was never
-  // touched, so there is nothing to reform.
-  frozenBarEntryRefHigh = 0;
 
   barRefHigh = 0;
   barRefLow = 0;
@@ -374,18 +356,6 @@ function stepBarLevel(
       s.red = null;
       s.doorOpen = true;
       if (s.mode === "BAR_ENTRY_ACTIVE") s.nestedDoorOpen = true;
-      s.everSawRed2 = true;
-      // Per the user's own rule: clean BAR ENTRY SL reactivation
-      // (SEEK_BAR_ENTRY_REACTIVATION's own direct, one-step reform) is
-      // "NEXT GREEN provided there is no RED 2" -- before or after the
-      // SL does not matter. A RED2 confirming while already waiting
-      // here means a fresh BAR is licensed instead -- abandon the
-      // direct reactivation and fall back to reforming a brand-new BAR
-      // unrestricted (the same path a combined BAR SL already takes).
-      // The "RED2 already happened before this SL" half of the rule is
-      // handled where the SL itself is detected, via this same
-      // everSawRed2 flag.
-      if (s.mode === "SEEK_BAR_ENTRY_REACTIVATION") s.mode = "SEEK_BAR";
     } else if (result === "invalid") {
       s.red = null;
     }
@@ -504,22 +474,14 @@ function stepBarLevel(
       if (entrySlNow) {
         // Clean (BAR itself not also breached, still active): per the
         // user's own rule, BAR ENTRY reactivates directly, one step, on
-        // the next qualifying candle -- clearing the FROZEN BAR ENTRY
-        // reference high (quietly climbing while waiting) and closing
-        // above it, exactly mirroring lib/tarTbar.ts's own
-        // SEEK_TAR_ENTRY_REACTIVATION. BAR itself was never touched, so
-        // no new "BAR" instance forms at all in this path -- UNLESS
-        // RED2 has ever confirmed in this BarLevelState's life already
-        // (before this SL, not just after): then direct reactivation is
-        // off the table and a fresh BAR must reform instead
-        // (s.everSawRed2's own comment).
+        // the very next "green" (plain day-over-day breakout) candle --
+        // no reference level to clear at all. BAR itself was never
+        // touched, so no new "BAR" instance forms in this path --
+        // irrespective of whether RED2 has confirmed, before or after
+        // this SL: as long as BAR itself is intact, next green is BAR
+        // ENTRY.
         closed = { exitType: "DTF BAR ENTRY SL", exitPrice: s.barEntryRefLow - THRESH };
-        if (s.everSawRed2) {
-          s.mode = "SEEK_BAR";
-        } else {
-          s.frozenBarEntryRefHigh = s.barEntryRefHigh;
-          s.mode = "SEEK_BAR_ENTRY_REACTIVATION";
-        }
+        s.mode = "SEEK_BAR_ENTRY_REACTIVATION";
         s.nestedMode = "NONE";
         break;
       }
@@ -595,12 +557,16 @@ function stepBarLevel(
       break;
     }
     case "SEEK_BAR_ENTRY_REACTIVATION": {
-      // Pure price, no RED gate at all -- same shape as
-      // lib/tarTbar.ts's own SEEK_TAR_ENTRY_REACTIVATION. Reactivates
-      // BAR ENTRY directly, one step, same candle (BAR itself is
-      // untouched the whole time).
-      if (breakoutShape(prev, cur, s.frozenBarEntryRefHigh)) {
-        const entryPrice = s.frozenBarEntryRefHigh + THRESH;
+      // "Next green" -- plain day-over-day breakout, no reference level
+      // to clear at all (same unrestricted shape a virgin BAR formation
+      // uses, NOT TAR ENTRY's own frozen-reference reactivation -- that
+      // was the wrong model to copy here). Confirmed real-data
+      // (ICICIBANK.NS): BAR ENTRY SL 2003-11-19 (ratcheted high 48.78) ->
+      // 2003-11-24 (High 44.55, clears 2003-11-21's own High 42.73 by
+      // threshold, closes above it) reactivates BAR ENTRY directly, even
+      // though 44.55 never comes close to the old 48.78.
+      if (breakoutShape(prev, cur, prev.h)) {
+        const entryPrice = prev.h + THRESH;
         s.barEntryRefHigh = cur.h;
         s.barEntryRefLow = cur.l;
         s.rowHH = cur.h;
@@ -609,8 +575,6 @@ function stepBarLevel(
         s.nestedDoorOpen = false;
         s.nestedMode = "NONE";
         opened = { price: entryPrice };
-      } else if (cur.h > s.frozenBarEntryRefHigh) {
-        s.frozenBarEntryRefHigh = cur.h;
       }
       break;
     }
