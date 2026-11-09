@@ -19,46 +19,35 @@
 //   SL candle's low becomes the reference (TZ GREEN SL LL lowers it), and only
 //   TZ GREEN SL 2 (a decisive close below it) ends the house, after which a
 //   new TZ GREEN may start. TZ GREEN HH is tracked, not recorded.
-// Phase 1 (TZ level), stage 1 = TZ BUY (or a REAR), stage 2 = TZ BUY ENTRY:
-//   TZ BUY ENTRY: breakout over TZ BUY's high (or over a REAR's high).
+// Phase 1 (TZ level), stage 1 = TZ BUY (or REAR A), stage 2 = TZ BUY ENTRY:
+//   TZ BUY ENTRY: breakout over TZ BUY's high (or over REAR A's high).
 //   Bare TZ BUY SL (no TZ BUY ENTRY yet): TZ BUY again on the next green candle.
-//   TZ BUY ENTRY SL, TZ BUY still active: REAR C on the next green candle, then
-//     TZ BUY ENTRY above REAR C's high (RED1 / RED2 do not matter). REAR C stays
-//     tracked after that TZ BUY ENTRY; REAR C SL -> REAR C again on the next
-//     green candle. Every new high above the highest high since the earlier
-//     TZ BUY ENTRY is INVALID TZ BUY ENTRY HH.
-//   TZ BUY SL (TZ BUY ENTRY SL included): the SL candle's high / low become the
-//     reference (TZ BUY SL HH / LL). TZ BUY reactivates on a breakout over that
-//     high, then TZ BUY ENTRY above the reactivated TZ BUY's high.
-//   Anchor: the latest TZ BUY / REAR (raw or reactivated) formed after a RED1 ->
-//     RED2 that completed after TZ BUY ENTRY (the first TZ BUY is one). Each
-//     stage 1 SLs at its own low; SL 2 is a decisive close below the ANCHOR's
-//     SL low (old SL -> SL 2 rule) and starts the race: a new house vs this
-//     house's REAR above the highest high since the earlier TZ BUY ENTRY, then
-//     TZ BUY ENTRY above that REAR. A REAR after SL 2 is never an anchor; its
-//     SL only reactivates it above its SL high.
+//   TZ BUY ENTRY SL, TZ BUY active: TZ BUY ENTRY again on the next green
+//     candle. Meanwhile every new high above the highest high since the
+//     earlier TZ BUY ENTRY is INVALID TZ BUY ENTRY HH.
+//   TZ BUY SL (TZ BUY ENTRY SL included) starts the race: this house's REAR A
+//     above that highest high vs a new house's TZ BUY. REAR first, or on the
+//     same day: the new house terminates; then TZ BUY ENTRY above REAR A's
+//     high, and REAR A acts as TZ BUY. The new house's TZ BUY first: this house
+//     goes dormant. A REAR A SL before its TZ BUY ENTRY: the next REAR must
+//     clear that REAR's running high.
 //   RED2 arms BAR1 only while TZ BUY ENTRY is active.
-// BAR level (only while TZ BUY ENTRY is active). RED1 -> RED2 keeps running
-//   and always arms BAR1 (green candle). BAR1 then becomes BAR ENTRY (above
-//   BAR1's high) while the earlier BAR ENTRY is active, or BAR 2 of a new BAR
-//   cycle while it is not; either way the earlier BAR cycle ends there. Bare
-//   BAR1 SL: BAR1 again on the next green candle.
-//   BAR ENTRY SL: no re-entry yet (not coded, user); INVALID BAR ENTRY HH
-//     keeps BAR ENTRY's running reference high for the REAR after BAR SL 2.
-//   BAR SL (BAR ENTRY SL included): first from the anchor BAR1's low; after
-//     BAR ENTRY has re-formed, again from the earlier BAR SL candle's low
-//     (moved down by BAR SL LL). REAR above the BAR SL candle's high (BAR SL
-//     HH raises it), then BAR ENTRY above that REAR's high. No race.
+// BAR level (only while TZ BUY ENTRY is active). RED1 -> RED2 -> BAR1 (green
+//   candle) -> BAR ENTRY (above BAR1's high), in a loop; the previous BAR
+//   ENTRY stays live until the next BAR ENTRY. While BAR1 is bare, RED1 / RED2
+//   are not sought. Bare BAR1 SL: BAR1 again on the next green candle.
+//   BAR ENTRY SL, BAR still active: BAR ENTRY again on the next green candle;
+//     if a RED2 has completed (before, on or after the SL day), the next green
+//     candle is a new BAR1 instead (BAR 2 of a new cycle, ending the earlier).
+//   BAR SL (BAR ENTRY SL included): from the anchor BAR1's low; a later one
+//     from the earlier BAR SL candle's low. No REAR. (The ghost BAR that
+//     follows is not built yet.)
 //   BAR SL 2 (old rule: BAR SL LL lowers the BAR SL low; a decisive close
-//     below it is BAR SL 2): opens the race; REAR above BAR ENTRY's running
-//     reference high, then BAR ENTRY above that REAR's high. Until then the
-//     house moves only via REAR -> BAR ENTRY (no new BAR1, RED gate stopped).
-//   REAR SL (REAR does not act as BAR1): the next REAR must clear the earlier
-//     REAR's running high (INVALID REAR HH raises it).
-// Race (TZ BUY / REAR SL 2, or BAR SL 2): this house vs a new house
-//   (TZ GREEN -> RED1 -> RED2 -> TZ BUY -> ...). The first to reach BAR ENTRY
-//   wins and is shown; on the same day the earlier house wins. The other goes
-//   dormant: it keeps running in the background and nothing of it is shown.
+//     below it): the race -- REAR above BAR ENTRY's running high vs a new
+//     house's TZ BUY, same rules as above; then BAR ENTRY above that REAR.
+//     Until then no new BAR1 and the RED gate pauses.
+// Race: see TZ BUY SL above. The loser of a race (this house) goes dormant:
+//   it keeps running in the background and nothing of it is shown.
 
 import { THRESH, EPS, type Day, type HistoryRowLike } from "./tzEngineWtf";
 
@@ -133,26 +122,15 @@ export class BarLineage {
   constructor(public label: string, public refHigh: number, public refLow: number) {}
 }
 
-/** A stage 1 at the TZ level: TZ BUY (first or reactivated), REAR A (the
- * race REAR after SL 2, once TZ BUY ENTRY formed above it), or REAR C (after a
- * TZ BUY ENTRY SL while TZ BUY is active). */
+/** Stage 1 at the TZ level: TZ BUY, or REAR A (the race REAR after TZ BUY
+ * SL, once TZ BUY ENTRY has formed above it; it then acts as TZ BUY). */
 export class Stage1 {
   alive = true;
-  /** Its SL candle's high and low (SL HH raises the high, SL LL lowers the
-   * low). Reactivation is a breakout over the high; for the anchor, SL 2 is a
-   * decisive close below the low. */
-  sl: Tier | null = null;
-  constructor(
-    public kind: "TZ BUY" | "REAR A" | "REAR C",
-    public refHigh: number,
-    public refLow: number,
-    /** Formed after a completed RED1 -> RED2 (user-confirmed anchor rule). */
-    public anchor: boolean
-  ) {}
+  constructor(public kind: "TZ BUY" | "REAR A", public refHigh: number, public refLow: number) {}
 }
 
 /** TZ level of a house: stage 1 (TZ BUY / REAR A) + stage 2 (TZ BUY ENTRY),
- * REAR C, plus the RED gate and BAR stage under TZ BUY ENTRY. */
+ * plus the RED gate and BAR stage under TZ BUY ENTRY. */
 export class TzLevel {
   s1: Stage1;
   /** A bare TZ BUY SL (no TZ BUY ENTRY yet): TZ BUY again on the next green
@@ -160,16 +138,8 @@ export class TzLevel {
   bareSl = false;
   entry: Tier | null = null;
   /** Highest high since the earlier TZ BUY ENTRY (INVALID TZ BUY ENTRY HH
-   * raises it): the race REAR after SL 2 must clear it. */
+   * raises it): the race REAR after TZ BUY SL must clear it. */
   entryTop = 0;
-  /** The latest REAR C, and whether TZ BUY ENTRY has yet to re-form above it. */
-  rearC: Stage1 | null = null;
-  rearCPending = false;
-  /** The latest stage 1 formed after a completed RED1 -> RED2: SL 2 is
-   * measured below its SL low. */
-  anchor: Stage1 | null;
-  /** A RED1 -> RED2 has completed since the last TZ BUY ENTRY / stage 1. */
-  red2Since = false;
   seek: RearSeek | null = null;
   red: Red | null = null;
   redSeek = false;
@@ -179,9 +149,7 @@ export class TzLevel {
   barDeadLabels = new Set<number>();
   barEntryEver = false;
   constructor(refHigh: number, refLow: number) {
-    // The first TZ BUY follows RED1 -> RED2: it is the anchor.
-    this.s1 = new Stage1("TZ BUY", refHigh, refLow, true);
-    this.anchor = this.s1;
+    this.s1 = new Stage1("TZ BUY", refHigh, refLow);
   }
 
   resetBarStage(): void {
@@ -200,9 +168,11 @@ export class TzLevel {
   }
 }
 
-/** An open race: decided by the first house to reach BAR ENTRY. */
+/** An open race: this house's REAR vs a new house's TZ BUY. */
 export class Race {
   open = true;
+  /** Set on the day this house's REAR forms (reset every day). */
+  rearToday = false;
 }
 
 /** One house: TZ GREEN -> ... */
@@ -243,22 +213,27 @@ export class DtfBarTheoryEngine {
   processTagged(prev: Day, cur: Day): TaggedEvent[] {
     this.dayDoubts = [];
     const byCycle = new Map<Cycle, string[]>();
+    for (const c of this.cycles) if (c.race) c.race.rearToday = false;
     for (const cyc of this.cycles) {
       if (!cyc.active) continue;
       this.cur = cyc;
       byCycle.set(cyc, this.evalHouse(cyc, prev, cur));
     }
 
-    // Races: decided by the first house to reach BAR ENTRY; on the same day
-    // the earlier house wins. The loser goes dormant.
-    const reached = (c: Cycle): boolean => (byCycle.get(c) ?? []).some(isBarEntryEvent);
+    // Races (after TZ BUY SL or BAR SL 2): this house's REAR vs a new house's
+    // TZ BUY. REAR first, or on the same day: this house wins and the new
+    // house terminates. The new house's TZ BUY first: this house goes dormant
+    // (keeps running in the background, nothing of it is shown).
     for (const old of this.cycles) {
       if (!old.active || old.dormant || !old.race?.open) continue;
       const younger = this.cycles.filter((c) => c.seq > old.seq && c.active && !c.dormant);
-      if (reached(old)) {
+      if (old.race.rearToday) {
         old.race.open = false;
-        for (const c of younger) c.dormant = true;
-      } else if (younger.some(reached)) {
+        for (const c of younger) {
+          c.active = false;
+          byCycle.delete(c);
+        }
+      } else if (younger.some((c) => c.tz !== null)) {
         old.race.open = false;
         old.dormant = true;
       }
@@ -288,6 +263,10 @@ export class DtfBarTheoryEngine {
 
   private openRace(cyc: Cycle): void {
     if (cyc.race === null || !cyc.race.open) cyc.race = new Race();
+  }
+
+  private rearFormed(cyc: Cycle): void {
+    if (cyc.race !== null && cyc.race.open) cyc.race.rearToday = true;
   }
 
   // -----------------------------------------------------------------
@@ -383,9 +362,7 @@ export class DtfBarTheoryEngine {
     }
     const r = this.evalRed(tz.red, prev, cur);
     if (r.includes("RED2")) {
-      // RED2 makes the next TZ BUY / REAR an anchor; it arms BAR1 only while
-      // TZ BUY ENTRY is active (user-confirmed).
-      tz.red2Since = true;
+      // RED2 arms BAR1 only while TZ BUY ENTRY is active (user-confirmed).
       if (tz.entry !== null && !tz.entry.sl) tz.barPending = true;
       tz.redSeek = false;
       tz.red = null;
@@ -423,31 +400,28 @@ export class DtfBarTheoryEngine {
     if (tz.bareSl) {
       if (green(prev, cur)) {
         tz.bareSl = false;
-        tz.s1 = new Stage1("TZ BUY", cur.h, cur.l, true);
-        tz.anchor = tz.s1;
+        tz.s1 = new Stage1("TZ BUY", cur.h, cur.l);
         ev.push("TZ BUY");
       }
       return ev;
     }
 
-    // After SL 2: the race REAR, until TZ BUY ENTRY forms above it.
+    // After TZ BUY SL: the race REAR, until TZ BUY ENTRY forms above it.
     if (tz.seek !== null) {
       const s = tz.seek;
       if (s.rear !== null) {
         if (breaksRef(prev, cur, s.rear.refHigh)) {
-          // TZ BUY ENTRY above REAR; REAR now acts as TZ BUY, but a REAR
-          // after SL 2 is never an anchor.
-          tz.s1 = new Stage1("REAR A", s.rear.refHigh, s.rear.refLow, false);
-          tz.anchor = null;
+          // TZ BUY ENTRY above REAR; REAR now acts as TZ BUY.
+          tz.s1 = new Stage1("REAR A", s.rear.refHigh, s.rear.refLow);
           tz.entry = new Tier(cur.h, cur.l);
           tz.entryTop = cur.h;
           tz.seek = null;
           tz.redSeek = true;
           tz.red = null;
-          tz.red2Since = false;
           return ["TZ BUY ENTRY"];
         }
         if (this.evalRearTier(s.rear, "REAR A", cur, ev)) {
+          // REAR SL: the next REAR must clear this REAR's running high.
           s.target = s.rear.refHigh;
           s.afterRearSl = true;
           s.rear = null;
@@ -456,6 +430,7 @@ export class DtfBarTheoryEngine {
       }
       if (breaksRef(prev, cur, s.target)) {
         s.rear = new Tier(cur.h, cur.l);
+        this.rearFormed(cyc);
         return ["REAR A"];
       }
       if (cur.h > s.target) {
@@ -465,123 +440,51 @@ export class DtfBarTheoryEngine {
       return ev;
     }
 
-    // SL 2: a decisive close below the anchor's SL low (old SL -> SL 2 rule).
-    // Starts the race: a new house vs this house's REAR above the highest
-    // high since the earlier TZ BUY ENTRY.
-    const anc = tz.anchor;
-    if (anc !== null && anc.sl !== null) {
-      if (isSl(cur, anc.sl.refLow)) {
-        if (tz.entry !== null && !tz.entry.sl) ev.push("TZ BUY ENTRY SL");
-        if (tz.s1.alive && tz.s1 !== anc && isSl(cur, tz.s1.refLow)) ev.push(`${tz.s1.kind} SL`);
-        ev.push(`${anc.kind} SL2`);
-        if (cur.h > tz.entryTop) tz.entryTop = cur.h;
-        tz.seek = new RearSeek(tz.entryTop, false);
-        tz.s1.alive = false;
-        tz.rearC = null;
-        tz.rearCPending = false;
-        tz.anchor = null;
-        tz.red2Since = false;
-        tz.resetBarStage();
-        this.openRace(cyc);
-        return ev;
-      }
-      if (anc !== tz.s1) {
-        const l = quietLl(cur, anc.sl.refLow);
-        if (l !== null) {
-          anc.sl.refLow = l;
-          ev.push(`${anc.kind} SL LL`);
-        }
-      }
-    }
-
     const s1 = tz.s1;
-    if (tz.entry !== null && cur.h > tz.entryTop && !(tz.entry.sl && s1.alive)) tz.entryTop = cur.h;
 
-    if (s1.alive && tz.entry === null && breaksRef(prev, cur, s1.refHigh)) {
-      // TZ BUY ENTRY above the (first or reactivated) TZ BUY's high.
+    // First TZ BUY ENTRY: breakout over TZ BUY's high.
+    if (tz.entry === null && breaksRef(prev, cur, s1.refHigh)) {
       tz.entry = new Tier(cur.h, cur.l);
-      if (cur.h > tz.entryTop) tz.entryTop = cur.h;
+      tz.entryTop = cur.h;
       s1.refHigh = cur.h;
       tz.redSeek = true;
       tz.red = null;
-      tz.red2Since = false;
       return ["TZ BUY ENTRY"];
     }
 
-    if (s1.alive) {
-      // Stage 1 HH / LL / SL.
-      const slNow = isSl(cur, s1.refLow);
-      if (cur.h > s1.refHigh) {
-        s1.refHigh = cur.h;
-        if (!slNow && tz.entry === null) ev.push(`${s1.kind} HH`);
-      }
-      const l1 = quietLl(cur, s1.refLow);
-      if (l1 !== null) {
-        s1.refLow = l1;
-        ev.push(`${s1.kind} LL`);
-      }
-      if (slNow) {
-        s1.alive = false;
-        if (tz.entry === null) {
-          tz.bareSl = true;
-          ev.push("TZ BUY SL");
-          tz.resetBarStage();
-          return ev;
-        }
-        // Stage 1 SL: stage 2 SL is included. Reactivation above the SL
-        // candle's high; SL 2 (anchor only) below its low.
-        if (!tz.entry.sl) {
-          tz.entry.sl = true;
-          ev.push("TZ BUY ENTRY SL");
-        }
+    // Stage 1 (TZ BUY / REAR A) HH / LL / SL.
+    const slNow = isSl(cur, s1.refLow);
+    if (cur.h > s1.refHigh) {
+      s1.refHigh = cur.h;
+      if (!slNow && tz.entry === null) ev.push(`${s1.kind} HH`);
+    }
+    const l1 = quietLl(cur, s1.refLow);
+    if (l1 !== null) {
+      s1.refLow = l1;
+      ev.push(`${s1.kind} LL`);
+    }
+    if (slNow) {
+      s1.alive = false;
+      if (tz.entry === null) {
+        tz.bareSl = true;
+        ev.push("TZ BUY SL");
+      } else {
+        // Stage 1 SL (TZ BUY ENTRY SL included) starts the race: this house's
+        // REAR above the highest high since the earlier TZ BUY ENTRY vs a new
+        // house's TZ BUY (user-confirmed).
+        if (!tz.entry.sl) ev.push("TZ BUY ENTRY SL");
         ev.push(`${s1.kind} SL`);
-        s1.sl = new Tier(cur.h, cur.l);
-        tz.rearC = null;
-        tz.rearCPending = false;
-        tz.endBarStage();
-      } else {
-        ev = this.evalEntry(tz, prev, cur, ev);
+        if (cur.h > tz.entryTop) tz.entryTop = cur.h;
+        tz.seek = new RearSeek(tz.entryTop, false);
+        this.openRace(cyc);
       }
-    } else if (s1.sl !== null) {
-      // Stage 1 sits SL'd: reactivation on a breakout over its SL high.
-      if (breaksRef(prev, cur, s1.sl.refHigh)) {
-        const n = new Stage1(s1.kind, cur.h, cur.l, tz.red2Since);
-        if (n.anchor) {
-          tz.anchor = n;
-          tz.red2Since = false;
-        }
-        tz.s1 = n;
-        tz.entry = null;
-        ev.push(s1.kind);
-      } else {
-        if (cur.h > s1.sl.refHigh) {
-          s1.sl.refHigh = cur.h;
-          ev.push(`${s1.kind} SL HH`);
-        }
-        const l = quietLl(cur, s1.sl.refLow);
-        if (l !== null) {
-          s1.sl.refLow = l;
-          if (s1 === tz.anchor) ev.push(`${s1.kind} SL LL`);
-        }
-      }
+      tz.resetBarStage();
+      return ev;
     }
 
-    // BAR stage (only while TZ BUY ENTRY is active) and RED gate.
-    const bar = tz.entry !== null && !tz.entry.sl && tz.s1.alive ? this.evalBarLineages(cyc, tz, prev, cur) : [];
-    if (!tz.barEntryEver && bar.some(isBarEntryEvent)) {
-      tz.barEntryEver = true;
-      ev = ev.filter((x) => x !== "TZ BUY ENTRY HH");
-    }
-    ev.push(...bar);
-    ev.push(...this.evalRedGate(tz, prev, cur));
-    return ev;
-  }
-
-  /** Stage 2 (TZ BUY ENTRY) and REAR C, while stage 1 is alive. */
-  private evalEntry(tz: TzLevel, prev: Day, cur: Day, ev: string[]): string[] {
+    // Stage 2: TZ BUY ENTRY.
     const e = tz.entry;
-    if (e === null) return ev;
-    if (!e.sl) {
+    if (e !== null && !e.sl) {
       const eSl = isSl(cur, e.refLow);
       if (cur.h > e.refHigh) {
         e.refHigh = cur.h;
@@ -593,73 +496,36 @@ export class DtfBarTheoryEngine {
         e.refLow = el;
         ev.push("TZ BUY ENTRY LL");
       }
-      this.trackRearC(tz, cur, ev);
       if (eSl) {
         e.sl = true;
-        tz.rearCPending = false;
         ev.push("TZ BUY ENTRY SL");
         if (tz.barLineages.length > 0)
           this.doubt("TZ BUY ENTRY SL ends the live BAR stage (BAR not considered while TZ BUY ENTRY is SL'd)");
         tz.endBarStage();
       }
-      return ev;
-    }
-
-    // TZ BUY ENTRY sits SL'd, TZ BUY active: REAR C on the next green candle,
-    // then TZ BUY ENTRY above REAR C's high (RED1 / RED2 do not matter).
-    const r = tz.rearC;
-    if (r !== null && r.alive && tz.rearCPending) {
-      if (breaksRef(prev, cur, r.refHigh)) {
+    } else if (e !== null && e.sl) {
+      // TZ BUY ENTRY SL, TZ BUY active: TZ BUY ENTRY again on the next green
+      // candle (user-confirmed).
+      if (green(prev, cur)) {
         tz.entry = new Tier(cur.h, cur.l);
         if (cur.h > tz.entryTop) tz.entryTop = cur.h;
-        tz.rearCPending = false;
         tz.redSeek = true;
         ev.push("TZ BUY ENTRY");
-        return ev;
-      }
-      this.trackRearC(tz, cur, ev);
-    } else {
-      this.trackRearC(tz, cur, ev);
-      if ((tz.rearC === null || !tz.rearC.alive) && green(prev, cur)) {
-        const n = new Stage1("REAR C", cur.h, cur.l, tz.red2Since);
-        if (n.anchor) {
-          tz.anchor = n;
-          tz.red2Since = false;
-        }
-        tz.rearC = n;
-        tz.rearCPending = true;
-        ev.push("REAR C");
+      } else if (cur.h > tz.entryTop) {
+        tz.entryTop = cur.h;
+        ev.push("INVALID TZ BUY ENTRY HH");
       }
     }
-    // Every new high above the highest high since the earlier TZ BUY ENTRY.
-    if (cur.h > tz.entryTop) {
-      tz.entryTop = cur.h;
-      ev.push("INVALID TZ BUY ENTRY HH");
-    }
-    return ev;
-  }
 
-  /** REAR C's own HH (only while TZ BUY ENTRY has yet to re-form above it),
-   * LL and SL. It stays tracked after TZ BUY ENTRY re-forms above it. */
-  private trackRearC(tz: TzLevel, cur: Day, ev: string[]): void {
-    const r = tz.rearC;
-    if (r === null || !r.alive) return;
-    const slNow = isSl(cur, r.refLow);
-    if (cur.h > r.refHigh) {
-      r.refHigh = cur.h;
-      if (!slNow && tz.rearCPending) ev.push("REAR C HH");
+    // BAR stage (only while TZ BUY ENTRY is active) and RED gate.
+    const bar = tz.entry !== null && !tz.entry.sl ? this.evalBarLineages(cyc, tz, prev, cur) : [];
+    if (!tz.barEntryEver && bar.some(isBarEntryEvent)) {
+      tz.barEntryEver = true;
+      ev = ev.filter((x) => x !== "TZ BUY ENTRY HH");
     }
-    const l = quietLl(cur, r.refLow);
-    if (l !== null) {
-      r.refLow = l;
-      ev.push("REAR C LL");
-    }
-    if (slNow) {
-      r.alive = false;
-      r.sl = new Tier(cur.h, cur.l);
-      tz.rearCPending = false;
-      ev.push("REAR C SL");
-    }
+    ev.push(...bar);
+    ev.push(...this.evalRedGate(tz, prev, cur));
+    return ev;
   }
 
   // -----------------------------------------------------------------
@@ -678,9 +544,8 @@ export class DtfBarTheoryEngine {
   private evalBarLineages(cyc: Cycle, tz: TzLevel, prev: Day, cur: Day): string[] {
     // RED2 arms BAR1 whether or not BAR ENTRY is active.
     // After BAR SL 2 the house only moves via REAR -> BAR ENTRY: no new BAR1.
-    const inSl2 = tz.barLineages.some((l) => l.sl2);
+    const inSl2 = tz.barLineages.some((l) => l.sl2 || l.barSlLive);
     if (tz.barPending && !inSl2 && green(prev, cur)) {
-      tz.red2Since = false;
       const label = this.nextBarLabel(tz);
       tz.barLineages = tz.barLineages.filter((l) => l.bar2 !== null);
       tz.barLineages.push(new BarLineage(label, cur.h, cur.l));
@@ -837,34 +702,46 @@ export class DtfBarTheoryEngine {
       return false;
     }
 
-    // Seek REAR. Above: the earlier REAR's running high after a REAR SL; else
-    // BAR ENTRY's running high after BAR SL 2 or a plain BAR ENTRY SL; else
-    // (after BAR SL) the BAR SL candle's high.
-    let kind: "rear" | "bar2" | "barsl";
-    let target: number;
-    if (lin.rearHigh !== null) {
-      kind = "rear";
-      target = lin.rearHigh;
-    } else if (lin.barSlLive && lin.barSl !== null && !lin.sl2) {
-      kind = "barsl";
-      target = lin.barSl.refHigh;
-    } else {
-      kind = "bar2";
-      target = lin.barTop;
+    // Plain BAR ENTRY SL (BAR still active): BAR ENTRY again on the next green
+    // candle -- unless a RED2 has armed a new BAR cycle (BAR1 on the next green
+    // candle instead, see evalBarLineages) (user-confirmed).
+    if (!lin.barSlLive && !lin.sl2 && lin.rearHigh === null) {
+      if (!tz.barPending && green(prev, cur)) {
+        lin.bar2 = new Tier(cur.h, cur.l);
+        if (cur.h > lin.barTop) lin.barTop = cur.h;
+        tz.redSeek = true;
+        ev.push(`BAR2(${L})`);
+        return false;
+      }
+      if (cur.h > lin.barTop) {
+        lin.barTop = cur.h;
+        ev.push(`INVALID BAR2 HH(${L})`);
+      }
+      return false;
     }
-    // A plain BAR ENTRY SL makes no re-entry (not coded yet, user): only the
-    // running high is kept (INVALID BAR ENTRY HH), for the REAR after BAR SL 2.
-    const reentry = kind !== "bar2" || lin.sl2;
-    if (reentry && breaksRef(prev, cur, target)) {
+
+    // After BAR SL: no REAR (user). The ghost BAR is not built yet.
+    if (lin.barSlLive && lin.barSl !== null && !lin.sl2) {
+      if (cur.h > lin.barSl.refHigh) {
+        lin.barSl.refHigh = cur.h;
+        ev.push(`BAR SL HH(${L})`);
+      }
+      if (cur.h > lin.barTop) lin.barTop = cur.h;
+      return false;
+    }
+
+    // After BAR SL 2: the race REAR above BAR ENTRY's running high (or, after a
+    // REAR SL, above that REAR's running high), then BAR ENTRY above that REAR.
+    const afterRearSl = lin.rearHigh !== null;
+    const target = afterRearSl ? lin.rearHigh! : lin.barTop;
+    if (breaksRef(prev, cur, target)) {
       lin.rear = new Tier(cur.h, cur.l);
+      this.rearFormed(cyc);
       ev.push(`REAR B(${L})`);
     } else if (cur.h > target) {
-      if (kind === "rear") {
+      if (afterRearSl) {
         lin.rearHigh = cur.h;
         ev.push(`INVALID REAR B HH(${L})`);
-      } else if (kind === "barsl") {
-        lin.barSl!.refHigh = cur.h;
-        ev.push(`BAR SL HH(${L})`);
       } else {
         lin.barTop = cur.h;
         ev.push(`INVALID BAR2 HH(${L})`);
