@@ -117,7 +117,7 @@
 // there).
 
 import { THRESH, EPS, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
-import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, stage1ActiveIntervals, containingWeekStart, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
+import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, barEntryActiveIntervals, containingWeekStart, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
   return cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h;
@@ -2303,11 +2303,13 @@ export function computeTarTbar(
 } {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
-  // Per the user's own rule: "if TZ BUY is not active no BAR THEORY can
-  // occur, including SAR and other events related to it" -- see
-  // stage1ActiveIntervals' own comment. Computed once per letter, reused
-  // by every window/anchor that letter governs, everywhere in this file.
-  const stage1Intervals = stage1ActiveIntervals(wtfRows, dtfRows);
+  // Per the user's own rule: "BAR THEORY can only occur if BAR ENTRY
+  // (PRIME TREND) is active" -- narrower than DTF TZ BUY (Stage 1) alone;
+  // see barEntryActiveIntervals' own comment. Computed once per letter,
+  // reused by every window/anchor that letter governs, everywhere in
+  // this file (still named stage1Intervals/stage1ActiveAtFor at every
+  // call site below -- only what feeds this one gate changed).
+  const stage1Intervals = barEntryActiveIntervals(wtfRows, dtfRows);
   function stage1ActiveAtFor(letter: string): (date: string) => boolean {
     const intervals = stage1Intervals.get(letter) ?? [];
     return (date: string) => intervals.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));

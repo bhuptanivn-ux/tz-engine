@@ -238,6 +238,19 @@ class BarLevelState {
   nestedDoorOpen = false;
   red: BarRedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves -- unlocks BAR-seeking permanently
+  // How the CURRENTLY living BAR was itself most recently formed/
+  // reactivated -- RED1 (gated on a bare RED1 alone, doorOpen not yet
+  // open at that moment) or RED1_RED2 (a completed RED1->RED2 was
+  // already open at that moment). Set at every point BAR itself forms
+  // (SEEK_BAR -> BAR_ACTIVE), consuming `doorOpen` if it was open. Drives
+  // the one-time fast-lane bonus in SEEK_REACTIVATION below: a RED1-born
+  // BAR that later suffers a combined BAR SL + BAR ENTRY SL gets ONE
+  // unrestricted "next green" reactivation if a RED1->RED2 has completed
+  // by then (whenever that happened relative to the SL) -- the gate just
+  // leveled up from RED1 to RED1->RED2. Already RED1_RED2-born (or the
+  // bonus already spent once): no further shortcut, ever -- reactivates
+  // only above the BAR ENTRY highest high.
+  birthTier: "RED1" | "RED1_RED2" = "RED1";
   // Set true the first time a COMBINED BAR ENTRY SL (BAR's own SL also
   // breached, same candle or sequential) establishes `topRef` as a real
   // reactivation gate, never reset while this BarLevelState lives. A
@@ -370,6 +383,8 @@ function stepBarLevel(
         s.barActivationPrice = cur.h;
         s.barFormationDate = cur.date;
         s.barRefHighDate = cur.date;
+        s.birthTier = s.doorOpen ? "RED1_RED2" : "RED1";
+        if (s.doorOpen) s.doorOpen = false;
         s.mode = "BAR_ACTIVE";
       }
       break;
@@ -549,12 +564,38 @@ function stepBarLevel(
       break;
     }
     case "SEEK_REACTIVATION": {
-      // Reactivation reforms BAR alone -- BAR and BAR ENTRY can never
-      // form on the same candle (only an SL/exit can be a combined
-      // event). This just clears the running top reference and drops
-      // back into the ordinary BAR_ACTIVE state; BAR ENTRY only
-      // escalates later, on a later candle, via BAR_ACTIVE's own
-      // already-correct escalation path above.
+      // One-time fast lane: this BAR was born on a bare RED1 alone
+      // (birthTier "RED1"), and a RED1->RED2 has SINCE completed (may
+      // have happened before, during, or after the SL that brought us
+      // here -- `doorOpen` just needs to be open right now) -- the gate
+      // leveled up, so BAR gets one unrestricted "next green"
+      // reactivation instead of waiting to clear the BAR ENTRY highest
+      // high. Already RED1_RED2-born (bonus already spent, or born that
+      // way to begin with): never eligible, always the gated path below.
+      if (s.birthTier === "RED1" && s.doorOpen && breakoutShape(prev, cur, prev.h)) {
+        s.doorOpen = false;
+        // Fresh start for this bonus-born cycle -- its own later history
+        // governs any future combined-failure reactivation, not
+        // whatever topRef had accumulated before the bonus fired.
+        s.topRef = cur.h;
+        s.barRefHigh = cur.h;
+        s.barRefLow = cur.l;
+        s.barActivationPrice = cur.h;
+        s.barFormationDate = cur.date;
+        s.barRefHighDate = cur.date;
+        s.birthTier = "RED1_RED2"; // bonus consumed; no further shortcut
+        s.mode = "BAR_ACTIVE";
+        break;
+      }
+      // Ordinary gated path -- reforms BAR alone (BAR and BAR ENTRY can
+      // never form on the same candle; BAR ENTRY only escalates later,
+      // on a later candle, via BAR_ACTIVE's own already-correct
+      // escalation path above). `birthTier` is deliberately left
+      // untouched here: reaching this branch at all means the fast lane
+      // above did not fire, so either birthTier was already "RED1_RED2"
+      // (stays spent) or it is still "RED1" with `doorOpen` genuinely
+      // still false (the RED1-only gate stays unresolved, still eligible
+      // for a future bonus once a RED1->RED2 does complete).
       if (breakoutShape(prev, cur, s.topRef)) {
         s.topRef = Math.max(s.topRef, cur.h);
         s.barRefHigh = cur.h;
@@ -2790,6 +2831,30 @@ export function stage1ActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): M
       if (existing) existing.push(...intervals);
       else result.set(letter, intervals);
     }
+  }
+  return result;
+}
+
+/** Per the user's own rule: BAR THEORY -- TAR/TAR ENTRY/BAR/BAR ENTRY and
+ * the RED2/BAR-SL2-anchored SAR mechanism (SAR/INVALID SAR/INVALID SAR
+ * ENTRY/SAR 2) alike -- can only occur while DTF BAR ENTRY (PRIME TREND)
+ * is itself ACTIVE, not merely DTF TZ BUY (Stage 1). Narrower than
+ * stage1ActiveIntervals above: "active" is exactly the window from a
+ * BAR ENTRY/REAR ENTRY/REAR RE-ENTER cycle's own entryDate up to
+ * (excluding) its own exitDate, open-ended while still open -- derived
+ * straight from computePrimeTrend's own trade log, same accumulate-
+ * never-overwrite shape as stage1ActiveIntervals (a letter can carry
+ * several such cycles over its life). */
+export function barEntryActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): Map<string, { sinceDate: string; untilDate: string | null }[]> {
+  const results = computePrimeTrend(wtfRows, dtfRows);
+  const result = new Map<string, { sinceDate: string; untilDate: string | null }[]>();
+  for (const r of results) {
+    if (r.side !== "BAR ENTRY" && r.side !== "REAR ENTRY" && r.side !== "REAR RE-ENTER") continue;
+    const untilDate = r.exitType === "still open" ? null : r.exitDate;
+    const interval = { sinceDate: r.entryDate, untilDate };
+    const existing = result.get(r.letter);
+    if (existing) existing.push(interval);
+    else result.set(r.letter, [interval]);
   }
   return result;
 }
