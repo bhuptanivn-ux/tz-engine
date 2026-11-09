@@ -39,9 +39,14 @@
 //   BAR ENTRY SL, BAR still active: BAR ENTRY again on the next green candle;
 //     if a RED2 has completed (before, on or after the SL day), the next green
 //     candle is a new BAR1 instead (BAR 2 of a new cycle, ending the earlier).
-//   BAR SL (BAR ENTRY SL included): from the anchor BAR1's low; a later one
-//     from the earlier BAR SL candle's low. No REAR. (The ghost BAR that
-//     follows is not built yet.)
+//   BAR SL (BAR ENTRY SL included): from the anchor BAR1's low. No REAR: the
+//     ghost BAR cycle (hidden, in `dayHidden`) starts on the next green
+//     candle -- ghost BAR, ghost BAR ENTRY above its reference high, ghost BAR
+//     SL -> ghost BAR again. A RED1 -> RED2 completed after the ghost BAR,
+//     while it is alive, makes the next green candle a shown BAR, and the
+//     normal BAR loop resumes. If the ghost BAR formed after a RED2, BAR SL 2
+//     is measured below it (ghost BAR SL, then a decisive close below that SL
+//     candle's low); otherwise below the original BAR SL low.
 //   BAR SL 2 (old rule: BAR SL LL lowers the BAR SL low; a decisive close
 //     below it): the race -- REAR above BAR ENTRY's running high vs a new
 //     house's TZ BUY, same rules as above; then BAR ENTRY above that REAR.
@@ -122,6 +127,22 @@ export class BarLineage {
   constructor(public label: string, public refHigh: number, public refLow: number) {}
 }
 
+/** The ghost BAR cycle after a BAR SL: kept in the back end, not shown. */
+export class Ghost {
+  /** The ghost BAR (null / SL'd: the next green candle forms one). */
+  bar: Tier | null = null;
+  /** The ghost BAR formed after a RED2: BAR SL 2 is then measured below it. */
+  anchored = false;
+  /** The ghost BAR ENTRY (breakout over the ghost BAR's reference high). */
+  entry: Tier | null = null;
+  /** The anchored ghost BAR's SL candle: BAR SL 2 is a decisive close below
+   * its low (moved down by LL). */
+  slRef: Tier | null = null;
+  /** RED1 -> RED2 has completed after the ghost BAR formed. */
+  red2 = false;
+  constructor(public lin: BarLineage) {}
+}
+
 /** Stage 1 at the TZ level: TZ BUY, or REAR A (the race REAR after TZ BUY
  * SL, once TZ BUY ENTRY has formed above it; it then acts as TZ BUY). */
 export class Stage1 {
@@ -148,6 +169,8 @@ export class TzLevel {
   barGen = 0;
   barDeadLabels = new Set<number>();
   barEntryEver = false;
+  /** The ghost BAR cycle after a BAR SL, if any. */
+  ghost: Ghost | null = null;
   constructor(refHigh: number, refLow: number) {
     this.s1 = new Stage1("TZ BUY", refHigh, refLow);
   }
@@ -158,6 +181,7 @@ export class TzLevel {
     this.barPending = false;
     this.barLineages = [];
     this.barEntryEver = false;
+    this.ghost = null;
   }
 
   /** BAR is not considered while TZ BUY ENTRY is not active. */
@@ -165,6 +189,7 @@ export class TzLevel {
     this.barLineages = [];
     this.barPending = false;
     this.barEntryEver = false;
+    this.ghost = null;
   }
 }
 
@@ -203,6 +228,8 @@ export class DtfBarTheoryEngine {
   cycles: Cycle[] = [];
   /** Defaults the day's events relied on (keyed by house seq). */
   dayDoubts: { seq: number; doubt: string }[] = [];
+  /** The day's hidden (back-end) events, e.g. the ghost BAR cycle. */
+  dayHidden: TaggedEvent[] = [];
   private seq = 0;
   private cur: Cycle | null = null;
 
@@ -212,6 +239,7 @@ export class DtfBarTheoryEngine {
 
   processTagged(prev: Day, cur: Day): TaggedEvent[] {
     this.dayDoubts = [];
+    this.dayHidden = [];
     const byCycle = new Map<Cycle, string[]>();
     for (const c of this.cycles) if (c.race) c.race.rearToday = false;
     for (const cyc of this.cycles) {
@@ -255,6 +283,10 @@ export class DtfBarTheoryEngine {
       ev.push({ seq: fresh.seq, text: "TZ GREEN" });
     }
     return ev;
+  }
+
+  private hidden(text: string): void {
+    if (this.cur !== null) this.dayHidden.push({ seq: this.cur.seq, text });
   }
 
   private doubt(text: string): void {
@@ -362,8 +394,14 @@ export class DtfBarTheoryEngine {
     }
     const r = this.evalRed(tz.red, prev, cur);
     if (r.includes("RED2")) {
-      // RED2 arms BAR1 only while TZ BUY ENTRY is active (user-confirmed).
-      if (tz.entry !== null && !tz.entry.sl) tz.barPending = true;
+      // RED2 arms BAR1 only while TZ BUY ENTRY is active (user-confirmed). In
+      // the ghost cycle, a RED2 after the live ghost BAR makes the next green
+      // candle a shown BAR.
+      const g = tz.ghost;
+      if (g !== null) {
+        if (g.bar !== null && !g.bar.sl) g.red2 = true;
+        else if (g.bar === null) tz.barPending = true; // before the first ghost BAR
+      } else if (tz.entry !== null && !tz.entry.sl) tz.barPending = true;
       tz.redSeek = false;
       tz.red = null;
     } else if (r.includes("INVALID RED1")) {
@@ -559,7 +597,95 @@ export class DtfBarTheoryEngine {
       const stop = this.evalLineage(cyc, tz, lin, prev, cur, ev);
       if (stop) break;
     }
+    if (tz.ghost !== null && !ev.some((e) => /^BAR SL\(/.test(e))) ev.push(...this.evalGhost(cyc, tz, prev, cur));
     return ev;
+  }
+
+  /** The ghost BAR cycle after a BAR SL (user-confirmed). Ghost events are
+   * hidden (back end); only BAR SL 2 and the shown BAR that ends the cycle
+   * are returned. */
+  private evalGhost(cyc: Cycle, tz: TzLevel, prev: Day, cur: Day): string[] {
+    const g = tz.ghost!;
+    const L = g.lin.label;
+
+    // BAR SL 2 below an anchored ghost BAR's SL (same rule as BAR SL 2).
+    if (g.slRef !== null) {
+      if (isSl(cur, g.slRef.refLow)) {
+        const lin = g.lin;
+        lin.sl2 = true;
+        lin.rear = null;
+        lin.rearHigh = null;
+        tz.barLineages = [lin];
+        tz.barPending = false;
+        tz.redSeek = false;
+        tz.red = null;
+        tz.ghost = null;
+        if (cur.h > lin.barTop) lin.barTop = cur.h;
+        this.openRace(cyc);
+        return [`BAR SL2(${L})`];
+      }
+      const l = quietLl(cur, g.slRef.refLow);
+      if (l !== null) {
+        g.slRef.refLow = l;
+        this.hidden(`GHOST BAR SL LL(${L})`);
+      }
+    }
+
+    // No live ghost BAR: the next green candle forms one.
+    if (g.bar === null || g.bar.sl) {
+      if (green(prev, cur)) {
+        g.bar = new Tier(cur.h, cur.l);
+        g.entry = null;
+        g.red2 = false;
+        if (g.slRef === null && tz.barPending) g.anchored = true;
+        tz.barPending = false;
+        tz.redSeek = true;
+        tz.red = null;
+        this.hidden(`GHOST BAR(${L})`);
+      }
+      return [];
+    }
+
+    // RED1 -> RED2 after the live ghost BAR: the next green candle is a shown
+    // BAR, and the normal BAR loop resumes.
+    if (g.red2 && green(prev, cur)) {
+      const label = this.nextBarLabel(tz);
+      tz.barLineages = [new BarLineage(label, cur.h, cur.l)];
+      tz.barPending = false;
+      tz.ghost = null;
+      return [`BAR1(${label})`];
+    }
+
+    const bar = g.bar;
+    if (isSl(cur, bar.refLow)) {
+      bar.sl = true;
+      if (g.entry !== null) g.entry.sl = true;
+      if (g.anchored && g.slRef === null) g.slRef = new Tier(cur.h, cur.l);
+      g.red2 = false;
+      this.hidden(`GHOST BAR SL(${L})`);
+      return [];
+    }
+    const bl = quietLl(cur, bar.refLow);
+    if (bl !== null) bar.refLow = bl;
+    if (g.entry === null) {
+      if (breaksRef(prev, cur, bar.refHigh)) {
+        g.entry = new Tier(cur.h, cur.l);
+        this.hidden(`GHOST BAR ENTRY(${L})`);
+      } else if (cur.h > bar.refHigh) bar.refHigh = cur.h;
+    } else if (!g.entry.sl) {
+      if (cur.h > g.entry.refHigh) g.entry.refHigh = cur.h;
+      const el = quietLl(cur, g.entry.refLow);
+      if (el !== null) g.entry.refLow = el;
+      if (isSl(cur, g.entry.refLow)) {
+        g.entry.sl = true;
+        this.hidden(`GHOST BAR ENTRY SL(${L})`);
+      }
+    } else if (green(prev, cur)) {
+      g.entry = new Tier(cur.h, cur.l);
+      this.hidden(`GHOST BAR ENTRY(${L})`);
+    }
+    if (cur.h > g.lin.barTop) g.lin.barTop = cur.h;
+    return [];
   }
 
   /** Returns true when the lineage set was replaced (stop iterating). */
@@ -618,7 +744,13 @@ export class DtfBarTheoryEngine {
         lin.rear = null;
         lin.rearHigh = null;
         ev.push(`BAR SL(${L})`);
-        return false;
+        // No REAR: the ghost BAR cycle starts from the next green candle. A
+        // newer BAR1 in progress is dropped (a new BAR needs the BAR SL not to
+        // have triggered). tz.barPending (a RED2 so far) decides whether the
+        // first ghost BAR is anchored.
+        tz.barLineages = [lin];
+        tz.ghost = new Ghost(lin);
+        return true;
       }
       if (lin.barSl === null && cur.h > lin.refHigh) lin.refHigh = cur.h;
       const l1 = quietLl(cur, level);
@@ -654,7 +786,8 @@ export class DtfBarTheoryEngine {
     }
 
     // BAR ENTRY sits SL'd. After a BAR SL: BAR SL LL, or BAR SL 2 (old rule).
-    if (lin.barSlLive && lin.barSl !== null && !lin.sl2) {
+    const anchoredGhost = tz.ghost !== null && tz.ghost.lin === lin && tz.ghost.anchored;
+    if (lin.barSlLive && lin.barSl !== null && !lin.sl2 && !anchoredGhost) {
       if (isSl(cur, lin.barSl.refLow)) {
         lin.sl2 = true;
         lin.rear = null;
@@ -666,6 +799,7 @@ export class DtfBarTheoryEngine {
         tz.redSeek = false;
         tz.red = null;
         ev.push(`BAR SL2(${L})`);
+        tz.ghost = null;
         this.openRace(cyc);
         if (cur.h > lin.barTop) lin.barTop = cur.h;
         return false;
@@ -720,12 +854,9 @@ export class DtfBarTheoryEngine {
       return false;
     }
 
-    // After BAR SL: no REAR (user). The ghost BAR is not built yet.
+    // After BAR SL: no REAR (user); the ghost BAR cycle runs (evalGhost).
     if (lin.barSlLive && lin.barSl !== null && !lin.sl2) {
-      if (cur.h > lin.barSl.refHigh) {
-        lin.barSl.refHigh = cur.h;
-        ev.push(`BAR SL HH(${L})`);
-      }
+      if (cur.h > lin.barSl.refHigh) lin.barSl.refHigh = cur.h;
       if (cur.h > lin.barTop) lin.barTop = cur.h;
       return false;
     }
