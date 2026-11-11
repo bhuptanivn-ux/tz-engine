@@ -801,6 +801,19 @@ export class InvalidSarState {
   // against the ENTRY's frozen 95.45 instead.
   invalidSarOwnRefLow: number;
 
+  // True from the moment this cycle FIRST reaches an open INVALID SAR
+  // ENTRY position, forever after (through its own SL, reactivation,
+  // anything) -- distinguishes an already-committed, live cycle from a
+  // merely-armed/never-yet-opened watch. Used solely to protect an
+  // already-open (or already-opened-at-least-once) cycle from the
+  // fresh-BAR-2 kill-switch below, which is meant for a watch that never
+  // got this far, not one already mid-position -- see that switch's own
+  // comment. Confirmed real-data (ICICIBANK.NS): without this, BAR
+  // 2(C.3) forming 2005-11-14 wipes out the INVALID SAR ENTRY that opened
+  // 2005-11-16, erasing its own already-confirmed 2005-11-21 SL and
+  // subsequent reactivation outright.
+  everOpened = false;
+
   constructor(refHigh: number, refLow: number) {
     this.refHigh = refHigh;
     this.refLow = refLow;
@@ -1035,8 +1048,22 @@ function stepInvalidSar(
       break;
     }
     case "SEEK_REACTIVATION": {
-      if (breakoutShape(prev, cur, s.frozenEntryRefHigh)) {
-        const entryPrice = s.frozenEntryRefHigh + THRESH;
+      // "Next green" -- plain day-over-day breakout, no reference level
+      // to clear at all: same shape BarLevelState's own
+      // SEEK_BAR_ENTRY_REACTIVATION uses (that case's own comment
+      // explicitly warns against copying a frozen-reference model here
+      // instead -- this case had made exactly that mistake). Per the
+      // user's own rule: "PLAIN INVALID SAR ENTRY SL occurs and INVALID
+      // SAR is still active, then INVALID SAR ENTRY can reactivate in
+      // next green" -- the same Stage-1/Stage-2 shape used everywhere
+      // else in this codebase (Stage 1 alive, next green reactivates
+      // Stage 2), not a climb back to the old frozen high. Confirmed
+      // real-data (ICICIBANK.NS): INVALID SAR ENTRY SL 2005-11-21
+      // (frozenEntryRefHigh had ratcheted to 100.18) -> 2005-11-24
+      // reactivates (High 98.85 clears 2005-11-23's own High 96.15 by
+      // threshold, Close 97.97 confirms above it) -- nowhere near 100.18.
+      if (breakoutShape(prev, cur, prev.h)) {
+        const entryPrice = prev.h + THRESH;
         s.refHigh = cur.h;
         s.refLow = cur.l;
         s.rowHH = cur.h;
@@ -2327,6 +2354,7 @@ function simulateDtfAll(
       if (invalidSarResult.opened) {
         invalidSarState.rowEntryDate = cur.date;
         invalidSarState.rowEntryPrice = invalidSarResult.opened.price;
+        invalidSarState.everOpened = true;
       }
       if (invalidSarResult.closed) {
         pushRow(
@@ -2405,7 +2433,18 @@ function simulateDtfAll(
     // tarTbar.ts's own hiddenRed2SarCheckpoints): BAR 2(B.2) is dated
     // 2024-02-19, the SAME day INVALID SAR ENTRY decisively confirms.
     while (sarKillBarIdx < bar2FormationDates.length && bar2FormationDates[sarKillBarIdx] < cur.date) {
-      if (sarArmedFromRed2Date !== null && bar2FormationDates[sarKillBarIdx] > sarArmedFromRed2Date) {
+      // Once this cycle has ever reached an open INVALID SAR ENTRY
+      // position, the kill-switch leaves it alone entirely -- it is a
+      // live, committed structure by then, same "already-open stays
+      // untouched" protection every other supersession rule in this
+      // codebase gives an open position; only a watch that never got
+      // that far is fair game. See InvalidSarState.everOpened's own
+      // comment -- confirmed real-data (ICICIBANK.NS): without this
+      // guard, BAR 2(C.3) forming 2005-11-14 wiped out the INVALID SAR
+      // ENTRY that opened 2005-11-16 before it could ever reach its own
+      // already-confirmed 2005-11-21 SL.
+      const committed = invalidSarState !== null && invalidSarState.everOpened;
+      if (sarArmedFromRed2Date !== null && bar2FormationDates[sarKillBarIdx] > sarArmedFromRed2Date && !committed) {
         sarRefLow = null;
         invalidSarState = null;
         sarArmedFromRed2Date = null;
@@ -2889,7 +2928,19 @@ export function barEntryActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[], 
   const result = new Map<string, { sinceDate: string; untilDate: string | null }[]>();
   for (const r of results) {
     if (r.side !== "BAR ENTRY" && r.side !== "REAR ENTRY" && r.side !== "REAR RE-ENTER") continue;
-    const untilDate = r.exitType === "still open" ? null : r.exitDate;
+    // A SAR exit ("DTF SAR") does NOT close this gate -- per the user's
+    // own already-confirmed rule, "re-entry after SAR is only through
+    // BAR THEORY," so BAR THEORY must stay eligible precisely in the
+    // stretch following a SAR exit (that is its whole purpose); only an
+    // ordinary SL-type exit closes it, since BAR ENTRY's own ladder
+    // (BarLevelState) already handles getting back in after those.
+    // Confirmed real-data (ICICIBANK.NS, letter C): without this, BAR
+    // ENTRY (PRIME TREND)'s own 2005-10-17 DTF SAR exit permanently
+    // closed this gate forever after, making BAR THEORY (TAR/TAR ENTRY)
+    // unreachable for the rest of this anchor's life -- including the
+    // already-confirmed 2006-07-31 TAR / 2006-08-08 TAR ENTRY that
+    // follow BAR(C.4)'s 2006-07-24 formation.
+    const untilDate = r.exitType === "still open" || r.exitType === "DTF SAR" ? null : r.exitDate;
     const interval = { sinceDate: r.entryDate, untilDate };
     const existing = result.get(r.letter);
     if (existing) existing.push(interval);
