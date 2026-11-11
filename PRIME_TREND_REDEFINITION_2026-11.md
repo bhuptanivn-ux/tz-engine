@@ -117,7 +117,7 @@ confirmed and coded on both sides (`stepLevel` in `tarTbar.ts` for BAR
 THEORY; the DTF SAR mechanism producing `BAR EXIT (PRIME TREND)` for
 PRIME TREND's own side).
 
-## The new WTF-level race — confirmed rule, NOT YET IMPLEMENTED
+## The new WTF-level race — IMPLEMENTED
 
 **Already-coded WTF-internal spawn conditions** (`eligibleAnchor` in
 `lib/tzEngineWtf.ts`) — unaffected, still apply as-is:
@@ -169,14 +169,53 @@ contest exactly**:
   RED1→RED2 bonus reactivation rule above. Nothing cycle-specific about
   it.
 
-**Implementation note (not yet built)**: `tzEngineWtf.ts` currently has
-zero awareness of DTF/Prime Trend data. The natural approach: a two-pass
-process — run the WTF trace once normally, derive `barEntryActiveIntervals`
-from it, then re-run the WTF engine a second time feeding those intervals
-in as external input so the new spawn condition and the leadership
-contest's "milestone achieved" check can both use it. Not yet confirmed
-with the user as the final approach — hold off on implementing until the
-whole theory is finished being defined.
+**Implementation, built as the two-pass process described above**:
+
+- `TZEngine`'s constructor (`lib/tzEngineWtf.ts`) takes a new optional
+  2nd param, `barEntryActiveAt?: (letter, date) => boolean`. Undefined
+  for every caller except `runWtfTrace`'s own second pass, so every
+  other use of `TZEngine` (daily/monthly/yearly Trading Zone pages, BAR
+  THEORY's own `findWindows`/misclassified-letter detection, etc.) is
+  byte-for-byte unchanged.
+- A new resettable engine field `freshRedSinceDtfTrigger` (unlike
+  `redEver`/`pc.redEver`, which are permanent/once-ever) — set true the
+  moment tip gets a fresh `RED1(` event (the resettable, recurring
+  buy-level pullback — **not** `RED(` alone, which is the ParentCycle's
+  own permanent, once-ever flag that never recurs after TZ BUY first
+  forms; caught this exact mix-up through direct testing before
+  finalizing). Reset to false the moment tip makes ANY forward milestone
+  progress (`TZ BUY(`, `TZ BUY 2(`, `REAR 2(`, `REAR RE-ENTER 2(` forming
+  or reactivating) — confirmed necessary by testing: without this, the
+  RED1 that originally led to TZ BUY 2's own formation stayed "fresh"
+  forever, wrongly licensing a spawn on the very next green candle even
+  before DTF had any chance to try reaching BAR ENTRY. Also reset the
+  moment a spawn actually happens (any trigger).
+- `eligibleAnchor` gets one new OR-condition: `dtfTrigger = tipLacksPrimeTrend && freshRedSinceDtfTrigger`,
+  where `tipLacksPrimeTrend` reads the injected callback for tip's own
+  letter/date.
+- `runWtfTrace` (`lib/primeTrend.ts`) takes a new optional 4th param,
+  `dtfDays?: Day[]`. When given, it runs pass 1 with a plain engine,
+  derives `barEntryActiveIntervals` from that pass-1 trace, then runs
+  pass 2 with a DTF-aware engine using those intervals — this is what
+  `runWtfTrace` returns. `prepare`/`computePrimeTrend`/
+  `barEntryActiveIntervals` all gained an optional `wtfTraceOverride`
+  parameter purely to break the recursion this creates (pass 1's own
+  `barEntryActiveIntervals` call must use the already-computed pass-1
+  trace directly, not re-invoke the two-pass `runWtfTrace` again).
+  `prepare`'s own call now always passes `dtfDays` through, so
+  `computePrimeTrend` is race-aware; every other caller of `runWtfTrace`
+  (`tarTbar.ts`'s `findWindows`, `raceFreshLineage`'s own re-slicing)
+  omits the new param and keeps getting the exact same single-pass trace
+  as before — **this feature is scoped to PRIME TREND's own
+  computation only, not BAR THEORY's**, which is a known, deliberate
+  asymmetry (not yet asked to be extended).
+- Win/lose mechanics needed zero changes — the existing leadership
+  contest fires automatically once the new branch exists in the trace.
+- Verified: non-regression on a real (short) sample dataset
+  (`data/tz_2020_verification_dataset.csv`, byte-identical output before
+  and after), and a focused synthetic test of the trigger itself
+  directly against `TZEngine` (no spawn without fresh RED1; spawn with
+  it; no re-spawn without a further fresh RED1 after that).
 
 ## BAR THEORY's nested BAR1→BAR2 terminal state — IMPLEMENTED
 
@@ -338,8 +377,9 @@ Worked out precisely via several hand-traced examples against
 
 ## Open items / not yet implemented
 
-- The new WTF-level race mechanism (section above) — trigger condition,
-  fresh-RED1 tracker, and the two-pass architecture question are all
-  still pending actual implementation.
+- Known, deliberate asymmetry: the new WTF-level race (section above) is
+  wired into PRIME TREND's own trace (`computePrimeTrend`) only. BAR
+  THEORY's own `findWindows`/misclassified-letter detection still uses
+  the plain, non-raced trace -- never asked to extend it there.
 - Full rewrite of `PRIME_TREND_RULEBOOK.md` itself, once the whole theory
   is confirmed complete.

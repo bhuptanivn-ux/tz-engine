@@ -1227,13 +1227,46 @@ export interface WtfTraceEntry {
 export function runWtfTrace(
   wtfDays: Day[],
   barSl2LogOut?: { label: string; date: string; low: number }[],
-  hiddenEventLogOut?: HiddenEventLogEntry[]
+  hiddenEventLogOut?: HiddenEventLogEntry[],
+  // DTF days, PASSED ONLY by computePrimeTrend's own call path -- when
+  // given, runs the two-pass DTF-aware race (see the user's own rule:
+  // "unless DTF BAR ENTRY is achieved, a new WTF cycle can spawn any
+  // time the original cycle is trying to reach it, given a fresh
+  // RED1"). Pass 1 runs the plain, DTF-unaware engine to derive each
+  // letter's own BAR-ENTRY-active intervals; pass 2 re-runs with that
+  // as an input, so the new spawn trigger (and whichever branch wins
+  // the race, via the engine's own EXISTING leadership-contest
+  // mechanism -- nothing new there) can use it. Every other caller
+  // (lib/tarTbar.ts's own findWindows/misclassified-letter detection,
+  // raceFreshLineage's own re-slicing) omits this and keeps getting the
+  // exact same single-pass trace as before -- this feature is scoped to
+  // PRIME TREND's own computation only, not BAR THEORY's.
+  dtfDays?: Day[]
 ): WtfTraceEntry[] {
+  if (dtfDays !== undefined) {
+    const pass1Trace = runWtfTraceCore(wtfDays, new TZEngine(true));
+    const wtfRowsForGate: OhlcRow[] = wtfDays.map((d) => ({ date: d.date, o: d.o, h: d.h, l: d.l, c: d.c }));
+    const dtfRowsForGate: OhlcRow[] = dtfDays.map((d) => ({ date: d.date, o: d.o, h: d.h, l: d.l, c: d.c }));
+    const intervals = barEntryActiveIntervals(wtfRowsForGate, dtfRowsForGate, pass1Trace);
+    const barEntryActiveAt = (letter: string, date: string): boolean => {
+      const ivs = intervals.get(letter) ?? [];
+      return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
+    };
+    return runWtfTraceCore(wtfDays, new TZEngine(true, barEntryActiveAt), barSl2LogOut, hiddenEventLogOut);
+  }
   // `true`: this always runs on WEEKLY candles (PRIME TREND's fixed
   // WTF=weekly rule; lib/tarTbar.ts's own findWindows, this function's
   // other caller, is weekly-only too) -- enables the weekly-only bare-
   // BAR-SL-opens-REAR revision (see TZEngine's own constructor comment).
-  const engine = new TZEngine(true);
+  return runWtfTraceCore(wtfDays, new TZEngine(true), barSl2LogOut, hiddenEventLogOut);
+}
+
+function runWtfTraceCore(
+  wtfDays: Day[],
+  engine: TZEngine,
+  barSl2LogOut?: { label: string; date: string; low: number }[],
+  hiddenEventLogOut?: HiddenEventLogEntry[]
+): WtfTraceEntry[] {
   const trace: WtfTraceEntry[] = [];
   for (let i = 1; i < wtfDays.length; i++) {
     const prev = wtfDays[i - 1];
@@ -2614,11 +2647,16 @@ export interface OhlcRow {
   c: number;
 }
 
-export function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
+export function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]) {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const wtfDates = wtfDays.map((d) => d.date);
-  const wtfTrace = runWtfTrace(wtfDays);
+  // `wtfTraceOverride`: supplied ONLY by runWtfTrace's own pass-1-derived
+  // call back into computePrimeTrend (via barEntryActiveIntervals), to
+  // avoid infinite recursion -- runWtfTrace(..., dtfDays) below would
+  // otherwise call back into this exact function again. Every ordinary
+  // external caller omits it, getting the full two-pass, DTF-aware trace.
+  const wtfTrace = wtfTraceOverride ?? runWtfTrace(wtfDays, undefined, undefined, dtfDays);
   const lastDtfDate = dtfDays.length > 0 ? dtfDays[dtfDays.length - 1].date : null;
   const rawInstances = allInstances(wtfTrace, lastDtfDate);
   // See raceFreshLineage's own comment -- a fresh, independent lineage
@@ -2735,9 +2773,10 @@ export function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[]) {
 export function computePrimeTrend(
   wtfRows: OhlcRow[],
   dtfRows: OhlcRow[],
-  barTheoryOpenAt?: (letter: string) => (date: string) => boolean
+  barTheoryOpenAt?: (letter: string) => (date: string) => boolean,
+  wtfTraceOverride?: WtfTraceEntry[]
 ): PrimeTrendResult[] {
-  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
+  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows, wtfTraceOverride);
 
   const results: PrimeTrendResult[] = [];
   for (const inst of instances) {
@@ -2845,8 +2884,8 @@ export function stage1ActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): M
  * straight from computePrimeTrend's own trade log, same accumulate-
  * never-overwrite shape as stage1ActiveIntervals (a letter can carry
  * several such cycles over its life). */
-export function barEntryActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): Map<string, { sinceDate: string; untilDate: string | null }[]> {
-  const results = computePrimeTrend(wtfRows, dtfRows);
+export function barEntryActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): Map<string, { sinceDate: string; untilDate: string | null }[]> {
+  const results = computePrimeTrend(wtfRows, dtfRows, undefined, wtfTraceOverride);
   const result = new Map<string, { sinceDate: string; untilDate: string | null }[]>();
   for (const r of results) {
     if (r.side !== "BAR ENTRY" && r.side !== "REAR ENTRY" && r.side !== "REAR RE-ENTER") continue;

@@ -301,6 +301,17 @@ export class TZEngine {
   // RED1/RED2/INVALID RED1 (buy/branch-level, not tied to one lineage).
   hiddenEventLog: HiddenEventLogEntry[] = [];
 
+  // Resettable (unlike redEver, which is permanent/once-ever) -- true the
+  // moment the CURRENT tip branch gets a fresh "RED(" event, false again
+  // the moment a spawn actually happens (any trigger, not just this
+  // one). This is the gate for canSpawn's own new DTF-aware trigger
+  // below: "a fresh WTF RED1 has occurred since the last spawn attempt."
+  // Confirmed real-data shape (the user's own worked example): a plain
+  // next-green breakout right after a DTF BAR ENTRY SL, with no RED in
+  // WTF yet, must NOT spawn a new cycle -- only once a fresh RED fires
+  // does the next qualifying breakout do so.
+  private freshRedSinceDtfTrigger = false;
+
   // REVISION, weekly timeframe only: a BAR lineage that never escalated
   // past BAR 1 (bar2 === null) opens REAR eligibility on its own bare BAR
   // SL, instead of the lineage just reforming unrestricted -- see
@@ -314,7 +325,18 @@ export class TZEngine {
   // lib/primeTrend.ts's runWtfTrace (always weekly, per PRIME TREND's
   // fixed WTF=weekly rule) passes `true` here; every other caller keeps
   // the original, timeframe-agnostic behavior by leaving this false.
-  constructor(private weeklyBarSlRear: boolean = false) {}
+  //
+  // `barEntryActiveAt` is the DTF-awareness hook for the same new
+  // trigger: "is DTF BAR ENTRY (PRIME TREND) currently active for this
+  // letter." Only lib/primeTrend.ts's runWtfTrace's own second pass
+  // supplies this (derived from the first, DTF-unaware pass) -- every
+  // other caller leaves it undefined, in which case this new trigger
+  // can never fire and the engine's behavior is byte-for-byte unchanged
+  // from before this feature existed.
+  constructor(
+    private weeklyBarSlRear: boolean = false,
+    private barEntryActiveAt?: (letter: string, date: string) => boolean
+  ) {}
 
   private nextSeq(): number {
     this.seqCounter += 1;
@@ -679,11 +701,58 @@ export class TZEngine {
       tip.buy.rearReenter !== null &&
       tip.buy.rearReenter.rre2 !== null &&
       tip.buy.rearReenter.rre2.slActive;
+    // Resettable fresh-RED1 tracker for the new DTF-aware trigger below
+    // -- updated BEFORE eligibleAnchor so a RED confirming on this exact
+    // candle can license a spawn on this same candle, same as every
+    // other same-candle coincidence this engine already allows. Reset
+    // (consumed) the moment tip makes ANY forward milestone progress
+    // (TZ BUY/TZ BUY 2/REAR 2/REAR RE-ENTER 2 forming OR reactivating) --
+    // the RED1 that enabled THAT progress is spent, not available to
+    // license this separate, later trigger too. Confirmed real bug
+    // caught in testing: without this, the RED1 that originally led to
+    // TZ BUY 2's own formation stayed "fresh" forever, wrongly letting
+    // this trigger fire on the very next green candle even though DTF
+    // never had a chance to try reaching BAR ENTRY yet.
+    if (tip !== null) {
+      const tipEvs = perBranchEvents.get(tip.id) ?? [];
+      // "RED1(" is the resettable, recurring buy-level pullback (the one
+      // that cycles RED1->RED2->BAR1->BAR2->RED1->RED2->... repeatedly)
+      // -- NOT "RED(" alone, which is the ParentCycle's own once-ever,
+      // permanent flag that only ever fires before TZ BUY first forms
+      // and never recurs. Confirmed by testing: hooking "RED(" here
+      // meant this trigger could never actually re-arm after TZ BUY 2
+      // had already formed, since that event never happens again.
+      if (tipEvs.some((e) => e.startsWith("RED1("))) this.freshRedSinceDtfTrigger = true;
+      if (
+        tipEvs.some(
+          (e) =>
+            e.startsWith("TZ BUY(") ||
+            e.startsWith("TZ BUY 2(") ||
+            e.startsWith("REAR 2(") ||
+            e.startsWith("REAR RE-ENTER 2(")
+        )
+      ) {
+        this.freshRedSinceDtfTrigger = false;
+      }
+    }
+    // New trigger: WTF TZ BUY 2 (or REAR 2 / REAR RE-ENTER 2) still
+    // active, but DTF BAR ENTRY (PRIME TREND) has not become active yet
+    // for this episode -- per the user's own rule, this is independent
+    // of which WTF-side tier tip currently sits at (not folded into
+    // tipTzbuy2Sl/tipRear2Sl/tipRre2Sl above, which all require an
+    // explicit SL). Also requires a fresh RED1 since the last spawn
+    // attempt (any trigger) -- confirmed: a plain next-green breakout
+    // with no RED yet must not spawn.
+    const tipLacksPrimeTrend =
+      tip !== null &&
+      this.barEntryActiveAt !== undefined &&
+      !this.barEntryActiveAt(branchLabel(tip.id), cur.date);
+    const dtfTrigger = tipLacksPrimeTrend && this.freshRedSinceDtfTrigger;
     const eligibleAnchor =
       tip !== null &&
       !tip.dormant &&
       tip.redEver &&
-      (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzbuy2Sl || tipRear2Sl || tipRre2Sl);
+      (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzbuy2Sl || tipRear2Sl || tipRre2Sl || dtfTrigger);
     const canSpawn = eligibleAnchor || tip === null;
     let newBranchId: number | null = null;
     if (canSpawn && cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
@@ -692,6 +761,9 @@ export class TZEngine {
       this.branches.set(nid, newPc);
       perBranchEvents.set(nid, [`TZ GREEN(${branchLabel(nid)})`]);
       newBranchId = nid;
+      // Consumed by this spawn (any trigger) -- the next spawn needs
+      // its own fresh RED1 again.
+      this.freshRedSinceDtfTrigger = false;
     }
 
     for (const seq of greenSlSeqs) {
