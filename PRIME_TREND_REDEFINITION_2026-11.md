@@ -70,28 +70,44 @@ WTF's own RED1→RED2 is what *produces the opportunity* for BAR THEORY
 RED1→RED2 to have confirmed) — but it only actually occurs if BAR ENTRY
 (PRIME TREND) is also active at that moment. Both required together.
 
-## BAR THEORY entry/exit requires a following SAR — NOT YET IMPLEMENTED
+## BAR THEORY entry/exit requires a following SAR 2 — ALREADY IMPLEMENTED (not a gap)
 
-A plain WTF RED1→RED2→BAR (no SAR ever occurring for that RED2) still
-displays as `BAR` in the WTF column (WTF-level display is unaffected), but
-**no DTF-side BAR THEORY entry/exit (TAR ENTRY/BAR ENTRY) is defined for
-it at all** — not merely hidden, not computed.
+**Correction**: this was first mis-extracted from today's worked examples
+as gated on plain SAR. The user corrected this directly: the real unlock
+point is **SAR 2** (the terminal, decisive event), not the first SAR in
+the ladder. Re-checked against the code: this exact rule is **already
+fully implemented**, not a gap at all — `findWindows` itself anchors
+unconditionally on every WTF BAR (correct, WTF-level display is always
+unconditional), but a separate, already-wired eligibility layer right
+after it (`governingRed2For`, `theorySupersededFrom`,
+`openTarEntryUntilByLetter`, all in `lib/tarTbar.ts` around line
+2602-2732) gates the DTF-side TAR/TAR ENTRY and nested BAR1→BAR2/BAR ENTRY
+cascade on exactly this: a WTF BAR's own governing RED2 must have already
+had its SAR 2 confirm *before* that BAR's own formation date, or the
+window produces zero TAR/BAR ENTRY output for its entire life (not merely
+hidden — genuinely never computed, same "continue"-and-skip shape as
+`stage1ActiveAtFor`'s own gate).
 
-BAR THEORY's own TAR ENTRY/BAR ENTRY entry and exit are only ever defined
-for the specific RED2/BAR pairing that **is** followed by a SAR event for
-that same RED2.
+- The rule, in the same words as before, just correcting SAR → SAR 2: BAR
+  before its governing RED2's SAR 2 = never eligible. BAR after that
+  SAR 2 = eligible. No "first" qualifier either side — repeats for as
+  many bare reform cycles as happen before SAR 2 finally confirms.
+- `governingRed2For(letter, formationDate)` finds the window's own
+  governing RED2 (latest RED2 strictly before its formation);
+  `sar2DateByRed2Group` looks up whether that RED2's own SAR 2 confirmed,
+  and if so, whether it confirmed before this window's own formation.
+- `theorySupersededFrom` additionally handles the ONGOING case: a window
+  that *was* eligible at formation but is still alive when a FRESHER RED2
+  (same letter) goes on to confirm its own SAR 2 later — from that later
+  date on, the now-superseded window's ladder must produce zero further
+  entries, confirmed real-data (DIXON.NS, letter A).
+- Verified directly: for `RED1→RED2→SAR→SAR2→BAR(WTF)`, TAR/TAR ENTRY and
+  the nested BAR1→BAR2/BAR ENTRY are possible for this BAR — traced
+  through the exact code path, matches the existing comment's own worked
+  example (DIXON.NS: SAR 2 confirming 2022-05-10 opens eligibility for
+  the next fresh BAR, 2022-05-30, onward).
 
-WTF's RED1→RED2→BAR1→BAR2→RED1→RED2→... keeps cycling continuously
-regardless (already-confirmed, already-coded — the `awaitingBar2SinceRed2`
-gate: a fresh RED1 can only attach once BAR1→BAR2 has completed). Each
-fresh RED2/BAR pairing in that continuous loop is evaluated independently
-against this same SAR-following rule — only the ones followed by SAR
-produce BAR THEORY output; the rest are just "BAR" in WTF with nothing
-defined underneath.
-
-`findWindows` currently has no such condition — checked directly, it
-anchors on every WTF `BAR(` formation unconditionally. This is a
-confirmed gap, not yet built.
+No code change needed here — already correct.
 
 ## SAR is the universal exit — implemented
 
@@ -162,15 +178,18 @@ contest's "milestone achieved" check can both use it. Not yet confirmed
 with the user as the final approach — hold off on implementing until the
 whole theory is finished being defined.
 
-## BAR THEORY's nested BAR1→BAR2 terminal state — NOT YET IMPLEMENTED
+## BAR THEORY's nested BAR1→BAR2 terminal state — IMPLEMENTED
 
-Confirmed gap, checked directly against `lib/tarTbar.ts` (lines ~486-564):
-the nested BAR1→BAR2 cascade (BAR THEORY's own internal "BAR → BAR ENTRY")
-currently has **no terminal state at all** — any tier-2 SL unconditionally
-reforms back to `SEEK_BAR1`, forever. It also doesn't separately track
-BAR1's own continuing reference while BAR2 is active (both tiers reuse one
-shared `nestedRefHigh`/`nestedRefLow` pair) — the same bug class already
-fixed in PRIME TREND's `BarLevelState`.
+Fixed in `lib/tarTbar.ts`'s `LevelState`/`stepLevel`: split the single
+shared `nestedRefHigh`/`nestedRefLow` into separate, continuously-tracked
+`nestedBar1RefHigh`/`nestedBar1RefLow` (tier 1) and
+`nestedBar2RefHigh`/`nestedBar2RefLow` (tier 2) — same shape as PRIME
+TREND's `BarLevelState`. Added a permanent `"DONE"` terminal `nestedMode`
+and a `"SEEK_NESTED_ENTRY_REACTIVATION"` mode (clean BAR2 SL, mirrors
+`SEEK_TAR_ENTRY_REACTIVATION`). `BAR1_ACTIVE`'s own SL now only reforms
+bare (never escalated); `BAR2_ACTIVE`'s own SL distinguishes combined
+(BAR1 also breaches → `DONE`, permanent) from clean (BAR1 survives →
+reactivates directly above its frozen ref, repeatable).
 
 **The correct rule, confirmed — and it is NOT the same as PRIME TREND's
 own BAR/BAR ENTRY reactivation**:
@@ -206,10 +225,23 @@ always describes the combined case, never ambiguous. Same for PRIME
 TREND: "after BAR → BAR ENTRY, BAR SL triggers" always means BAR ENTRY SL
 has either already triggered or triggers the same day as BAR SL.
 
-## New-RED2-voids-pending-BAR-THEORY-entry — NOT YET IMPLEMENTED
+## New-RED2-voids-pending-BAR-THEORY-entry — IMPLEMENTED
 
 A third, distinct mechanism — separate from TAR's own `DONE` and the
 nested cascade's own combined-failure terminal state above.
+
+Implemented via a new `redVoided` flag on `LevelState`, set the moment a
+genuinely new (non-first) RED1→RED2 confirms — using the existing
+`firstEver = !s.doorOpen` check already computed right before
+`s.doorOpen = true` in the continuous RED tracker. `redVoided` gates:
+TAR's own escalation (`TAR_ONLY` — terminates outright to `DONE` if set,
+confirmed symmetric with BAR THEORY's nested route per the user's own
+direct confirmation), `SEEK_TAR_ENTRY_REACTIVATION`'s own clean-SL
+reactivation, the nested route's `SEEK_BAR1`/`BAR1_ACTIVE` (terminates
+outright to `DONE` if active and un-escalated), and
+`SEEK_NESTED_ENTRY_REACTIVATION`'s own clean-SL reactivation. An
+already-open TAR ENTRY or nested BAR ENTRY position is left untouched —
+only future formation/escalation/reactivation is blocked.
 
 - **Trigger**: a genuinely new RED2 completes in WTF. (By the
   already-established WTF rule — a fresh RED1 can only attach once
@@ -274,11 +306,38 @@ reference also breaches (the combined failure, "INVALID SAR SL") →
 fresh "SAR" re-arm → `SEEK_INVALID` → a later breakout produces "INVALID
 SAR" again. Already correctly implemented, not a gap.
 
+## WTF-level BAR lineage mechanics — verified against the code (reference)
+
+Worked out precisely via several hand-traced examples against
+`lib/tzEngineWtf.ts` directly (not guessed):
+
+- A fresh BAR 1 only becomes eligible to form (`buy.barPending = true`)
+  on an actual RED2 confirming — never on RED1 alone, and never on
+  INVALID RED1 (which is RED1 failing to confirm).
+- The moment the *newest* lineage itself reaches BAR 2, every other
+  still-alive, un-SL'd lineage is removed/terminated outright (the
+  `newestLin.bar2 !== null` filter) — confirmed this is what "a new
+  RED1→RED2 completing, later escalating to BAR1→BAR2, terminates the
+  earlier lineage" means mechanically.
+  A lineage that already has its own SL survives this filter regardless.
+- "BAR SL" seeds a fresh reference at that day's own Low each time it
+  fires (including when re-fired later via `dormantBarLowCheck` after an
+  earlier SL was invalidated by a recovery) — BAR SL2 always breaches
+  *that* reference, never an older superseded one.
+- "INVALID BAR SL" (a recovery closing back above the SL's own reference
+  high) does not by itself freeze the lineage's low-tracking — a lower
+  low on that SAME candle still ratchets the SL's reference low down
+  (as "INVALID BAR LL"), even though the headline recovery event fires
+  too.
+- A decisive breach below a dormant/invalidated SL's current reference
+  produces "BAR SL" again (a fresh, non-invalidated `BarSL` object) —
+  never "BAR SL2" directly. BAR SL2 always needs one more decisive
+  breach below *that* fresh reference.
+- A bare lineage (never escalated to BAR 2) can never produce BAR SL2,
+  under any circumstance — this is structural, not a close call.
+
 ## Open items / not yet implemented
 
-- BAR THEORY entry/exit requiring a following SAR (section above).
-- BAR THEORY's nested BAR1→BAR2 terminal state (section above).
-- The new-RED2-voids-pending-entry mechanism (section above).
 - The new WTF-level race mechanism (section above) — trigger condition,
   fresh-RED1 tracker, and the two-pass architecture question are all
   still pending actual implementation.

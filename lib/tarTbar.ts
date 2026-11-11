@@ -243,6 +243,20 @@ class LevelState {
   doorOpen = false;
   red: RedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves (confirmed/invalid) -- unlocks TAR-seeking permanently
+  // Permanent, one-way flag -- set the moment a GENUINELY NEW RED1->RED2
+  // confirms (the second or later one for this window, per `firstEver`
+  // below), not the first one that originally licensed TAR/the nested
+  // route. Per the user's own rule: once this fires, it permanently
+  // blocks ALL further formation, escalation, AND reactivation for both
+  // TAR/TAR ENTRY and the nested BAR1->BAR2 route for the rest of this
+  // WTF BAR's own window -- an already-OPEN TAR ENTRY or nested BAR
+  // ENTRY (BAR2) position is untouched (SAR is still its only exit),
+  // but anything not yet escalated/reactivated is cut off outright: a
+  // bare, un-escalated TAR or BAR1 is TERMINATED (not merely frozen),
+  // and a clean entry-tier SL waiting to reactivate never gets to.
+  // "In nutshell: a NEW RED2 cycle, if completed, voids any PENDING BAR
+  // THEORY entry/exit of the earlier cycle."
+  redVoided = false;
   // This TAR instance's own formation gate -- set ONCE, when TAR truly
   // forms (Path 1, bare RED1, or RED1-RED2), and NEVER reassigned again
   // for the entire continuous life of this SAME TAR instance (TAR ENTRY
@@ -323,10 +337,29 @@ class LevelState {
   // The independent BAR1->BAR2 entry route (see tarSlEverHappened above)
   // -- runs in parallel with whatever TAR/TBAR itself is doing
   // afterward, once unlocked; never reset by TAR/TBAR's own later
-  // reforms or closures.
-  nestedMode: "NONE" | "SEEK_BAR1" | "BAR1_ACTIVE" | "BAR2_ACTIVE" = "NONE";
-  nestedRefHigh = 0;
-  nestedRefLow = 0;
+  // reforms or closures. "DONE" is permanent for the rest of this
+  // window (combined BAR1+BAR2 failure, or BAR1 terminated outright by
+  // redVoided while never escalated) -- same shape as TAR's own DONE.
+  // "SEEK_NESTED_ENTRY_REACTIVATION" is a clean BAR2 (BAR ENTRY) SL,
+  // BAR1 surviving -- mirrors SEEK_TAR_ENTRY_REACTIVATION exactly.
+  nestedMode: "NONE" | "SEEK_BAR1" | "BAR1_ACTIVE" | "BAR2_ACTIVE" | "SEEK_NESTED_ENTRY_REACTIVATION" | "DONE" = "NONE";
+  // BAR1's own reference -- tracked continuously, in parallel with
+  // BAR2's own, for as long as BAR1 is alive (even while BAR2 is
+  // active) -- same shape as primeTrend.ts's BarLevelState tracking
+  // barRefHigh/barRefLow alongside barEntryRefHigh/barEntryRefLow.
+  // Previously shared one field pair with BAR2 (overwritten at
+  // escalation), which made a combined BAR1+BAR2 failure structurally
+  // undetectable -- every BAR2 SL looked "clean" regardless of BAR1's
+  // own state. Fixed by giving each tier its own pair.
+  nestedBar1RefHigh = 0;
+  nestedBar1RefLow = 0;
+  nestedBar2RefHigh = 0;
+  nestedBar2RefLow = 0;
+  // BAR2's own frozen reference high at the moment of a CLEAN BAR2 SL
+  // (BAR1 survives) -- the reactivation target for
+  // SEEK_NESTED_ENTRY_REACTIVATION, same convention as
+  // frozenTarEntryRefHigh above.
+  nestedFrozenEntryRefHigh = 0;
   nestedEntryDate: string | null = null;
   nestedEntryPrice: number | null = null;
   nestedHH = 0;
@@ -462,6 +495,7 @@ function stepLevel(
       const firstEver = !s.doorOpen;
       s.red = null;
       s.doorOpen = true;
+      if (!firstEver) s.redVoided = true;
       if (firstEver && s.mode !== "SEEK_TAR") s.checkpoints.push({ date: cur.date, label: "RED2", price: cur.l });
     } else if (result === "invalid") {
       s.red = null;
@@ -494,12 +528,23 @@ function stepLevel(
   // already-open TAR ENTRY position; BAR1 can occur even when TAR
   // never escalated to TAR ENTRY at all. Runs in parallel with whatever
   // TAR/TAR ENTRY itself does afterward -- never reset by a later TAR
-  // reform or a later TAR ENTRY SL/formation. ---
-  if (s.tarSlEverHappened && s.doorOpen && s.nestedMode === "NONE") s.nestedMode = "SEEK_BAR1";
+  // reform or a later TAR ENTRY SL/formation.
+  //
+  // Per the user's own rule: a combined failure (BAR1 SL and BAR2 SL
+  // together, same candle or sequential) is permanently terminal for
+  // this whole route, for the rest of this window -- "DONE", same
+  // shape as TAR's own terminal state. A CLEAN BAR2 SL (BAR1 survives)
+  // reactivates BAR2 directly, one step, next green, no RED gate,
+  // repeatable any number of times -- exactly mirroring TAR ENTRY's
+  // own clean-SL reactivation. `redVoided` (a genuinely new RED1->RED2)
+  // permanently blocks any further formation/escalation/reactivation:
+  // BAR1 alone active (not yet escalated) is TERMINATED outright, not
+  // merely frozen; a clean BAR2 SL waiting to reactivate never gets to. ---
+  if (s.tarSlEverHappened && s.doorOpen && s.nestedMode === "NONE" && !s.redVoided) s.nestedMode = "SEEK_BAR1";
   if (s.nestedMode === "SEEK_BAR1") {
-    if (bar1Shape(prev, cur)) {
-      s.nestedRefHigh = cur.h;
-      s.nestedRefLow = cur.l;
+    if (!s.redVoided && bar1Shape(prev, cur)) {
+      s.nestedBar1RefHigh = cur.h;
+      s.nestedBar1RefLow = cur.l;
       s.nestedMode = "BAR1_ACTIVE";
       // Bare nested-tier1 formation -- no row of its own (nothing ever
       // escalated yet), same Filter-rule gap as TAR's own bare
@@ -508,12 +553,17 @@ function stepLevel(
       s.checkpoints.push({ date: cur.date, label: "BAR", price: cur.h });
     }
   } else if (s.nestedMode === "BAR1_ACTIVE") {
-    if (breaksRef(prev, cur, s.nestedRefHigh)) {
+    if (s.redVoided) {
+      // BAR1 was active, never escalated to BAR2 -- terminated outright
+      // by the new RED1->RED2, per the user's own direct confirmation
+      // ("that BAR will be terminated"), not merely frozen in place.
+      s.nestedMode = "DONE";
+    } else if (breaksRef(prev, cur, s.nestedBar1RefHigh)) {
       // Ladder entry price: the ref as it stood before this candle, + THRESH --
       // not the escalation candle's own actual High (same convention as TAR->TBAR).
-      const nestedEntryPrice = s.nestedRefHigh + THRESH;
-      s.nestedRefHigh = cur.h;
-      s.nestedRefLow = cur.l;
+      const nestedEntryPrice = s.nestedBar1RefHigh + THRESH;
+      s.nestedBar2RefHigh = cur.h;
+      s.nestedBar2RefLow = cur.l;
       s.nestedEntryDate = cur.date;
       s.nestedEntryPrice = nestedEntryPrice;
       s.nestedHH = cur.h;
@@ -525,16 +575,16 @@ function stepLevel(
       // 2023-04-25 "BAR ENTRY", never shown until this.
       s.checkpoints.push({ date: cur.date, label: "BAR ENTRY", price: nestedEntryPrice });
     } else {
-      const nSlNow = isSl(cur, s.nestedRefLow);
-      if (!nSlNow && cur.h > s.nestedRefHigh) s.nestedRefHigh = cur.h;
-      if (!nSlNow && cur.l < s.nestedRefLow) s.nestedRefLow = cur.l;
+      const nSlNow = isSl(cur, s.nestedBar1RefLow);
+      if (!nSlNow && cur.h > s.nestedBar1RefHigh) s.nestedBar1RefHigh = cur.h;
+      if (!nSlNow && cur.l < s.nestedBar1RefLow) s.nestedBar1RefLow = cur.l;
       if (nSlNow) {
         // Bare nested-tier1 failure (never escalated to BAR ENTRY) --
         // no row of its own either, same Filter-rule gap as the
         // formation itself had before. Confirmed real-data (PAYTM.NS):
         // 2026-06-09 "BAR" fails bare, 2026-06-11 "BAR SL", before
         // 2026-06-12's fresh reform -- never shown until this.
-        s.checkpoints.push({ date: cur.date, label: "BAR SL", price: s.nestedRefLow });
+        s.checkpoints.push({ date: cur.date, label: "BAR SL", price: s.nestedBar1RefLow });
         s.nestedMode = "SEEK_BAR1";
       }
     }
@@ -543,23 +593,66 @@ function stepLevel(
       s.nestedHH = cur.h;
       s.nestedHHDate = cur.date;
     }
-    const nSlNow = isSl(cur, s.nestedRefLow);
-    if (!nSlNow && cur.h > s.nestedRefHigh) s.nestedRefHigh = cur.h;
-    if (!nSlNow && cur.l < s.nestedRefLow) s.nestedRefLow = cur.l;
-    if (nSlNow) {
-      // "BAR ENTRY SL" -- door already open, unrestricted reform at
-      // the SAME level (confirmed: does not promote). Gets its own
-      // visible row, overlapping whatever the outer TAR ENTRY row is
-      // doing.
+    // BAR1's own (wider) reference keeps tracking in parallel, exactly
+    // like PRIME TREND's own BarLevelState -- its own breach, whether
+    // same candle as BAR2's SL or not, is what makes this a COMBINED
+    // (permanently terminal) failure instead of a clean one.
+    const bar1SlNow = isSl(cur, s.nestedBar1RefLow);
+    const bar2SlNow = isSl(cur, s.nestedBar2RefLow);
+    if (!bar1SlNow && cur.h > s.nestedBar1RefHigh) s.nestedBar1RefHigh = cur.h;
+    if (!bar1SlNow && cur.l < s.nestedBar1RefLow) s.nestedBar1RefLow = cur.l;
+    if (!bar2SlNow && cur.h > s.nestedBar2RefHigh) s.nestedBar2RefHigh = cur.h;
+    if (!bar2SlNow && cur.l < s.nestedBar2RefLow) s.nestedBar2RefLow = cur.l;
+    if (bar1SlNow) {
+      // Combined: BAR1's own SL always means BAR2 (BAR ENTRY) is gone
+      // too -- permanently terminal for this whole route, whatever
+      // redVoided's own state is (this is decisive on its own).
+      nestedClosed = {
+        exitType: "BAR ENTRY SL + BAR SL",
+        entryDate: s.nestedEntryDate as string,
+        entryPrice: s.nestedEntryPrice as number,
+        exitPrice: s.nestedBar2RefLow,
+        hh: s.nestedHH,
+        hhDate: s.nestedHHDate as string,
+      };
+      s.nestedMode = "DONE";
+    } else if (bar2SlNow) {
+      // Clean: BAR1 itself not also breached, still alive in the
+      // background. Races BAR2's own direct reactivation against BAR1's
+      // own (now decisive, if it comes first) SL -- see
+      // SEEK_NESTED_ENTRY_REACTIVATION below.
       nestedClosed = {
         exitType: "BAR ENTRY SL",
         entryDate: s.nestedEntryDate as string,
         entryPrice: s.nestedEntryPrice as number,
-        exitPrice: s.nestedRefLow,
+        exitPrice: s.nestedBar2RefLow,
         hh: s.nestedHH,
         hhDate: s.nestedHHDate as string,
       };
-      s.nestedMode = "SEEK_BAR1";
+      s.nestedFrozenEntryRefHigh = s.nestedBar2RefHigh;
+      s.nestedMode = "SEEK_NESTED_ENTRY_REACTIVATION";
+    }
+  } else if (s.nestedMode === "SEEK_NESTED_ENTRY_REACTIVATION") {
+    // BAR1 itself is still alive while waiting here -- its own SL can
+    // still happen before BAR2 ever reactivates, same combined-failure
+    // shape as PRIME TREND's own SEEK_BAR_ENTRY_REACTIVATION.
+    const bar1SlNow = isSl(cur, s.nestedBar1RefLow);
+    if (!bar1SlNow && cur.h > s.nestedBar1RefHigh) s.nestedBar1RefHigh = cur.h;
+    if (!bar1SlNow && cur.l < s.nestedBar1RefLow) s.nestedBar1RefLow = cur.l;
+    if (bar1SlNow) {
+      s.nestedMode = "DONE";
+    } else if (!s.redVoided && breaksRef(prev, cur, s.nestedFrozenEntryRefHigh)) {
+      const nestedEntryPrice = s.nestedFrozenEntryRefHigh + THRESH;
+      s.nestedBar2RefHigh = cur.h;
+      s.nestedBar2RefLow = cur.l;
+      s.nestedEntryDate = cur.date;
+      s.nestedEntryPrice = nestedEntryPrice;
+      s.nestedHH = cur.h;
+      s.nestedHHDate = cur.date;
+      s.nestedMode = "BAR2_ACTIVE";
+      s.checkpoints.push({ date: cur.date, label: "BAR ENTRY", price: nestedEntryPrice });
+    } else if (cur.h > s.nestedFrozenEntryRefHigh) {
+      s.nestedFrozenEntryRefHigh = cur.h;
     }
   }
 
@@ -648,6 +741,19 @@ function stepLevel(
       break;
     }
     case "TAR_ONLY": {
+      // A genuinely new RED1->RED2 (redVoided) terminates a bare,
+      // un-escalated TAR outright -- same shape as the nested route's
+      // own BAR1_ACTIVE termination below, and the user's own direct
+      // confirmation that this applies to TAR/TAR ENTRY symmetrically
+      // with BAR/BAR ENTRY. `tarAlive=false` stops the unconditional
+      // tracker above from doing anything further; `tarSlEverHappened`
+      // is deliberately left untouched -- this is a voiding, not a real
+      // TAR SL, so it must not retroactively unlock the nested route.
+      if (s.redVoided) {
+        s.mode = "DONE";
+        s.tarAlive = false;
+        break;
+      }
       // TAR is alive and continuously tracked by the unconditional block
       // above -- this case only watches for escalation into TAR ENTRY.
       // TAR's own SL is handled entirely by that unconditional block,
@@ -689,10 +795,15 @@ function stepLevel(
         s.topRef = Math.max(s.topRef, s.tbarRefHigh);
         closed = { exitType: "TAR ENTRY SL", exitPrice: s.tbarRefLow };
         // Per the user's own rule: TAR ENTRY reactivates directly, one
-        // step, next green -- irrespective of RED1-RED2 having occurred
-        // in between -- as long as TAR itself (not just TAR ENTRY)
+        // step, next green, as long as TAR itself (not just TAR ENTRY)
         // stays intact. Can repeat any number of times (multiple TAR
-        // ENTRY SL cycles) before TAR itself ever dies.
+        // ENTRY SL cycles) before TAR itself ever dies -- UNLESS a
+        // genuinely new RED1->RED2 (redVoided) completes before that
+        // reactivation happens, which permanently blocks it (see
+        // SEEK_TAR_ENTRY_REACTIVATION below) -- confirmed by the user's
+        // own correction: a RED1->RED2 occurring alongside/after a bare
+        // TAR ENTRY SL does matter, it just doesn't retroactively
+        // revoke a reactivation that already happened.
         s.frozenTarEntryRefHigh = s.tbarRefHigh;
         s.mode = "SEEK_TAR_ENTRY_REACTIVATION";
         // A bare "TAR ENTRY SL" (TAR itself survives, still alive and
@@ -715,8 +826,13 @@ function stepLevel(
       // go above the previous TAR ENTRY reference high and close above
       // the same." Reactivates TAR ENTRY directly, one step, same
       // candle (TAR itself is untouched -- still continuously alive,
-      // tracked by the unconditional block above this whole time).
-      if (breaksRef(prev, cur, s.frozenTarEntryRefHigh)) {
+      // tracked by the unconditional block above this whole time) --
+      // UNLESS a genuinely new RED1->RED2 has completed since this SL
+      // (redVoided), which permanently blocks this reactivation. Per
+      // the user's own worked example: "TAR - TAR ENTRY has confirmed
+      // and later RED1-RED2 in WTF occurs along with bare TAR ENTRY SL
+      // -- TAR ENTRY cannot reactivate on next green."
+      if (!s.redVoided && breaksRef(prev, cur, s.frozenTarEntryRefHigh)) {
         const entryPrice = s.frozenTarEntryRefHigh + THRESH;
         s.tbarRefHigh = cur.h;
         s.tbarRefLow = cur.l;
