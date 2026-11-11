@@ -61,6 +61,9 @@
 //     above BAR ENTRY's running high, then BAR ENTRY above that REAR, vs a new
 //     house's TZ BUY -> TZ BUY ENTRY, same rules as above. Until then no new
 //     BAR1 and the RED gate pauses.
+//   A TZ BUY ENTRY SL during that race drops REAR B; the race goes on while
+//     TZ BUY is active: TZ BUY ENTRY again (next green candle) vs the new
+//     house's TZ BUY ENTRY. TZ BUY SL as well: the TZ BUY SL race (REAR A).
 // Race: decided at the ENTRY level. The new house is shown while the race is
 //   open. This house's ENTRY first (or the same day): the new house
 //   terminates. The new house's TZ BUY ENTRY first: this house goes dormant
@@ -574,8 +577,9 @@ export class DtfBarTheoryEngine {
       if (eSl) {
         e.sl = true;
         ev.push("TZ BUY ENTRY SL");
-        if (tz.barLineages.length > 0)
-          this.doubt("TZ BUY ENTRY SL ends the live BAR stage (BAR not considered while TZ BUY ENTRY is SL'd)");
+        // BAR is not considered while TZ BUY ENTRY is SL'd: a pending BAR SL 2
+        // race REAR B is dropped, but the race stays open at the TZ level
+        // (user-confirmed): TZ BUY ENTRY again vs the new house's TZ BUY ENTRY.
         tz.endBarStage();
       }
     } else if (e !== null && e.sl) {
@@ -585,6 +589,7 @@ export class DtfBarTheoryEngine {
         tz.entry = new Tier(cur.h, cur.l);
         if (cur.h > tz.entryTop) tz.entryTop = cur.h;
         tz.redSeek = true;
+        this.raceEntry(cyc); // an open race (after BAR SL 2): this house's ENTRY
         ev.push("TZ BUY ENTRY");
       } else if (cur.h > tz.entryTop) {
         tz.entryTop = cur.h;
