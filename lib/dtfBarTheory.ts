@@ -347,6 +347,13 @@ export class DtfBarTheoryEngine {
     const ev: string[] = [];
     const tz = cyc.tz;
     if (cur.h > cyc.refHigh) cyc.refHigh = cur.h; // TZ GREEN HH: not recorded
+    // The live RED1 is evaluated first, so a RED2 on the TZ GREEN SL candle
+    // counts (TZ GREEN SL after RED2 does not end the house).
+    let redEv: string[] | null = null;
+    if (tz === null && cyc.red !== null && cyc.red.active) {
+      redEv = this.evalRed(cyc.red, prev, cur);
+      if (redEv.includes("INVALID RED1")) cyc.red = null;
+    }
     if (cyc.greenSl === null) {
       if (isSl(cur, cyc.refLow)) {
         // Before RED2 (bare TZ GREEN, or RED1 only) TZ GREEN SL ends the house
@@ -381,15 +388,13 @@ export class DtfBarTheoryEngine {
     }
 
     if (tz === null) {
-      if (cyc.red === null) {
+      if (redEv !== null) {
+        ev.push(...redEv); // the live RED1, evaluated above
+      } else if (cyc.red === null) {
         if (isRed1(prev, cur)) {
           cyc.red = new Red(cur.h, cur.l);
           ev.push("RED1");
         }
-      } else if (cyc.red.active) {
-        const r = this.evalRed(cyc.red, prev, cur);
-        ev.push(...r);
-        if (r.includes("INVALID RED1")) cyc.red = null;
       } else if (green(prev, cur)) {
         cyc.tz = new TzLevel(cur.h, cur.l);
         ev.push("TZ BUY");
