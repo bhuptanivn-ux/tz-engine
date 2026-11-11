@@ -312,7 +312,14 @@ export class DtfBarTheoryEngine {
       if (cyc.dormant) continue; // dormant: nothing of it is shown
       for (const text of texts) ev.push({ seq: cyc.seq, text });
     }
-    this.dayDoubts = this.dayDoubts.filter((d) => !this.cycles.find((c) => c.seq === d.seq)?.dormant);
+    // A dormant house shows nothing, not even its back-end (hidden) events; a
+    // house terminated today by a race shows nothing either.
+    const silent = (seq: number) => {
+      const c = this.cycles.find((x) => x.seq === seq);
+      return c === undefined || c.dormant || !byCycle.has(c);
+    };
+    this.dayDoubts = this.dayDoubts.filter((d) => !silent(d.seq));
+    this.dayHidden = this.dayHidden.filter((d) => !silent(d.seq));
 
     // A new house may start when no shown house is live outside an open race.
     const blocking = this.cycles.some((c) => c.active && !c.dormant && !c.race?.open);
