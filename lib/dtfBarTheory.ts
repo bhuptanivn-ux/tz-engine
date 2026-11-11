@@ -1,5 +1,5 @@
 // DTF BAR THEORY -- a DTF-only theory built on the SAME event vocabulary as
-// lib/dtfBar.ts (TZ GREEN, RED1/RED2, TZ BUY, BAR1/BAR2, REAR) but with a
+// lib/dtfBar.ts (TZ GREEN, RED1/RED2, TZ BUY, BAR1 / BAR ENTRY, REAR) but with a
 // different hierarchy, confirmed against real data (PAYTM daily) rather than
 // ported from the WTF/PRIME TREND rulebook. Kept as its own file per
 // DTF_THEORIES_RULEBOOK.md's own convention: a related but structurally
@@ -61,10 +61,10 @@
 //   BAR SL 2 (a decisive close below a live level): the race -- REAR above BAR ENTRY's running high vs a new
 //     house's TZ BUY, same rules as above; then BAR ENTRY above that REAR.
 //     Until then no new BAR1 and the RED gate pauses.
-// Race: see TZ BUY SL above. While the race is open, the new house runs in
-//   the back end (hidden); it is shown from its TZ BUY if it wins. The loser
-//   of a race goes dormant (the new house terminates): nothing more of it is
-//   shown.
+// Race: see TZ BUY SL above. The new house is shown while the race is open.
+//   If the earlier house's REAR wins, the new house terminates (on that day
+//   only REAR is shown). If the new house's TZ BUY wins, the earlier house
+//   goes dormant: it keeps running in the background, nothing of it is shown.
 
 import { THRESH, EPS, type Day, type HistoryRowLike } from "./tzEngineWtf";
 
@@ -77,9 +77,9 @@ function green(prev: Day, cur: Day): boolean {
   return breaksRef(prev, cur, prev.h);
 }
 
-/** BAR ENTRY ("BAR2(n)"), or BAR 2 of a new BAR cycle ("BAR 2(n)"). */
+/** BAR ENTRY ("BAR ENTRY(n)"), or BAR 2 of a new BAR cycle ("BAR 2(n)"). */
 function isBarEntryEvent(text: string): boolean {
-  return /^BAR ?2\(/.test(text);
+  return /^(BAR ENTRY|BAR 2)\(/.test(text);
 }
 
 function isRed1(prev: Day, cur: Day): boolean {
@@ -302,14 +302,10 @@ export class DtfBarTheoryEngine {
       }
     }
 
-    // While an older house's race is open, the new house runs in the back end.
-    const racing = (c: Cycle) =>
-      this.cycles.some((o) => o.seq < c.seq && o.active && !o.dormant && o.race !== null && o.race.open);
     const ev: TaggedEvent[] = [];
     for (const [cyc, texts] of byCycle) {
       if (cyc.dormant) continue; // dormant: nothing of it is shown
-      const out = racing(cyc) ? this.dayHidden : ev;
-      for (const text of texts) out.push({ seq: cyc.seq, text });
+      for (const text of texts) ev.push({ seq: cyc.seq, text });
     }
     this.dayDoubts = this.dayDoubts.filter((d) => !this.cycles.find((c) => c.seq === d.seq)?.dormant);
 
@@ -319,7 +315,7 @@ export class DtfBarTheoryEngine {
       this.seq += 1;
       const fresh = new Cycle(this.seq, cur.h, cur.l);
       this.cycles.push(fresh);
-      (racing(fresh) ? this.dayHidden : ev).push({ seq: fresh.seq, text: "TZ GREEN" });
+      ev.push({ seq: fresh.seq, text: "TZ GREEN" });
     }
     return ev;
   }
@@ -797,7 +793,7 @@ export class DtfBarTheoryEngine {
         // active it is BAR 2 of a new BAR cycle. Either way the earlier BAR
         // cycle ends here.
         const earlier = tz.barLineages.find((x) => x !== lin && x.bar2 !== null);
-        const name = earlier !== undefined && earlier.bar2!.sl ? "BAR 2" : "BAR2";
+        const name = earlier !== undefined && earlier.bar2!.sl ? "BAR 2" : "BAR ENTRY";
         lin.bar2 = new Tier(cur.h, cur.l);
         lin.barTop = cur.h;
         tz.barLineages = [lin];
@@ -835,7 +831,7 @@ export class DtfBarTheoryEngine {
       if (isSl(cur, level)) {
         if (!b2.sl) {
           b2.sl = true;
-          ev.push(`BAR2 SL(${L})`);
+          ev.push(`BAR ENTRY SL(${L})`);
         }
         ev.push(`BAR SL(${L})`);
         // No REAR: a BAR SL level, and the ghost BAR cycle from the next green
@@ -866,16 +862,16 @@ export class DtfBarTheoryEngine {
       if (cur.h > b2.refHigh) {
         b2.refHigh = cur.h;
         if (cur.h > lin.barTop) lin.barTop = cur.h;
-        if (!slNow) ev.push(`BAR2 HH(${L})`);
+        if (!slNow) ev.push(`BAR ENTRY HH(${L})`);
       }
       const l = quietLl(cur, b2.refLow);
       if (l !== null) {
         b2.refLow = l;
-        ev.push(`BAR2 LL(${L})`);
+        ev.push(`BAR ENTRY LL(${L})`);
       }
       if (slNow) {
         b2.sl = true;
-        ev.push(`BAR2 SL(${L})`);
+        ev.push(`BAR ENTRY SL(${L})`);
       }
       return false;
     }
@@ -892,7 +888,7 @@ export class DtfBarTheoryEngine {
         lin.barSlLive = false;
         lin.sl2 = false;
         tz.redSeek = true;
-        ev.push(`BAR2(${L})`);
+        ev.push(`BAR ENTRY(${L})`);
         return false;
       }
       const before = ev.length;
@@ -914,12 +910,12 @@ export class DtfBarTheoryEngine {
         lin.bar2 = new Tier(cur.h, cur.l);
         if (cur.h > lin.barTop) lin.barTop = cur.h;
         tz.redSeek = true;
-        ev.push(`BAR2(${L})`);
+        ev.push(`BAR ENTRY(${L})`);
         return false;
       }
       if (cur.h > lin.barTop) {
         lin.barTop = cur.h;
-        ev.push(`INVALID BAR2 HH(${L})`);
+        ev.push(`INVALID BAR ENTRY HH(${L})`);
       }
       return false;
     }
@@ -938,7 +934,7 @@ export class DtfBarTheoryEngine {
         ev.push(`INVALID REAR B HH(${L})`);
       } else {
         lin.barTop = cur.h;
-        ev.push(`INVALID BAR2 HH(${L})`);
+        ev.push(`INVALID BAR ENTRY HH(${L})`);
       }
     }
     if (cur.h > lin.barTop) lin.barTop = cur.h;
