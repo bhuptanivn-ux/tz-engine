@@ -43,9 +43,11 @@
 //     anchor BAR1's low. No REAR. The BAR SL candle sets a BAR SL level: its
 //     low (BAR SL LL lowers it) for BAR SL 2, its high as the running high
 //     for INVALID BAR SL (H >= running high + 0.20, C >= running high;
-//     hidden). The level stays live until it is dead: INVALID BAR SL AND a
-//     newer BAR -> BAR ENTRY (normal or ghost), in either order. Until
-//     INVALID BAR SL, BAR SL 2 can occur below it. Several levels can be live.
+//     hidden; it can repeat, each one raising the running high). The level
+//     stays live until it is dead: INVALID BAR SL AND a newer BAR -> BAR
+//     ENTRY (normal or ghost), in either order. While it is live, BAR SL 2
+//     can occur below it, before or after INVALID BAR SL. Several levels can
+//     be live. BAR SL 2 happens once: it ends the ghost cycle.
 //   Ghost BAR cycle (hidden, in `dayHidden`; the same BAR theory, it only
 //     follows a BAR SL): ghost BAR on the next green candle -> ghost BAR ENTRY
 //     above its high -> RED1 -> RED2 -> the next green candle is a shown BAR
@@ -55,7 +57,7 @@
 //     (hidden) unless the RED2 has completed. Ghost BAR SL after its ghost
 //     BAR ENTRY is a BAR SL: a new level and a new ghost cycle. INVALID BAR
 //     SL does not change the ghost status.
-//   BAR SL 2 (a decisive close below a live, non-invalid level): the race -- REAR above BAR ENTRY's running high vs a new
+//   BAR SL 2 (a decisive close below a live level): the race -- REAR above BAR ENTRY's running high vs a new
 //     house's TZ BUY, same rules as above; then BAR ENTRY above that REAR.
 //     Until then no new BAR1 and the RED gate pauses.
 // Race: see TZ BUY SL above. The loser of a race (this house) goes dormant:
@@ -137,7 +139,8 @@ export class BarLineage {
 /** A BAR SL level: the BAR SL candle's low (BAR SL LL lowers it) for BAR SL
  * 2, and its high as the running high for INVALID BAR SL. */
 export class BarSlLevel {
-  /** INVALID BAR SL has occurred: no BAR SL 2 from this level any more. */
+  /** INVALID BAR SL has occurred (BAR SL 2 below the level is still possible
+   * until the level is dead). */
   invalid = false;
   /** A newer BAR -> BAR ENTRY (normal or ghost) has confirmed. With `invalid`
    * the level (the earlier lineage) is dead. */
@@ -643,7 +646,9 @@ export class DtfBarTheoryEngine {
   /** The live BAR SL levels: BAR SL 2 (opens the race; returns true),
    * BAR SL LL, INVALID BAR SL (hidden) and the silent running high. */
   private evalBarSlLevels(cyc: Cycle, tz: TzLevel, cur: Day, ev: string[]): boolean {
-    const hit = tz.barSlLevels.find((lv) => !lv.invalid && isSl(cur, lv.refLow));
+    // BAR SL 2 below a live level, before or after INVALID BAR SL (user-
+    // confirmed). It happens once: the race opens and every level is cleared.
+    const hit = tz.barSlLevels.find((lv) => isSl(cur, lv.refLow));
     if (hit !== undefined) {
       // From BAR SL 2 the house only moves via REAR -> BAR ENTRY (user-
       // confirmed): other BAR rounds and the RED gate stop until then.
@@ -666,17 +671,18 @@ export class DtfBarTheoryEngine {
     }
     for (const lv of tz.barSlLevels) {
       if (cur.h > lv.barTop) lv.barTop = cur.h;
-      if (lv.invalid) continue;
       const l = quietLl(cur, lv.refLow);
       if (l !== null) {
         lv.refLow = l;
         if (lv.ghostBorn) this.hidden(`BAR SL LL(${lv.label})`);
         else ev.push(`BAR SL LL(${lv.label})`);
       }
+      // INVALID BAR SL can repeat: each one raises the running high.
       if (cur.h >= lv.refHigh + THRESH - EPS && cur.c >= lv.refHigh) {
         lv.invalid = true;
         this.hidden(`INVALID BAR SL(${lv.label})`);
-      } else if (cur.h > lv.refHigh) lv.refHigh = cur.h;
+      }
+      if (cur.h > lv.refHigh) lv.refHigh = cur.h;
     }
     tz.barSlLevels = tz.barSlLevels.filter((lv) => !(lv.invalid && lv.newerEntry));
     return false;
