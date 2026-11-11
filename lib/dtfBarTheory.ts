@@ -43,11 +43,12 @@
 //     anchor BAR1's low. No REAR. The BAR SL candle sets a BAR SL level: its
 //     low (BAR SL LL lowers it) for BAR SL 2, its high as the running high
 //     for INVALID BAR SL (H >= running high + 0.20, C >= running high;
-//     hidden; it can repeat, each one raising the running high). The level
-//     stays live until it is dead: INVALID BAR SL AND a newer BAR -> BAR
-//     ENTRY (normal or ghost), in either order. While it is live, BAR SL 2
-//     can occur below it, before or after INVALID BAR SL. Several levels can
-//     be live. BAR SL 2 happens once: it ends the ghost cycle.
+//     hidden; once per BAR SL). Before INVALID BAR SL, a decisive close below
+//     the low is BAR SL 2. After it, an SL below the low is BAR SL again
+//     (reactivation: a new BAR SL candle and a new ghost cycle). The level is
+//     dead after INVALID BAR SL AND a newer BAR -> BAR ENTRY (normal or
+//     ghost), in either order. Several levels can be live. BAR SL 2 happens
+//     once: the race starts, the ghost cycle ends, no INVALID BAR SL.
 //   Ghost BAR cycle (hidden, in `dayHidden`; the same BAR theory, it only
 //     follows a BAR SL): ghost BAR on the next green candle -> ghost BAR ENTRY
 //     above its high -> RED1 -> RED2 -> the next green candle is a shown BAR
@@ -60,8 +61,10 @@
 //   BAR SL 2 (a decisive close below a live level): the race -- REAR above BAR ENTRY's running high vs a new
 //     house's TZ BUY, same rules as above; then BAR ENTRY above that REAR.
 //     Until then no new BAR1 and the RED gate pauses.
-// Race: see TZ BUY SL above. The loser of a race (this house) goes dormant:
-//   it keeps running in the background and nothing of it is shown.
+// Race: see TZ BUY SL above. While the race is open, the new house runs in
+//   the back end (hidden); it is shown from its TZ BUY if it wins. The loser
+//   of a race goes dormant (the new house terminates): nothing more of it is
+//   shown.
 
 import { THRESH, EPS, type Day, type HistoryRowLike } from "./tzEngineWtf";
 
@@ -139,8 +142,8 @@ export class BarLineage {
 /** A BAR SL level: the BAR SL candle's low (BAR SL LL lowers it) for BAR SL
  * 2, and its high as the running high for INVALID BAR SL. */
 export class BarSlLevel {
-  /** INVALID BAR SL has occurred (BAR SL 2 below the level is still possible
-   * until the level is dead). */
+  /** INVALID BAR SL has occurred (once per BAR SL): no BAR SL 2 from it; an
+   * SL below its low is BAR SL again (reactivation). */
   invalid = false;
   /** A newer BAR -> BAR ENTRY (normal or ghost) has confirmed. With `invalid`
    * the level (the earlier lineage) is dead. */
@@ -299,10 +302,14 @@ export class DtfBarTheoryEngine {
       }
     }
 
+    // While an older house's race is open, the new house runs in the back end.
+    const racing = (c: Cycle) =>
+      this.cycles.some((o) => o.seq < c.seq && o.active && !o.dormant && o.race !== null && o.race.open);
     const ev: TaggedEvent[] = [];
     for (const [cyc, texts] of byCycle) {
       if (cyc.dormant) continue; // dormant: nothing of it is shown
-      for (const text of texts) ev.push({ seq: cyc.seq, text });
+      const out = racing(cyc) ? this.dayHidden : ev;
+      for (const text of texts) out.push({ seq: cyc.seq, text });
     }
     this.dayDoubts = this.dayDoubts.filter((d) => !this.cycles.find((c) => c.seq === d.seq)?.dormant);
 
@@ -312,7 +319,7 @@ export class DtfBarTheoryEngine {
       this.seq += 1;
       const fresh = new Cycle(this.seq, cur.h, cur.l);
       this.cycles.push(fresh);
-      ev.push({ seq: fresh.seq, text: "TZ GREEN" });
+      (racing(fresh) ? this.dayHidden : ev).push({ seq: fresh.seq, text: "TZ GREEN" });
     }
     return ev;
   }
@@ -646,9 +653,9 @@ export class DtfBarTheoryEngine {
   /** The live BAR SL levels: BAR SL 2 (opens the race; returns true),
    * BAR SL LL, INVALID BAR SL (hidden) and the silent running high. */
   private evalBarSlLevels(cyc: Cycle, tz: TzLevel, cur: Day, ev: string[]): boolean {
-    // BAR SL 2 below a live level, before or after INVALID BAR SL (user-
-    // confirmed). It happens once: the race opens and every level is cleared.
-    const hit = tz.barSlLevels.find((lv) => isSl(cur, lv.refLow));
+    // BAR SL 2: a decisive close below a live BAR SL (no INVALID BAR SL on
+    // it). It happens once: the race opens and every level is cleared.
+    const hit = tz.barSlLevels.find((lv) => !lv.invalid && isSl(cur, lv.refLow));
     if (hit !== undefined) {
       // From BAR SL 2 the house only moves via REAR -> BAR ENTRY (user-
       // confirmed): other BAR rounds and the RED gate stop until then.
@@ -669,20 +676,34 @@ export class DtfBarTheoryEngine {
       ev.push(`BAR SL2(${hit.label})`);
       return true;
     }
+    // After INVALID BAR SL (once per BAR SL), the BAR SL reactivates: an SL
+    // below the earlier BAR SL low is BAR SL again (a new BAR SL candle,
+    // INVALID BAR SL / BAR SL 2 measured from it, and a new ghost cycle).
+    const re = tz.barSlLevels.find((lv) => lv.invalid && isSl(cur, lv.refLow));
+    let fresh: BarSlLevel | null = null;
+    if (re !== undefined) {
+      fresh = new BarSlLevel(re.label, cur.h, cur.l, Math.max(re.barTop, cur.h), re.ghostBorn);
+      const f = fresh;
+      tz.barSlLevels = tz.barSlLevels.map((lv) => (lv === re ? f : lv));
+      tz.ghost = new Ghost(re.label);
+      if (re.ghostBorn) this.hidden(`BAR SL(${re.label})`);
+      else ev.push(`BAR SL(${re.label})`);
+    }
     for (const lv of tz.barSlLevels) {
       if (cur.h > lv.barTop) lv.barTop = cur.h;
+      if (lv === fresh) continue; // today's BAR SL candle
       const l = quietLl(cur, lv.refLow);
       if (l !== null) {
         lv.refLow = l;
-        if (lv.ghostBorn) this.hidden(`BAR SL LL(${lv.label})`);
+        if (lv.ghostBorn || lv.invalid) this.hidden(`BAR SL LL(${lv.label})`);
         else ev.push(`BAR SL LL(${lv.label})`);
       }
-      // INVALID BAR SL can repeat: each one raises the running high.
+      if (lv.invalid) continue;
+      // INVALID BAR SL: once per BAR SL, above its running high.
       if (cur.h >= lv.refHigh + THRESH - EPS && cur.c >= lv.refHigh) {
         lv.invalid = true;
         this.hidden(`INVALID BAR SL(${lv.label})`);
-      }
-      if (cur.h > lv.refHigh) lv.refHigh = cur.h;
+      } else if (cur.h > lv.refHigh) lv.refHigh = cur.h;
     }
     tz.barSlLevels = tz.barSlLevels.filter((lv) => !(lv.invalid && lv.newerEntry));
     return false;
