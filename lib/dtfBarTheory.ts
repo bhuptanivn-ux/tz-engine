@@ -62,6 +62,10 @@
 //     above BAR ENTRY's running high, then BAR ENTRY above that REAR, vs a new
 //     house's TZ BUY -> TZ BUY ENTRY, same rules as above. Until then no new
 //     BAR1 and the RED gate pauses.
+//   REAR (A or B) is the lineage's reactivation stage 1; there is no REAR SL
+//     2. Bare REAR SL: REAR again above that REAR's running high. REAR SL
+//     after the ENTRY above it: REAR again above that ENTRY's reference high
+//     (TZ BUY ENTRY for REAR A, BAR ENTRY for REAR B), back in the race.
 //   A TZ BUY ENTRY SL during that race drops REAR B; the race goes on while
 //     TZ BUY is active: TZ BUY ENTRY again (next green candle) vs the new
 //     house's TZ BUY ENTRY. TZ BUY SL as well: the TZ BUY SL race (REAR A).
@@ -138,6 +142,9 @@ export class BarLineage {
   /** BAR ENTRY SL + RED2: no BAR ENTRY again for this BAR (user-confirmed);
    * only the new BAR1 -> BAR ENTRY counts. */
   noReentry = false;
+  /** Stage 1 is REAR B (BAR ENTRY formed above it after BAR SL 2): its SL is
+   * REAR B SL, and REAR B reactivates above BAR ENTRY's reference high. */
+  rearStage = false;
   /** The REAR waiting for BAR ENTRY to re-form above it. */
   rear: Tier | null = null;
   /** After a REAR SL: the earlier REAR's running high the next REAR must clear. */
@@ -849,7 +856,37 @@ export class DtfBarTheoryEngine {
 
     // Stage 1: BAR SL (BAR ENTRY SL included), measured from the anchor
     // BAR1's low (or REAR B's low once REAR B acts as BAR1).
-    if (!lin.barSlLive && !lin.sl2) {
+    if (lin.rearStage && !lin.sl2) {
+      if (isSl(cur, lin.refLow)) {
+        // REAR B SL (after its BAR ENTRY): REAR B reactivates above BAR
+        // ENTRY's reference high; the lineage is back in the race (user-
+        // confirmed). No REAR SL 2, no BAR SL, no ghost.
+        if (!b2.sl) {
+          b2.sl = true;
+          ev.push(`BAR ENTRY SL(${L})`);
+        }
+        ev.push(`REAR B SL(${L})`);
+        if (cur.h > lin.barTop) lin.barTop = cur.h;
+        lin.rearStage = false;
+        lin.sl2 = true;
+        lin.barSlLive = true;
+        lin.rear = null;
+        lin.rearHigh = null;
+        tz.barLineages = [lin];
+        tz.barSlLevels = [];
+        tz.ghost = null;
+        tz.barPending = false;
+        tz.redSeek = false;
+        tz.red = null;
+        this.openRace(cyc);
+        return true;
+      }
+      const lr = quietLl(cur, lin.refLow);
+      if (lr !== null) {
+        lin.refLow = lr;
+        ev.push(`REAR B LL(${L})`);
+      }
+    } else if (!lin.barSlLive && !lin.sl2) {
       const level = lin.barSl !== null ? lin.barSl.refLow : lin.refLow;
       if (isSl(cur, level)) {
         if (!b2.sl) {
@@ -904,11 +941,12 @@ export class DtfBarTheoryEngine {
     if (lin.rear !== null) {
       const r = lin.rear;
       if (breaksRef(prev, cur, r.refHigh)) {
-        // BAR ENTRY above REAR B; REAR B now acts as BAR1 (same as REAR A
-        // acting as TZ BUY): a later BAR SL is measured from its low.
+        // BAR ENTRY above REAR B; REAR B is now stage 1 of this lineage (as
+        // REAR A acts as TZ BUY). Its SL is REAR B SL, never BAR SL / SL 2.
         lin.refHigh = r.refHigh;
         lin.refLow = r.refLow;
         lin.barSl = null;
+        lin.rearStage = true;
         lin.bar2 = new Tier(cur.h, cur.l);
         if (cur.h > lin.barTop) lin.barTop = cur.h;
         lin.rear = null;
@@ -938,9 +976,13 @@ export class DtfBarTheoryEngine {
       // A newer BAR1 already exists (RED2 completed before this SL): no re-entry.
       if (tz.barLineages.indexOf(lin) < tz.barLineages.length - 1) lin.noReentry = true;
       if (lin.noReentry || tz.barPending) {
-        // BAR ENTRY SL + RED2: this BAR cannot re-enter; its running high is
-        // kept silently (the race REAR after a BAR SL 2 must clear it).
-        if (cur.h > lin.barTop) lin.barTop = cur.h;
+        // BAR ENTRY SL + RED2: this BAR cannot re-enter, but until the new
+        // lineage reaches BAR ENTRY it can still go BAR SL -> BAR SL 2, so its
+        // running high (the race REAR must clear it) is still recorded.
+        if (cur.h > lin.barTop) {
+          lin.barTop = cur.h;
+          ev.push(`INVALID BAR ENTRY HH(${L})`);
+        }
         return false;
       }
       if (green(prev, cur)) {
