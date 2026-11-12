@@ -37,7 +37,8 @@
 //   are not sought. Bare BAR1 SL: BAR1 again on the next green candle.
 //   BAR ENTRY SL, BAR still active: BAR ENTRY again on the next green candle;
 //     if a RED2 has completed (before, on or after the SL day), the next green
-//     candle is a new BAR1 instead (BAR 2 of a new cycle, ending the earlier).
+//     candle is a new BAR1 instead (BAR 2 of a new cycle, ending the earlier),
+//     and the earlier BAR can no longer re-enter BAR ENTRY.
 //   BAR SL (of a BAR that reached BAR ENTRY; BAR ENTRY SL included): from the
 //     anchor BAR1's low. No REAR. The BAR SL candle sets a BAR SL level: its
 //     low (BAR SL LL lowers it) for BAR SL 2, its high as the running high
@@ -135,6 +136,9 @@ export class BarLineage {
   barSlLive = false;
   /** BAR SL 2 has fired (opens the race). */
   sl2 = false;
+  /** BAR ENTRY SL + RED2: no BAR ENTRY again for this BAR (user-confirmed);
+   * only the new BAR1 -> BAR ENTRY counts. */
+  noReentry = false;
   /** The REAR waiting for BAR ENTRY to re-form above it. */
   rear: Tier | null = null;
   /** After a REAR SL: the earlier REAR's running high the next REAR must clear. */
@@ -642,6 +646,7 @@ export class DtfBarTheoryEngine {
     if (tz.ghost === null && tz.barPending && !inSl2 && green(prev, cur)) {
       const label = this.nextBarLabel(tz);
       tz.barLineages = tz.barLineages.filter((l) => l.bar2 !== null);
+      for (const l of tz.barLineages) if (l.bar2!.sl) l.noReentry = true;
       tz.barLineages.push(new BarLineage(label, cur.h, cur.l));
       tz.barPending = false;
       ev.push(`BAR1(${label})`);
@@ -927,6 +932,12 @@ export class DtfBarTheoryEngine {
     // candle -- unless a RED2 has armed a new BAR cycle (BAR1 on the next green
     // candle instead, see evalBarLineages) (user-confirmed).
     if (!lin.barSlLive && !lin.sl2 && lin.rearHigh === null) {
+      if (lin.noReentry) {
+        // BAR ENTRY SL + RED2: this BAR cannot re-enter; its running high is
+        // kept silently (the race REAR after a BAR SL 2 must clear it).
+        if (cur.h > lin.barTop) lin.barTop = cur.h;
+        return false;
+      }
       if (!tz.barPending && green(prev, cur)) {
         lin.bar2 = new Tier(cur.h, cur.l);
         if (cur.h > lin.barTop) lin.barTop = cur.h;
