@@ -1273,12 +1273,20 @@ function findWindows(wtfDays: Day[]): TarTbarWindow[] {
 // BAR1-BAR2, every date exact) once fed through unchanged as ordinary
 // BAR-theory windows.
 //
-// Scoped to ONE level of reinterpretation per BAR SL2 instance -- a
-// reinterpreted window that itself later ends in another genuine BAR
-// SL2 is not recursively re-checked here (that would need its own
-// fresh postBarSl2Race/reinterpretPostBarSl2Spawn call against ITS OWN
-// DTF SAR watch); not yet exercised by real data, flagged rather than
-// guessed at.
+// NOW recursive across any number of levels: a reinterpreted window's
+// own synthetic continuation (simulateBarLadderContinuation) can itself
+// reach a fresh BAR SL2 that never confirms SAR 2 -- the SAME failure
+// shape the original BAR SL2 had. When it does, the NEXT raw sibling
+// spawn is not just suppressed as one-day noise; it gets its own
+// spawnFormations/window/continuation treatment too (see
+// chainAwaitingFreshSpawn, below, in the per-spawn loop), repeating for
+// as many levels deep as the real data actually goes. Without this, a
+// third-level (or deeper) sibling spawn's own BAR-theory structure
+// (TAR/TAR ENTRY) was silently dropped rather than folded into the
+// chain -- not merely mislabeled. Not yet exercised by real data (no
+// confirmed case goes this deep yet); verified by direct tracing and a
+// non-regression check (ICICIBANK.NS: byte-identical output before and
+// after), not guessed at.
 
 /** A reinterpreted window's own WTF-level "BAR 2" escalation, derived
  * directly from the WEEKLY candles using the identical breakout rule
@@ -1888,9 +1896,28 @@ function findReinterpretedWindows(
     // an open-ended one; A.6 keeps running uninterrupted (its own BAR 2
     // then confirms a week later, 2023-05-22, per deriveReinterpretedBar2Date).
     let openWindowEndDate: string | null | undefined = undefined; // undefined = no window yet
+    // True right after a spawn's own synthetic continuation
+    // (simulateBarLadderContinuation) reaches a FRESH BAR SL2 of its own
+    // that never confirms SAR 2 -- as opposed to never reaching a fresh
+    // BAR SL2 at all (still genuinely, indefinitely open). In that case
+    // the chain is NOT "still open" in the sense that blocks the next
+    // spawn from getting its own window: per the user's own rule, this
+    // one failed exactly the same way the FIRST one did, so the NEXT
+    // raw sibling spawn deserves its own fresh postBarSl2Race/
+    // reinterpretPostBarSl2Spawn-equivalent treatment (its own
+    // spawnFormations/window/continuation), not a one-day noise-only
+    // suppression -- see this loop's own `simulateBarLadderContinuation`
+    // branch below, and tarTbar.ts's module comment on scoping this to
+    // "one level" (the gap this flag closes). Consumed (reset to false)
+    // the moment the next spawn is processed, whether or not it ends up
+    // using this path.
+    let chainAwaitingFreshSpawn = false;
 
     for (const spawn of allSpawns) {
-      const priorWindowStillOpen = openWindowEndDate === null || (openWindowEndDate !== undefined && spawn.date <= openWindowEndDate);
+      const priorWindowStillOpen =
+        !chainAwaitingFreshSpawn &&
+        (openWindowEndDate === null || (openWindowEndDate !== undefined && spawn.date <= openWindowEndDate));
+      chainAwaitingFreshSpawn = false;
       // An orphaned spawn with no window of its own (priorWindowStillOpen)
       // bounds its own suppression to just this one date -- confirmed
       // real-data bug (DIXON.NS): without this bound, the raw engine's
@@ -2014,6 +2041,15 @@ function findReinterpretedWindows(
               chainResolutionDate: continuation.barSl2FreezeDate,
             });
             openWindowEndDate = null;
+            // Distinguish "genuinely still open, nothing decisive has
+            // happened yet" (data ran out, or price just kept climbing)
+            // from "this continuation's OWN fresh BAR SL2 fired and
+            // failed to confirm SAR 2 either" -- only the latter means
+            // the chain failed again THE SAME WAY the original one did,
+            // which is exactly when the NEXT raw sibling spawn deserves
+            // its own window/continuation rather than one-day noise
+            // suppression (see chainAwaitingFreshSpawn's own comment).
+            chainAwaitingFreshSpawn = continuation.wtfEvents.some((e) => e.label === "BAR SL2");
           }
         }
       }
