@@ -128,11 +128,10 @@ export class BarLineage {
   /** BAR ENTRY's running reference high since this lineage's first BAR
    * ENTRY (BAR ENTRY HH, INVALID BAR ENTRY HH, re-formed BAR ENTRYs). */
   barTop = 0;
-  /** The anchor BAR1's own SL ("BAR SL"): the BAR SL candle's high and low
-   * (BAR SL HH raises the high, BAR SL LL lowers the low). */
+  /** The BAR SL candle behind a BAR SL 2 race (cleared when REAR B takes
+   * over as BAR1). */
   barSl: Tier | null = null;
-  /** The BAR SL is live (not yet followed by BAR ENTRY re-forming). After BAR
-   * ENTRY re-forms, a later BAR SL is measured from barSl.refLow. */
+  /** In a BAR SL 2 race (cleared when BAR ENTRY re-forms above REAR B). */
   barSlLive = false;
   /** BAR SL 2 has fired (opens the race). */
   sl2 = false;
@@ -848,9 +847,8 @@ export class DtfBarTheoryEngine {
 
     const b2 = lin.bar2;
 
-    // Stage 1: BAR SL (BAR ENTRY SL included). The first is measured from
-    // the anchor BAR1's low; after BAR ENTRY has re-formed, a later one from
-    // the earlier BAR SL candle's low (moved down by BAR SL LL).
+    // Stage 1: BAR SL (BAR ENTRY SL included), measured from the anchor
+    // BAR1's low (or REAR B's low once REAR B acts as BAR1).
     if (!lin.barSlLive && !lin.sl2) {
       const level = lin.barSl !== null ? lin.barSl.refLow : lin.refLow;
       if (isSl(cur, level)) {
@@ -906,6 +904,11 @@ export class DtfBarTheoryEngine {
     if (lin.rear !== null) {
       const r = lin.rear;
       if (breaksRef(prev, cur, r.refHigh)) {
+        // BAR ENTRY above REAR B; REAR B now acts as BAR1 (same as REAR A
+        // acting as TZ BUY): a later BAR SL is measured from its low.
+        lin.refHigh = r.refHigh;
+        lin.refLow = r.refLow;
+        lin.barSl = null;
         lin.bar2 = new Tier(cur.h, cur.l);
         if (cur.h > lin.barTop) lin.barTop = cur.h;
         lin.rear = null;
@@ -932,13 +935,15 @@ export class DtfBarTheoryEngine {
     // candle -- unless a RED2 has armed a new BAR cycle (BAR1 on the next green
     // candle instead, see evalBarLineages) (user-confirmed).
     if (!lin.barSlLive && !lin.sl2 && lin.rearHigh === null) {
-      if (lin.noReentry) {
+      // A newer BAR1 already exists (RED2 completed before this SL): no re-entry.
+      if (tz.barLineages.indexOf(lin) < tz.barLineages.length - 1) lin.noReentry = true;
+      if (lin.noReentry || tz.barPending) {
         // BAR ENTRY SL + RED2: this BAR cannot re-enter; its running high is
         // kept silently (the race REAR after a BAR SL 2 must clear it).
         if (cur.h > lin.barTop) lin.barTop = cur.h;
         return false;
       }
-      if (!tz.barPending && green(prev, cur)) {
+      if (green(prev, cur)) {
         lin.bar2 = new Tier(cur.h, cur.l);
         if (cur.h > lin.barTop) lin.barTop = cur.h;
         tz.redSeek = true;
