@@ -65,6 +65,18 @@ ENTRY, and all their own SLs and reactivations. Implemented by wiring
 site (`stage1ActiveAtFor`, which feeds both `simulateWindow` and every
 `postBarSl2Race` call).
 
+**CORRECTION (2026-11-12):** `barEntryActiveIntervals()`'s own "active"
+definition originally closed on EVERY exit type, including a SAR exit --
+but re-entry after SAR is only through BAR THEORY (see the SAR section
+below), so the gate must stay open precisely in the stretch following a
+SAR exit; closing it there made BAR THEORY permanently unreachable for
+the rest of that anchor's life once it ever SAR-exited. Fixed: a `"DTF
+SAR"` exit no longer closes this interval (an ordinary SL-type exit
+still does, since BAR ENTRY's own ladder already handles getting back in
+after those). Verified exact against ICICIBANK.NS, letter C: TAR
+2006-07-31 / TAR ENTRY 2006-08-08, both of which the old gate made
+impossible to ever compute.
+
 WTF's own RED1→RED2 is what *produces the opportunity* for BAR THEORY
 (TAR/TAR ENTRY anchors off a WTF BAR, which itself requires WTF's own
 RED1→RED2 to have confirmed) — but it only actually occurs if BAR ENTRY
@@ -114,8 +126,34 @@ No code change needed here — already correct.
 SAR closes whichever of PRIME TREND's own open BAR ENTRY/REAR ENTRY, or
 BAR THEORY's own open TAR ENTRY/nested BAR1→BAR2, is currently open —
 confirmed and coded on both sides (`stepLevel` in `tarTbar.ts` for BAR
-THEORY; the DTF SAR mechanism producing `BAR EXIT (PRIME TREND)` for
-PRIME TREND's own side).
+THEORY; the DTF SAR mechanism producing the `exitType: "DTF SAR"` row for
+PRIME TREND's own side — the exact string is `"DTF SAR"`, not `"BAR EXIT
+(PRIME TREND)"` as an earlier version of this doc said).
+
+**Two more bugs found and fixed (2026-11-12), against real ICICIBANK.NS
+data, not covered above:**
+
+- A "fresh BAR 2 kills the SAR watch" switch (`lib/primeTrend.ts`,
+  added Oct 30 for a DIXON.NS case) was supposed to leave an
+  already-escalated INVALID SAR ENTRY position alone (its own commit
+  message said so) but the code never actually implemented that
+  exclusion -- it killed the position regardless of state, every time.
+  Never actually fixed until now; the case that validated it originally
+  never had an open position to kill, so the gap went undetected for
+  about two weeks. Fixed: `InvalidSarState.everOpened` protects an
+  already-opened cycle from this switch.
+- `lib/tarTbar.ts`'s misclassified-letter reinterpretation (a WTF BAR
+  SL2 spawning a fake new sibling letter when its own SAR 2 never
+  confirms) was scoped to one level only -- if THAT reinterpreted
+  window's own synthetic continuation reached its own fresh,
+  unconfirmed BAR SL2, every further sibling spawn after that point got
+  a one-day noise label and never got its own BAR THEORY window built
+  at all (its TAR/TAR ENTRY for that stretch was silently dropped, not
+  just mislabeled). Fixed to repeat for as many levels as the data goes.
+  Not yet exercised by a real case that goes this deep -- verified by
+  direct tracing and a non-regression check (ICICIBANK.NS:
+  byte-identical output before and after), not by a real triggering
+  example yet.
 
 ## The new WTF-level race — IMPLEMENTED
 
@@ -334,16 +372,33 @@ already happened and INVALID SAR SL is now triggering on top of that —
 i.e. always the combined case, same convention used throughout this whole
 document.
 
-**INVALID SAR's own reactivation — verified directly against the code**
-(`InvalidSarState`/`stepInvalidSar` in `lib/primeTrend.ts`): the ONLY path
-that lets INVALID SAR reactivate (fire the "INVALID SAR" label again) is
-the full sequence INVALID SAR → INVALID SAR ENTRY → INVALID SAR ENTRY SL →
-INVALID SAR SL. Traced exactly in the code: `ENTRY_ACTIVE`'s own SL →
-`SEEK_REACTIVATION` (clean reactivation attempt) → if INVALID SAR's own
-reference also breaches (the combined failure, "INVALID SAR SL") →
-`SEEK_REFORM` → only on a decisive breach of the *historical* floor does a
-fresh "SAR" re-arm → `SEEK_INVALID` → a later breakout produces "INVALID
-SAR" again. Already correctly implemented, not a gap.
+**INVALID SAR's own reactivation path** (`InvalidSarState`/
+`stepInvalidSar` in `lib/primeTrend.ts`): the ONLY path that lets INVALID
+SAR reactivate (fire the "INVALID SAR" label again) is the full sequence
+INVALID SAR → INVALID SAR ENTRY → INVALID SAR ENTRY SL → INVALID SAR SL →
+`SEEK_REFORM` → a decisive breach of the *historical* floor → `SEEK_INVALID`
+→ a later breakout produces "INVALID SAR" again. This part was correct.
+
+**CORRECTION (2026-11-12, found against real ICICIBANK.NS data):** the
+narrower claim below this ("already correctly implemented, not a gap")
+was wrong for `SEEK_REACTIVATION` specifically -- INVALID SAR ENTRY's own
+clean-SL reactivation (after INVALID SAR ENTRY SL alone, INVALID SAR
+itself still alive) was using a frozen-reference breakout
+(`breakoutShape(prev, cur, s.frozenEntryRefHigh)`), copying the wrong
+model -- `BarLevelState`'s own `SEEK_BAR_ENTRY_REACTIVATION` already
+documents (and this exact codebase already validates against ICICIBANK)
+that this kind of reactivation is a plain "next green" day-over-day
+breakout (`breakoutShape(prev, cur, prev.h)`), not a climb back to an old
+high. Per the user's own rule: "PLAIN INVALID SAR ENTRY SL occurs and
+INVALID SAR is still active, then INVALID SAR ENTRY can reactivate in
+next green" -- same Stage-1/Stage-2 shape used everywhere else in this
+codebase. Fixed; verified exact against ICICIBANK.NS: INVALID SAR ENTRY
+SL 2005-11-21 -> reactivates 2005-11-24 (the real next-green candle), not
+the much later frozen-reference breakout the old code waited for
+(2005-12-12). This is the concrete lesson behind every "verified"/
+"implemented" label in this document from here on: a label means it was
+actually run against real data and the dates matched, not that the code
+was read and looked right.
 
 ## WTF-level BAR lineage mechanics — verified against the code (reference)
 

@@ -639,7 +639,9 @@ function stepBarLevel(
       // (ICICIBANK.NS): BAR ENTRY SL 2003-11-19 (ratcheted high 48.78) ->
       // 2003-11-24 (High 44.55, clears 2003-11-21's own High 42.73 by
       // threshold, closes above it) reactivates BAR ENTRY directly, even
-      // though 44.55 never comes close to the old 48.78.
+      // though 44.55 never comes close to the old 48.78. Same rule
+      // before or after SAR -- per the user's own correction: "This will
+      // have logic common before or after SAR."
       if (breakoutShape(prev, cur, prev.h)) {
         const entryPrice = prev.h + THRESH;
         s.barEntryRefHigh = cur.h;
@@ -1758,7 +1760,11 @@ export type PostBarSl2CheckpointLabel =
   | "INVALID SAR ENTRY SL"
   | "SAR 2"
   | "TZ BUY"
-  | "TZ BUY SL";
+  | "TZ BUY SL"
+  | "BAR ENTRY SL"
+  | "BAR SL"
+  | "BAR ENTRY"
+  | "BAR";
 
 export interface PostBarSl2Checkpoint {
   date: string;
@@ -2086,6 +2092,38 @@ function simulateDtfAll(
   // every time Stage 1 (re)forms (see "active TZ BUY is mandatory"
   // above), discarded outright on Stage 1's own SL.
   let barState: BarLevelState | null = null;
+  // A SEPARATE BAR/BAR ENTRY ladder that keeps running past a SAR exit,
+  // seeded from barState's own BAR/BAR ENTRY reference high/low at the
+  // exact moment SAR fires -- per the user's own rule: "SAR after PRIME
+  // TREND DOES NOT FORGET BAR ENTRY. PERIOD." SAR still closes the real
+  // open position (barState itself is still nulled below, permanently --
+  // BAR THEORY, INVALID SAR ENTRY/TAR/the nested route, takes over the
+  // visible entry/exit ladder from there), but the reference BAR ENTRY
+  // (and BAR, underneath it) was tracking at that exact moment is not
+  // thrown away -- it keeps being watched, and can keep reactivating and
+  // SL'ing, for as long as this instance lives, using the exact same
+  // reactivation mechanics the live ladder itself uses -- IDENTICAL
+  // rules before or after SAR, per the user's own correction ("This will
+  // have logic common before or after SAR"): a clean BAR ENTRY SL (BAR
+  // itself intact) still reactivates on the very next unrestricted
+  // "next green," and a combined failure (BAR's own reference also
+  // breaches) still reforms BAR first, gated above the accumulated
+  // highest-ever high, before BAR ENTRY can escalate above that new
+  // BAR's own reference high. Seeded ONCE, at the FIRST SAR fire for
+  // this instance that finds barState in BAR_ENTRY_ACTIVE mode (nothing
+  // of this kind exists
+  // to seed from a bare tier-1 BAR); from there it runs on its own,
+  // independent of any later SAR/SAR 2/INVALID SAR event, until Stage 1
+  // itself SLs (which wipes it for good, same as it wipes everything
+  // else -- "Prime trend can become inactive b[y] BAR ENTRY SL, BAR SL
+  // AND TZ BUY SL," the user's own words). Every SL/reactivation this
+  // produces is recorded into sarCheckpoints (labels "BAR ENTRY SL",
+  // "BAR SL", "BAR ENTRY", "BAR") so it's visible in the same ladder as
+  // SAR/INVALID SAR, and read by barEntryActiveIntervals to decide when
+  // this anchor's own PRIME TREND foundation is truly active again vs.
+  // truly ended. Confirmed real-data (ICICIBANK.NS, letter D,
+  // 2010-2011): without this, that distinction didn't exist at all.
+  let postSarWatch: BarLevelState | null = null;
   const rows: PrimeTrendResult[] = [];
   // Full dated SAR/INVALID SAR/SAR 2 checkpoint ladder for the RECURRING,
   // RED2-anchored SAR mechanism below -- same shape and same labels as
@@ -2304,6 +2342,15 @@ function simulateDtfAll(
         );
       }
       barState = null;
+      // TZ BUY's own SL wipes the post-SAR watch too, for good -- per
+      // the user's own words: "Prime trend can become inactive b[y] BAR
+      // ENTRY SL, BAR SL AND TZ BUY SL." It never comes back once Stage
+      // 1 itself has SL'd, even if Stage 1 later reforms (a fresh
+      // postSarWatch only ever seeds off a real SAR fire again, not off
+      // Stage 1 reforming).
+      if (postSarWatch !== null) {
+        postSarWatch = null;
+      }
     }
     // --- TZ BUY's own (re)formation starts a brand new BAR/BAR ENTRY window ---
     if (!wasS1Active && isS1Active && !sarFired) {
@@ -2514,6 +2561,20 @@ function simulateDtfAll(
             barState.rowHHDate
           );
         }
+        // Seed the post-SAR watch here, ONCE, before discarding barState
+        // itself -- see postSarWatch's own comment above. Only when an
+        // actual open entry existed to seed from (a bare tier-1 BAR with
+        // no BAR ENTRY ever reached has nothing of this kind to carry
+        // forward).
+        if (postSarWatch === null && barState !== null && barState.mode === "BAR_ENTRY_ACTIVE") {
+          postSarWatch = new BarLevelState(0, null);
+          postSarWatch.mode = "BAR_ENTRY_ACTIVE";
+          postSarWatch.barRefHigh = barState.barRefHigh;
+          postSarWatch.barRefLow = barState.barRefLow;
+          postSarWatch.barEntryRefHigh = barState.barEntryRefHigh;
+          postSarWatch.barEntryRefLow = barState.barEntryRefLow;
+          postSarWatch.topRef = Math.max(barState.topRef, barState.barRefHigh, barState.barEntryRefHigh);
+        }
         barState = null;
 
         // "SAR 2" only applies when there's a currently LIVE cycle that
@@ -2573,6 +2634,28 @@ function simulateDtfAll(
       } else if (cur.l < sarRefLow) {
         sarRefLow = cur.l;
         sarCheckpoints.push({ date: cur.date, label: "SAR LL", price: cur.l });
+      }
+    }
+
+    // The post-SAR watch keeps running, completely independently of
+    // whatever BAR THEORY (INVALID SAR ENTRY/TAR/the nested route) is
+    // doing in parallel -- see postSarWatch's own comment above. Every
+    // SL/reactivation it produces is this anchor's own PRIME TREND
+    // foundation going inactive/active again.
+    if (postSarWatch !== null) {
+      const modeBefore = postSarWatch.mode;
+      const { opened, closed } = stepBarLevel(postSarWatch, prev, cur, false);
+      if (closed) {
+        // "DTF BAR SL (wipes ENTRY)"/"DTF BAR SL + DTF BAR ENTRY SL" --
+        // BAR's own (wider) reference breached, taking BAR ENTRY with it
+        // either way -- vs. the clean "DTF BAR ENTRY SL" alone.
+        const label = closed.exitType.includes("BAR SL") ? "BAR SL" : "BAR ENTRY SL";
+        sarCheckpoints.push({ date: cur.date, label, price: closed.exitPrice });
+      }
+      if (opened) {
+        sarCheckpoints.push({ date: cur.date, label: "BAR ENTRY", price: opened.price });
+      } else if (modeBefore !== "BAR_ACTIVE" && postSarWatch.mode === "BAR_ACTIVE") {
+        sarCheckpoints.push({ date: cur.date, label: "BAR", price: postSarWatch.barActivationPrice as number });
       }
     }
 
@@ -2833,8 +2916,8 @@ export function computePrimeTrend(
  * real-data (DIXON.NS): this is what makes the otherwise-invisible
  * 2021-08-24 "SAR 2" (nothing open at that exact moment, so it never
  * appears in computePrimeTrend's own row-based output) show up at all. */
-export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] {
-  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
+export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] {
+  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows, wtfTraceOverride);
 
   const results: { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
   for (const inst of instances) {
@@ -2853,8 +2936,8 @@ export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRo
  * nothing escalating underneath it was invisible everywhere until this.
  * Confirmed real-data (BSE.NS): 2017-06-05 TZ BUY -> 2017-06-06 TZ BUY
  * SL, under the 2017-05-29 TZ BUY 2 instance, never shown anywhere. */
-export function computeStage1Checkpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] {
-  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows);
+export function computeStage1Checkpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] {
+  const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows, wtfTraceOverride);
 
   const results: { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
   for (const inst of instances) {
@@ -2874,7 +2957,7 @@ export function computeStage1Checkpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[])
  * BUY SL" ladder, pairing each activation with its next SL (open-ended
  * if none follows). `untilDate` is EXCLUSIVE -- the SL day itself is
  * already inactive, same convention as barTheoryActiveWindows. */
-export function stage1ActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): Map<string, { sinceDate: string; untilDate: string | null }[]> {
+export function stage1ActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): Map<string, { sinceDate: string; untilDate: string | null }[]> {
   // `computeStage1Checkpoints` returns ONE entry per WTF instance, and a
   // letter can carry SEVERAL over its life (every "TZ BUY 2" generation,
   // plus any REAR/REAR RE-ENTER 2 instance) -- `result.set(letter, ...)`
@@ -2891,7 +2974,7 @@ export function stage1ActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): M
   // into producing nothing at all for RED2(A) 2022-12-05, even though it
   // demonstrably confirms a real SAR 2 on 2022-12-22 once Stage 1 is
   // correctly seen as active.
-  const perLetter = computeStage1Checkpoints(wtfRows, dtfRows);
+  const perLetter = computeStage1Checkpoints(wtfRows, dtfRows, wtfTraceOverride);
   const result = new Map<string, { sinceDate: string; untilDate: string | null }[]>();
   for (const { letter, checkpoints } of perLetter) {
     const intervals: { sinceDate: string; untilDate: string | null }[] = [];
@@ -2913,40 +2996,121 @@ export function stage1ActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): M
   return result;
 }
 
+// Intersects two per-letter interval lists (both already sorted by
+// sinceDate within each letter is NOT assumed -- this just pairwise
+// intersects every combination, which is correct regardless of order
+// for the small interval counts these ever hold). `null` untilDate
+// means open-ended.
+function intersectIntervalMaps(
+  a: Map<string, { sinceDate: string; untilDate: string | null }[]>,
+  b: Map<string, { sinceDate: string; untilDate: string | null }[]>
+): Map<string, { sinceDate: string; untilDate: string | null }[]> {
+  const result = new Map<string, { sinceDate: string; untilDate: string | null }[]>();
+  for (const [letter, aIntervals] of a) {
+    const bIntervals = b.get(letter) ?? [];
+    const intervals: { sinceDate: string; untilDate: string | null }[] = [];
+    for (const ia of aIntervals) {
+      for (const ib of bIntervals) {
+        const since = ia.sinceDate > ib.sinceDate ? ia.sinceDate : ib.sinceDate;
+        const until =
+          ia.untilDate === null ? ib.untilDate : ib.untilDate === null ? ia.untilDate : ia.untilDate < ib.untilDate ? ia.untilDate : ib.untilDate;
+        if (until === null || since < until) intervals.push({ sinceDate: since, untilDate: until });
+      }
+    }
+    if (intervals.length > 0) result.set(letter, intervals);
+  }
+  return result;
+}
+
 /** Per the user's own rule: BAR THEORY -- TAR/TAR ENTRY/BAR/BAR ENTRY and
  * the RED2/BAR-SL2-anchored SAR mechanism (SAR/INVALID SAR/INVALID SAR
  * ENTRY/SAR 2) alike -- can only occur while DTF BAR ENTRY (PRIME TREND)
- * is itself ACTIVE, not merely DTF TZ BUY (Stage 1). Narrower than
- * stage1ActiveIntervals above: "active" is exactly the window from a
- * BAR ENTRY/REAR ENTRY/REAR RE-ENTER cycle's own entryDate up to
- * (excluding) its own exitDate, open-ended while still open -- derived
- * straight from computePrimeTrend's own trade log, same accumulate-
- * never-overwrite shape as stage1ActiveIntervals (a letter can carry
- * several such cycles over its life). */
+ * is itself ACTIVE, not merely DTF TZ BUY (Stage 1) -- AND Stage 1 must
+ * ALSO itself still be active ("active TZ BUY is mandatory" applies here
+ * too, not just to PRIME TREND's own ladder -- already documented on
+ * stage1ActiveIntervals above, but never actually intersected in until
+ * now). The result is the OVERLAP of two separately-tracked interval
+ * sets:
+ *  - the window from a BAR ENTRY/REAR ENTRY/REAR RE-ENTER cycle's own
+ *    entryDate up to its own real close -- open-ended while still open;
+ *    while the exit was a SAR, this side stays open PAST that exit too
+ *    (re-entry after SAR is only through BAR THEORY -- "SAR after PRIME
+ *    TREND DOES NOT FORGET BAR ENTRY. PERIOD," the user's own words),
+ *    closing only once the frozen BAR ENTRY reference's own later,
+ *    independent decisive breach fires (the "BAR ENTRY SL" checkpoint --
+ *    see barEntryFrozenRefLow's own comment in simulateDtfAll) -- NOT at
+ *    the SAR exit itself, and NOT at SAR 2 (an earlier, wrong attempt at
+ *    this same fix tried SAR 2 and broke nothing existing by coincidence,
+ *    then was corrected by this one);
+ *  - stage1ActiveIntervals (Stage 1 continuously alive).
+ * Confirmed real-data (ICICIBANK.NS, letter D): BAR ENTRY exits via SAR
+ * 2010-12-09 (this side alone stays open through INVALID SAR ENTRY's own
+ * life); daily TZ BUY itself SL's 2011-02-07 (the OTHER side closes
+ * there) -- the overlap already closes then regardless of where the
+ * frozen reference's own breach falls, so the BAR (2011-02-14) / BAR 2 +
+ * TAR (2011-03-28) that follow do NOT get BAR THEORY treatment either
+ * way; letter C's own already-confirmed TAR (2006-07-31) / TAR ENTRY
+ * (2006-08-08) is unaffected because Stage 1 there never SL's again
+ * after 2003-09-26, so that side never restricts anything there. */
 export function barEntryActiveIntervals(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): Map<string, { sinceDate: string; untilDate: string | null }[]> {
   const results = computePrimeTrend(wtfRows, dtfRows, undefined, wtfTraceOverride);
+
+  // The post-SAR watch's own active/inactive cycle, per letter -- "BAR
+  // ENTRY SL"/"BAR SL" end an active cycle, "BAR ENTRY" (a reactivation)
+  // starts the next one. "BAR" (a bare tier-1 reform, not yet escalated)
+  // does neither -- it is not BAR ENTRY itself. See postSarWatch's own
+  // comment in simulateDtfAll.
+  const postSarEventsByLetter = new Map<string, { date: string; active: boolean }[]>();
+  for (const { letter, checkpoints } of computePrimeTrendCheckpoints(wtfRows, dtfRows, wtfTraceOverride)) {
+    const events: { date: string; active: boolean }[] = [];
+    for (const c of checkpoints) {
+      if (c.label === "BAR ENTRY SL" || c.label === "BAR SL") events.push({ date: c.date, active: false });
+      else if (c.label === "BAR ENTRY") events.push({ date: c.date, active: true });
+    }
+    if (events.length === 0) continue;
+    const existing = postSarEventsByLetter.get(letter);
+    if (existing) existing.push(...events);
+    else postSarEventsByLetter.set(letter, events);
+  }
+  for (const events of postSarEventsByLetter.values()) events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
   const result = new Map<string, { sinceDate: string; untilDate: string | null }[]>();
+  const addInterval = (letter: string, interval: { sinceDate: string; untilDate: string | null }) => {
+    const existing = result.get(letter);
+    if (existing) existing.push(interval);
+    else result.set(letter, [interval]);
+  };
+
   for (const r of results) {
     if (r.side !== "BAR ENTRY" && r.side !== "REAR ENTRY" && r.side !== "REAR RE-ENTER") continue;
-    // A SAR exit ("DTF SAR") does NOT close this gate -- per the user's
-    // own already-confirmed rule, "re-entry after SAR is only through
-    // BAR THEORY," so BAR THEORY must stay eligible precisely in the
-    // stretch following a SAR exit (that is its whole purpose); only an
-    // ordinary SL-type exit closes it, since BAR ENTRY's own ladder
-    // (BarLevelState) already handles getting back in after those.
-    // Confirmed real-data (ICICIBANK.NS, letter C): without this, BAR
-    // ENTRY (PRIME TREND)'s own 2005-10-17 DTF SAR exit permanently
-    // closed this gate forever after, making BAR THEORY (TAR/TAR ENTRY)
-    // unreachable for the rest of this anchor's life -- including the
-    // already-confirmed 2006-07-31 TAR / 2006-08-08 TAR ENTRY that
-    // follow BAR(C.4)'s 2006-07-24 formation.
-    const untilDate = r.exitType === "still open" || r.exitType === "DTF SAR" ? null : r.exitDate;
-    const interval = { sinceDate: r.entryDate, untilDate };
-    const existing = result.get(r.letter);
-    if (existing) existing.push(interval);
-    else result.set(r.letter, [interval]);
+    if (r.exitType === "still open") {
+      addInterval(r.letter, { sinceDate: r.entryDate, untilDate: null });
+      continue;
+    }
+    if (r.exitType !== "DTF SAR") {
+      addInterval(r.letter, { sinceDate: r.entryDate, untilDate: r.exitDate });
+      continue;
+    }
+    // DTF SAR -- the post-SAR watch takes over from here, continuing
+    // this same anchor's own active/inactive cycle for as long as it
+    // keeps happening (not just a single, one-shot SL).
+    const events = postSarEventsByLetter.get(r.letter) ?? [];
+    let cycleStart = r.entryDate;
+    let searchFrom = r.exitDate;
+    for (;;) {
+      const inactiveEvt = events.find((e) => !e.active && e.date > searchFrom);
+      if (!inactiveEvt) {
+        addInterval(r.letter, { sinceDate: cycleStart, untilDate: null });
+        break;
+      }
+      addInterval(r.letter, { sinceDate: cycleStart, untilDate: inactiveEvt.date });
+      const activeEvt = events.find((e) => e.active && e.date > inactiveEvt.date);
+      if (!activeEvt) break;
+      cycleStart = activeEvt.date;
+      searchFrom = activeEvt.date;
+    }
   }
-  return result;
+  return intersectIntervalMaps(result, stage1ActiveIntervals(wtfRows, dtfRows, wtfTraceOverride));
 }
 
 /** Same inputs as computePrimeTrend, but answers a different question:
