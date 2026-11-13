@@ -2506,32 +2506,28 @@ function simulateDtfAll(
     // whether SAR itself can fire again.
     //
     // SAR is purely an EXIT -- confirmed: "If and only if BAR ENTRY for
-    // PRIME TREND is active, SAR is considered." This gate applies ONLY
-    // to the very first SAR this instance ever fires -- before that, SAR
-    // is just an exit for BAR ENTRY, and a decisive breach while BAR
-    // ENTRY isn't active is not evaluated as a SAR event at all (does
-    // not fire, does not spend the watch -- the reference low still
-    // ratchets quietly in the background on the new low either way, same
-    // as any ordinary non-breach lower low, so the watch stays live
-    // until a breach coincides with BAR ENTRY being open). Per the user's
-    // own current scoping, PBAR ENTRY no longer licenses this at all --
-    // only BAR ENTRY (the TZ-BUY-continuation ladder) does. Confirmed via
-    // COCHINSHIP: the 2023-01-10 breach of sarRefLow=245.90 (armed off
-    // RED2(B) 2022-12-19) landed with BAR ENTRY already SL'd
-    // (2022-12-23) -- nothing open -- so it must NOT fire.
-    //
-    // Once SAR has fired for real at least once, this gate no longer
-    // applies -- from there on SAR is the already-confirmed recurring
-    // kill-switch, independent of BAR/TAR/BAR-theory state (it drives the
-    // INVALID SAR / SAR 2 progression on every qualifying RED2 or BAR SL2
-    // regardless of whether anything is currently open to close) -- per
-    // the user's own worked example: "SAR can occur for all the RED 2 and
-    // BAR SL 2 as long as the cycle is active." Confirmed via COCHINSHIP:
-    // 2024-12-23's SAR fires with BAR 1 - BAR 2 only at SEEK_BAR1 (nothing
-    // open) -- still a real SAR, opening the gate to INVALID SAR/INVALID
-    // SAR ENTRY.
-    const firstSarHasEntryToExit = barState !== null && barState.mode === "BAR_ENTRY_ACTIVE";
-    const shouldEvaluateSarFire = sarFired || firstSarHasEntryToExit;
+    // PRIME TREND is active, SAR is considered." Per the user's own
+    // correction, this is NOT a one-time gate spent after the first SAR
+    // -- SAR, SAR 2, INVALID SAR and INVALID SAR ENTRY are part of BAR
+    // THEORY from the first time, same as TAR/REAR, and BAR THEORY
+    // cannot occur while BAR ENTRY (PRIME TREND) is not active: "once
+    // BAR ENTRY SL is confirmed, SAR AND SAR 2 is not possible since
+    // PRIME TREND IS NOT ACTIVE." So EVERY SAR fire, first or recurring,
+    // requires BAR ENTRY to be genuinely active right now -- via the real
+    // ladder (barState) before the first SAR, or the post-SAR watch
+    // (postSarWatch) from then on. A decisive breach while neither is
+    // active does not fire (does not spend the watch -- the reference
+    // low still ratchets quietly in the background on the new low either
+    // way, same as any ordinary non-breach lower low, so the watch stays
+    // live until a breach coincides with BAR ENTRY being active again).
+    // Confirmed via COCHINSHIP: the 2023-01-10 breach of
+    // sarRefLow=245.90 (armed off RED2(B) 2022-12-19) landed with BAR
+    // ENTRY already SL'd (2022-12-23) -- nothing open -- so it must NOT
+    // fire.
+    const primeTrendActiveNow =
+      (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE") ||
+      (postSarWatch !== null && postSarWatch.mode === "BAR_ENTRY_ACTIVE");
+    const shouldEvaluateSarFire = primeTrendActiveNow;
     if (sarRefLow !== null) {
       if (shouldEvaluateSarFire && slShape(cur, sarRefLow)) {
         sarCheckpoints.push({ date: cur.date, label: "SAR", price: cur.l });
@@ -2574,6 +2570,19 @@ function simulateDtfAll(
           postSarWatch.barEntryRefHigh = barState.barEntryRefHigh;
           postSarWatch.barEntryRefLow = barState.barEntryRefLow;
           postSarWatch.topRef = Math.max(barState.topRef, barState.barRefHigh, barState.barEntryRefHigh);
+          // This is an already-established, already-escalated-to-BAR-
+          // ENTRY structure, not a virgin RED1-born BAR -- the one-time
+          // RED1->RED2 "fast lane" bonus in SEEK_REACTIVATION (reforms
+          // on a bare next-green against prev.h, ignoring topRef
+          // entirely) must never fire here. Without this, a RED1->RED2
+          // completing on ANY later candle (the continuous RED tracker
+          // runs unconditionally, independent of BAR/BAR ENTRY mode)
+          // would let BAR reform far below the real gate. Confirmed
+          // real-data (ICICIBANK.NS, letter D): without this,
+          // 2011-01-12 wrongly reformed BAR at 195.32, nowhere near the
+          // real 232.55 gate.
+          postSarWatch.gateEstablished = true;
+          postSarWatch.birthTier = "RED1_RED2";
         }
         barState = null;
 
