@@ -213,7 +213,18 @@ export class ParentCycle {
   // transitions for every branch stay byte-identical to the unmodified
   // engine.
   outrankedByTzBuy2Rival: number | null = null;
-  constructor(public id: number, public seq: number, public refHigh: number, public refLow: number) {}
+  // The date THIS specific branch itself first spawned (its own TZ
+  // GREEN) -- needed because letters get recycled across completely
+  // unrelated branches over a long enough history, but barEntryActiveAt/
+  // barEntryEverActiveBefore are keyed by bare letter string. Without
+  // this, a brand-new branch reusing an old, unrelated letter would
+  // wrongly inherit that OLDER branch's own PRIME TREND history.
+  // Confirmed real-data (ICICIBANK.NS): a fresh TZ BUY(D) forming
+  // 2012-09-10 -- nothing to do with the 2010-2011 D discussed
+  // elsewhere in this project -- was wrongly treated as "PRIME TREND
+  // activated and SL'd" off that OLDER D's own 2010-09-13..2011-01-10
+  // history, killing a perfectly ordinary TZ BUY 2 escalation.
+  constructor(public id: number, public seq: number, public refHigh: number, public refLow: number, public bornDate: string) {}
 }
 
 type Stage = Buy | BarLineage | Rear | RearReenter;
@@ -339,8 +350,8 @@ export class TZEngine {
   // lineage and race in case PRIME TREND is activated and SL triggers."
   constructor(
     private weeklyBarSlRear: boolean = false,
-    private barEntryActiveAt?: (letter: string, date: string) => boolean,
-    private barEntryEverActiveBefore?: (letter: string, date: string) => boolean
+    private barEntryActiveAt?: (letter: string, date: string, bornDate: string) => boolean,
+    private barEntryEverActiveBefore?: (letter: string, date: string, bornDate: string) => boolean
   ) {}
 
   private nextSeq(): number {
@@ -366,8 +377,8 @@ export class TZEngine {
     return (
       this.barEntryActiveAt !== undefined &&
       this.barEntryEverActiveBefore !== undefined &&
-      !this.barEntryActiveAt(branchLabel(pc.id), cur.date) &&
-      this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date)
+      !this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate) &&
+      this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate)
     );
   }
 
@@ -745,7 +756,7 @@ export class TZEngine {
     const tipLacksPrimeTrend =
       tip !== null &&
       this.barEntryActiveAt !== undefined &&
-      !this.barEntryActiveAt(branchLabel(tip.id), cur.date);
+      !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate);
     const eligibleAnchor =
       tip !== null &&
       !tip.dormant &&
@@ -755,7 +766,7 @@ export class TZEngine {
     let newBranchId: number | null = null;
     if (canSpawn && cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
       const nid = this.lowestFreeId();
-      const newPc = new ParentCycle(nid, this.nextSeq(), cur.h, cur.l);
+      const newPc = new ParentCycle(nid, this.nextSeq(), cur.h, cur.l, cur.date);
       this.branches.set(nid, newPc);
       perBranchEvents.set(nid, [`TZ GREEN(${branchLabel(nid)})`]);
       newBranchId = nid;

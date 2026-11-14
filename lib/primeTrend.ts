@@ -1277,16 +1277,25 @@ export function runWtfTrace(
     const wtfRowsForGate: OhlcRow[] = wtfDays.map((d) => ({ date: d.date, o: d.o, h: d.h, l: d.l, c: d.c }));
     const dtfRowsForGate: OhlcRow[] = dtfDays.map((d) => ({ date: d.date, o: d.o, h: d.h, l: d.l, c: d.c }));
     const intervals = barEntryActiveIntervals(wtfRowsForGate, dtfRowsForGate, pass1Trace);
-    const barEntryActiveAt = (letter: string, date: string): boolean => {
-      const ivs = intervals.get(letter) ?? [];
+    // `bornDate` excludes any interval that started before this branch
+    // itself was even spawned -- letters get recycled across completely
+    // unrelated branches over a long enough history, so an interval
+    // under this same letter from before `bornDate` necessarily belongs
+    // to an EARLIER, unrelated branch, not this one. See TZEngine's own
+    // constructor/ParentCycle.bornDate comments. Confirmed real-data
+    // (ICICIBANK.NS): without this, a fresh TZ BUY(D) forming 2012-09-10
+    // wrongly inherited the unrelated 2010-2011 D's own PRIME TREND
+    // history.
+    const barEntryActiveAt = (letter: string, date: string, bornDate: string): boolean => {
+      const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
       return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
     };
     // "Has PRIME TREND ever activated for this letter strictly before
     // this date" -- see TZEngine's own constructor comment. Any interval
     // starting before `date` means it activated at some point already
     // (whether that interval has since closed or is still open).
-    const barEntryEverActiveBefore = (letter: string, date: string): boolean => {
-      const ivs = intervals.get(letter) ?? [];
+    const barEntryEverActiveBefore = (letter: string, date: string, bornDate: string): boolean => {
+      const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
       return ivs.some((iv) => iv.sinceDate < date);
     };
     return runWtfTraceCore(
