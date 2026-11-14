@@ -323,14 +323,52 @@ export class TZEngine {
   // other caller leaves it undefined, in which case this new trigger
   // can never fire and the engine's behavior is byte-for-byte unchanged
   // from before this feature existed.
+  //
+  // `barEntryEverActiveBefore` answers a DIFFERENT question: "has DTF
+  // BAR ENTRY ever become active for this letter at any point strictly
+  // before this date" -- used (together with barEntryActiveAt, see
+  // primeTrendDeadForBranch) ONLY to tell apart the two situations
+  // tipLacksPrimeTrend alone cannot distinguish: PRIME TREND never
+  // having activated yet (the ORIGINAL scope of this trigger -- spawn
+  // behavior there is unchanged, old code path) vs. PRIME TREND having
+  // activated and then SL'd (the NEW case: that branch's own WTF buy
+  // structure gets fully reset and frozen, same as an ordinary TZ BUY
+  // SL -- see evalBuy). Per the user's own scoping: "the logic and the
+  // code remains the same for spawn... before PRIME TREND activates 1st
+  // time and after BAR SL2. The only change... is occurrence of new
+  // lineage and race in case PRIME TREND is activated and SL triggers."
   constructor(
     private weeklyBarSlRear: boolean = false,
-    private barEntryActiveAt?: (letter: string, date: string) => boolean
+    private barEntryActiveAt?: (letter: string, date: string) => boolean,
+    private barEntryEverActiveBefore?: (letter: string, date: string) => boolean
   ) {}
 
   private nextSeq(): number {
     this.seqCounter += 1;
     return this.seqCounter;
+  }
+
+  // True only once PRIME TREND has activated and then SL'd for this
+  // branch's letter -- NOT before its first-ever activation (buy is
+  // still legitimately alive, nothing to reset) and NOT once the whole
+  // lineage has already ended with no PRIME TREND history of its own.
+  // Used in evalBuy to fully reset this branch's own WTF buy structure
+  // (same reset an ordinary TZ BUY SL already gets) the moment this
+  // transition happens, and to keep it frozen -- no BAR/BAR 2/REAR
+  // tracking, no reactivation watch either -- for as long as PRIME
+  // TREND stays dead. Per the user's own rule: "once the PRIME TREND is
+  // SL'd it is like TZ GREEN SL, all the later EVENTS and their
+  // reactivation will not matter... Only focus will be between CURRENT
+  // PRIME TREND TO REACTIVATE AND NEW LINEAGE." The branch itself is
+  // never killed -- only its own BAR ENTRY reactivating (tracked
+  // entirely on the DTF side) can bring it back into the race.
+  private primeTrendDeadForBranch(pc: ParentCycle, cur: Day): boolean {
+    return (
+      this.barEntryActiveAt !== undefined &&
+      this.barEntryEverActiveBefore !== undefined &&
+      !this.barEntryActiveAt(branchLabel(pc.id), cur.date) &&
+      this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date)
+    );
   }
 
   lowestFreeId(): number {
@@ -968,7 +1006,37 @@ export class TZEngine {
     const preTodayBuyRef = buy.refHigh;
 
     let reactivatedToday = false;
-    if (buy.active) {
+    // Per the user's own rule: "once the PRIME TREND is SL'd it is like
+    // TZ GREEN SL, all the later EVENTS and their reactivation will not
+    // matter... BAR SL 2 its REAR... will not matter" -- once this
+    // branch's own DTF PRIME TREND has activated and then SL'd (not
+    // before its first activation, not after a terminal BAR SL2 with no
+    // PRIME TREND history of its own -- see primeTrendDeadForBranch's
+    // own comment), this buy gets the EXACT SAME full reset an ordinary
+    // TZ BUY SL already does below, and stays frozen (no HH/LL/BAR/REAR
+    // tracking, no reactivation watch either) for as long as PRIME
+    // TREND stays dead. The branch itself is never killed -- only its
+    // own BAR ENTRY reactivating (tracked entirely on the DTF side) can
+    // bring it back into the race against the new lineage; nothing at
+    // the WTF level does. Confirmed real-data (ICICIBANK.NS, letter D):
+    // without this, D's own BAR tier kept reforming/SL'ing on candles
+    // that belonged to the new lineage's own TZ GREEN instead.
+    const primeTrendDead = this.primeTrendDeadForBranch(pc, cur);
+    if (buy.active && primeTrendDead) {
+      buy.reentryThreshold = this.currentTopRef(buy);
+      buy.active = false;
+      buy.barPending = false;
+      buy.red1 = null;
+      buy.barLineages = [];
+      buy.barSubCounter = 0;
+      buy.barDeadLabels = new Set();
+      buy.rearWinnerLabel = null;
+      buy.rear = null;
+      buy.rearReenter = null;
+      buy.tzBuy2 = null;
+      buy.tzBuy2HhMuted = false;
+      buy.awaitingBar2SinceRed2 = false;
+    } else if (buy.active) {
       if (buy.barHighPool > buy.refHigh) buy.refHigh = buy.barHighPool;
       const isSl = cur.l <= buy.refLow && buy.refLow - cur.l >= THRESH - EPS && cur.c <= buy.refLow + EPS;
       let hh = false;
@@ -1034,7 +1102,7 @@ export class TZEngine {
         // never fired at all.
         buy.awaitingBar2SinceRed2 = false;
       }
-    } else {
+    } else if (!primeTrendDead) {
       const ref = buy.reentryThreshold !== null ? buy.reentryThreshold : preTodayBuyRef;
       if (!this.milestoneBlocked(pc) && cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         buy.active = true;

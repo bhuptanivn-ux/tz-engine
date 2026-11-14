@@ -1281,7 +1281,20 @@ export function runWtfTrace(
       const ivs = intervals.get(letter) ?? [];
       return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
     };
-    return runWtfTraceCore(wtfDays, new TZEngine(true, barEntryActiveAt), barSl2LogOut, hiddenEventLogOut);
+    // "Has PRIME TREND ever activated for this letter strictly before
+    // this date" -- see TZEngine's own constructor comment. Any interval
+    // starting before `date` means it activated at some point already
+    // (whether that interval has since closed or is still open).
+    const barEntryEverActiveBefore = (letter: string, date: string): boolean => {
+      const ivs = intervals.get(letter) ?? [];
+      return ivs.some((iv) => iv.sinceDate < date);
+    };
+    return runWtfTraceCore(
+      wtfDays,
+      new TZEngine(true, barEntryActiveAt, barEntryEverActiveBefore),
+      barSl2LogOut,
+      hiddenEventLogOut
+    );
   }
   // `true`: this always runs on WEEKLY candles (PRIME TREND's fixed
   // WTF=weekly rule; lib/tarTbar.ts's own findWindows, this function's
@@ -2386,12 +2399,28 @@ function simulateDtfAll(
       void nestedClosed;
     }
 
+    // Same gate the outer recurring SAR mechanism uses below -- SAR,
+    // SAR 2, INVALID SAR and INVALID SAR ENTRY are all part of BAR
+    // THEORY from the first SAR onward, so none of it can continue
+    // while BAR ENTRY (PRIME TREND) is not active. Computed here,
+    // ahead of the outer SAR block below, so both can share it.
+    const primeTrendActiveNow =
+      (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE") ||
+      (postSarWatch !== null && postSarWatch.mode === "BAR_ENTRY_ACTIVE");
+
     // --- INVALID SAR / INVALID SAR ENTRY -- see stepInvalidSar's own
     // comment above. Only steps once SAR has fired and a cycle is
     // currently live (invalidSarState non-null) -- SAR 2 ends the
     // CURRENT cycle (sets it to null) but not the mechanism itself; see
     // the module-level comment above for why there's no permanent gate.
-    if (invalidSarState !== null) {
+    // Frozen (not stepped at all) while PRIME TREND is confirmed dead --
+    // UNLESS a position is already genuinely open (ENTRY_ACTIVE), same
+    // "already open stays open" protection every other supersession
+    // rule in this file gives a committed position. Confirmed real-data
+    // (ICICIBANK.NS, letter D): without this, 2011-01-11 wrongly fired a
+    // fresh "SAR 2" the very day after BAR SL had already confirmed
+    // PRIME TREND dead on 2011-01-10.
+    if (invalidSarState !== null && (primeTrendActiveNow || invalidSarState.mode === "ENTRY_ACTIVE")) {
       const checkpointModeBefore = invalidSarState.mode;
       const checkpointRefHighBefore = invalidSarState.refHigh;
       const checkpointRefLowBefore = invalidSarState.refLow;
@@ -2524,9 +2553,6 @@ function simulateDtfAll(
     // sarRefLow=245.90 (armed off RED2(B) 2022-12-19) landed with BAR
     // ENTRY already SL'd (2022-12-23) -- nothing open -- so it must NOT
     // fire.
-    const primeTrendActiveNow =
-      (barState !== null && barState.mode === "BAR_ENTRY_ACTIVE") ||
-      (postSarWatch !== null && postSarWatch.mode === "BAR_ENTRY_ACTIVE");
     const shouldEvaluateSarFire = primeTrendActiveNow;
     if (sarRefLow !== null) {
       if (shouldEvaluateSarFire && slShape(cur, sarRefLow)) {
