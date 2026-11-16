@@ -22,6 +22,32 @@ import {
 } from "../lib/primeTrend";
 import type { Day } from "../lib/tzEngineWtf";
 
+// Per the user's own rule: a WTF event's displayed date should reflect
+// when that week's own candle is actually COMPLETE (its last trading
+// day), not merely the week's first trading day -- a DTF event falling
+// within that same, still-forming week genuinely happens before the
+// WTF event can be said to have occurred, since the WTF candle isn't
+// knowable until its own week ends. Maps each WTF row's own label date
+// to the real calendar date of the last daily row covered by that same
+// week (every daily date up to, but not including, the NEXT WTF row's
+// own label date; for the final week, every remaining daily date).
+function weekEndDates(wtfRows: OhlcRow[], dtfRows: OhlcRow[]): Map<string, string> {
+  const dailyDates = dtfRows.map((r) => r.date);
+  const result = new Map<string, string>();
+  for (let i = 0; i < wtfRows.length; i++) {
+    const weekStart = wtfRows[i].date;
+    const nextWeekStart = i + 1 < wtfRows.length ? wtfRows[i + 1].date : null;
+    let weekEnd = weekStart;
+    for (const d of dailyDates) {
+      if (d < weekStart) continue;
+      if (nextWeekStart !== null && d >= nextWeekStart) break;
+      weekEnd = d;
+    }
+    result.set(weekStart, weekEnd);
+  }
+  return result;
+}
+
 function loadCsv(csvPath: string): OhlcRow[] {
   const text = fs.readFileSync(csvPath, "utf8").trim();
   const lines = text.split("\n");
@@ -236,13 +262,29 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
   }
 
   // --- merge + print ---
-  const allDates = new Set<string>([...wtfEvents.keys(), ...dtfEvents.keys()]);
+  // Relabel every WTF-column event from its week's own first trading
+  // day to that week's own LAST trading day, per the user's own rule
+  // (see weekEndDates' own comment) -- done here, as the very last
+  // step, so every date-window comparison above (misclassifiedLetters,
+  // letterLineageConcludedWindows, invalidRearWindows, alreadyRealFor)
+  // still runs against the original week-start dates those windows are
+  // themselves defined in terms of.
+  const weekEnd = weekEndDates(wtfRows, dtfRows);
+  const remappedWtfEvents = new Map<string, string[]>();
+  for (const [date, evs] of wtfEvents) {
+    const displayDate = weekEnd.get(date) ?? date;
+    const existing = remappedWtfEvents.get(displayDate);
+    if (existing) existing.push(...evs);
+    else remappedWtfEvents.set(displayDate, [...evs]);
+  }
+
+  const allDates = new Set<string>([...remappedWtfEvents.keys(), ...dtfEvents.keys()]);
   const sortedDates = Array.from(allDates).sort();
 
   const out: string[] = [];
   out.push("DATE\tWTF EVENT\tDTF EVENT");
   for (const date of sortedDates) {
-    const w = dedupeBare(wtfEvents.get(date) ?? []).join(", ");
+    const w = dedupeBare(remappedWtfEvents.get(date) ?? []).join(", ");
     const d = dedupeBare(dtfEvents.get(date) ?? []).join(", ");
     out.push(`${date}\t${w}\t${d}`);
   }
