@@ -1941,6 +1941,14 @@ export function postBarSl2Race(
   if (inst.endEvent === null || inst.endPrice === null) return null;
   if (!inst.endEvent.startsWith("BAR SL2(") && !inst.endEvent.startsWith("RED2(")) return null;
 
+  // Per the user's own rule: SAR 2 staying non-terminal (INVALID SAR ->
+  // INVALID SAR ENTRY kept running past it) is specific to the ordinary
+  // RED2-anchored watch. A SAR 2 confirming under a BAR-SL2-anchored
+  // watch instead stays terminal exactly as before -- INVALID SAR/
+  // INVALID SAR ENTRY do not apply to it at all; the race shifts back
+  // to WTF (toward BAR ENTRY, for a new lineage or after REAR 2).
+  const isBarSl2Anchored = inst.endEvent.startsWith("BAR SL2(");
+
   const result: PostBarSl2Result = {
     letter: inst.letter,
     barSl2Date: inst.endDate,
@@ -2087,9 +2095,18 @@ export function postBarSl2Race(
     // both INVALID SAR SL and INVALID SAR ENTRY SL have fired" -- both
     // pre-existing, confirmed-correct mechanics that were simply never
     // given the chance to run past SAR 2 before.
-    if (stepResult.sar2Now && result.raceTriggeredDate === null) {
-      result.raceTriggeredDate = cur.date;
-      result.raceTriggeredPrice = cur.l;
+    if (stepResult.sar2Now) {
+      if (result.raceTriggeredDate === null) {
+        result.raceTriggeredDate = cur.date;
+        result.raceTriggeredPrice = cur.l;
+      }
+      // BAR-SL2-anchored: SAR 2 stays terminal, per the user's own
+      // rule above -- return here exactly as the original, pre-Rule-1
+      // code did, instead of letting INVALID SAR/INVALID SAR ENTRY run.
+      if (isBarSl2Anchored) {
+        result.outcome = "RACE_TRIGGERED";
+        return finish();
+      }
     }
   }
 

@@ -2944,6 +2944,27 @@ export function computeTarTbar(
   for (const g of firstSarByGroup) {
     if (!everEscalatedBefore(g.letter, g.firstSarDate)) gatedOutGroups.add(`${g.letter}|${g.red2Date}`);
   }
+  // Per the user's own rule: "BAR SL2 takes precedence" when a RED2 and
+  // a BAR SL2 confirm for the SAME letter on the SAME date -- the
+  // RED2's own SAR watch (which keeps running past SAR 2, per Rule 1)
+  // is suppressed entirely in favor of the BAR-SL2-anchored watch
+  // (which stays terminal at SAR 2, per the user's own correction).
+  // Confirmed real-data (ICICIBANK.NS, letter C): 2008-06-02 BAR SL2
+  // and RED2 coincide -- the SAR/SAR 2 that follows (06-27/06-30) must
+  // stop there, not continue into INVALID SAR/INVALID SAR ENTRY.
+  const barSl2DateSetByLetter = new Map<string, Set<string>>();
+  for (const sl2 of barSl2Events) {
+    const set = barSl2DateSetByLetter.get(sl2.letter);
+    if (set) set.add(sl2.date);
+    else barSl2DateSetByLetter.set(sl2.letter, new Set([sl2.date]));
+  }
+  const coincidedWithBarSl2 = new Set<string>();
+  for (const g of firstSarByGroup) {
+    if (barSl2DateSetByLetter.get(g.letter)?.has(g.red2Date)) {
+      gatedOutGroups.add(`${g.letter}|${g.red2Date}`);
+      coincidedWithBarSl2.add(`${g.letter}|${g.red2Date}`);
+    }
+  }
   // Per the user's own rule: once a NEWER red2/BAR-SL2-anchored episode's
   // own SAR confirms for a letter, any OLDER episode's still-running SAR
   // watch for that SAME letter is superseded from that date onward --
@@ -2962,11 +2983,21 @@ export function computeTarTbar(
       if (existing === undefined || newer.firstSarDate < existing) supersededFrom.set(key, newer.firstSarDate);
     }
   }
-  const hiddenRed2SarCheckpoints = hiddenRed2SarCheckpointsUngated.filter((c) => {
-    if (gatedOutGroups.has(`${c.letter}|${c.red2Date}`)) return false;
-    const supersedeDate = supersededFrom.get(`${c.letter}|${c.red2Date}`);
-    return supersedeDate === undefined || c.date < supersedeDate;
-  });
+  const hiddenRed2SarCheckpoints = hiddenRed2SarCheckpointsUngated
+    .filter((c) => {
+      if (gatedOutGroups.has(`${c.letter}|${c.red2Date}`)) return false;
+      const supersedeDate = supersededFrom.get(`${c.letter}|${c.red2Date}`);
+      return supersedeDate === undefined || c.date < supersedeDate;
+    })
+    .concat(
+      // The BAR-SL2-anchored watch takes the suppressed RED2's place for
+      // display, under the SAME {letter, red2Date} key so every other
+      // consumer (invalidSarEntryActiveWindows, supersession above) sees
+      // one consistent ladder rather than a gap.
+      barSl2SarCheckpoints
+        .filter((c) => coincidedWithBarSl2.has(`${c.letter}|${c.barSl2Date}`))
+        .map((c) => ({ letter: c.letter, date: c.date, label: c.label, price: c.price, red2Date: c.barSl2Date }))
+    );
 
   // Per-(letter, triggering RED2) "INVALID SAR ENTRY active" windows,
   // derived from hiddenRed2SarCheckpoints -- per the user's own rule:
