@@ -227,30 +227,14 @@ function sideForBarLevel(level: number): "BAR ENTRY" | "REAR ENTRY" | "REAR RE-E
 class BarLevelState {
   mode: BarMode;
   level: number;
-  doorOpen = false;
-  // Separate from `doorOpen`: whether a FRESH RED1->RED2 has confirmed
-  // specifically while THIS BAR ENTRY instance was already active -- the
-  // nested BAR1/BAR2 cascade needs its own dedicated post-formation
-  // RED1-RED2, not just reliance on `doorOpen` possibly having gone true
-  // earlier (even before BAR itself formed). Same shape as the WTF
-  // engine's own TZ BUY2 -> RED1-RED2 -> BAR1 cascade. Reset to false
+  // Whether a FRESH RED1->RED2 has confirmed specifically while THIS BAR
+  // ENTRY instance was already active -- the nested BAR1/BAR2 cascade
+  // needs its own dedicated post-formation RED1-RED2. Same shape as the
+  // WTF engine's own TZ BUY2 -> RED1-RED2 -> BAR1 cascade. Reset to false
   // every time a fresh BAR ENTRY forms.
   nestedDoorOpen = false;
   red: BarRedGate | null = null;
   everSawRed1 = false; // persists even after `red` resolves -- unlocks BAR-seeking permanently
-  // How the CURRENTLY living BAR was itself most recently formed/
-  // reactivated -- RED1 (gated on a bare RED1 alone, doorOpen not yet
-  // open at that moment) or RED1_RED2 (a completed RED1->RED2 was
-  // already open at that moment). Set at every point BAR itself forms
-  // (SEEK_BAR -> BAR_ACTIVE), consuming `doorOpen` if it was open. Drives
-  // the one-time fast-lane bonus in SEEK_REACTIVATION below: a RED1-born
-  // BAR that later suffers a combined BAR SL + BAR ENTRY SL gets ONE
-  // unrestricted "next green" reactivation if a RED1->RED2 has completed
-  // by then (whenever that happened relative to the SL) -- the gate just
-  // leveled up from RED1 to RED1->RED2. Already RED1_RED2-born (or the
-  // bonus already spent once): no further shortcut, ever -- reactivates
-  // only above the BAR ENTRY highest high.
-  birthTier: "RED1" | "RED1_RED2" = "RED1";
   // Set true the first time a COMBINED BAR ENTRY SL (BAR's own SL also
   // breached, same candle or sequential) establishes `topRef` as a real
   // reactivation gate, never reset while this BarLevelState lives. A
@@ -367,7 +351,6 @@ function stepBarLevel(
     const result = stepBarRed(s.red, prev, cur);
     if (result === "confirmed") {
       s.red = null;
-      s.doorOpen = true;
       if (s.mode === "BAR_ENTRY_ACTIVE") s.nestedDoorOpen = true;
     } else if (result === "invalid") {
       s.red = null;
@@ -383,8 +366,6 @@ function stepBarLevel(
         s.barActivationPrice = cur.h;
         s.barFormationDate = cur.date;
         s.barRefHighDate = cur.date;
-        s.birthTier = s.doorOpen ? "RED1_RED2" : "RED1";
-        if (s.doorOpen) s.doorOpen = false;
         s.mode = "BAR_ACTIVE";
       }
       break;
@@ -564,38 +545,16 @@ function stepBarLevel(
       break;
     }
     case "SEEK_REACTIVATION": {
-      // One-time fast lane: this BAR was born on a bare RED1 alone
-      // (birthTier "RED1"), and a RED1->RED2 has SINCE completed (may
-      // have happened before, during, or after the SL that brought us
-      // here -- `doorOpen` just needs to be open right now) -- the gate
-      // leveled up, so BAR gets one unrestricted "next green"
-      // reactivation instead of waiting to clear the BAR ENTRY highest
-      // high. Already RED1_RED2-born (bonus already spent, or born that
-      // way to begin with): never eligible, always the gated path below.
-      if (s.birthTier === "RED1" && s.doorOpen && breakoutShape(prev, cur, prev.h)) {
-        s.doorOpen = false;
-        // Fresh start for this bonus-born cycle -- its own later history
-        // governs any future combined-failure reactivation, not
-        // whatever topRef had accumulated before the bonus fired.
-        s.topRef = cur.h;
-        s.barRefHigh = cur.h;
-        s.barRefLow = cur.l;
-        s.barActivationPrice = cur.h;
-        s.barFormationDate = cur.date;
-        s.barRefHighDate = cur.date;
-        s.birthTier = "RED1_RED2"; // bonus consumed; no further shortcut
-        s.mode = "BAR_ACTIVE";
-        break;
-      }
-      // Ordinary gated path -- reforms BAR alone (BAR and BAR ENTRY can
-      // never form on the same candle; BAR ENTRY only escalates later,
-      // on a later candle, via BAR_ACTIVE's own already-correct
-      // escalation path above). `birthTier` is deliberately left
-      // untouched here: reaching this branch at all means the fast lane
-      // above did not fire, so either birthTier was already "RED1_RED2"
-      // (stays spent) or it is still "RED1" with `doorOpen` genuinely
-      // still false (the RED1-only gate stays unresolved, still eligible
-      // for a future bonus once a RED1->RED2 does complete).
+      // Per the user's own later removal of the one-time RED1->RED2
+      // fast lane this case used to have here: "IF BAR SL also triggers
+      // after or along with the BAR ENTRY, always clear the historical
+      // high" -- no exceptions, regardless of birthTier/doorOpen. BAR
+      // reforms ONLY by clearing the accumulated topRef (the running
+      // highest-ever high), never on a bare unrestricted next-green.
+      // Confirmed real-data (ICICIBANK.NS, letter E): without this
+      // removal, a combined failure's own reactivation wrongly fired
+      // 2014-12-18 on a plain next-green (315.45) instead of clearing
+      // the real 332.77 high reached 2014-12-04.
       if (breakoutShape(prev, cur, s.topRef)) {
         s.topRef = Math.max(s.topRef, cur.h);
         s.barRefHigh = cur.h;
@@ -660,19 +619,17 @@ function stepBarLevel(
   return { opened, closed, nestedClosed };
 }
 
-// Per the user's own display rule (briefly narrowed to only "SAR 2"/
-// "INVALID SAR ENTRY REACTIVATED", then EXPLICITLY REVERTED back to this
-// original, full-ladder convention: "INVALID SAR - INVALID SAR ENTRY, SAR
-// REACTIVATION, SAR 2 AFTER REACTIVATION, INVALID SAR SL AND IF ANY OTHER
-// EVENTS WHICH WERE DEFINED EARLIER WILL be brought back"): the entire
-// SAR/INVALID SAR/INVALID SAR ENTRY ladder's own occurrence/SL/reactivation
-// mechanics are UNCHANGED either way -- this governs display only, never
-// what gets computed. Every real step of the ladder -- "SAR", "SAR SL",
-// "INVALID SAR", "INVALID SAR SL", "INVALID SAR ENTRY",
-// "INVALID SAR ENTRY SL", "INVALID SAR ENTRY REACTIVATED", "SAR 2" -- is
-// shown; only the internal "... HH"/"... LL" reference-tracking labels
-// (never real events, just bookkeeping for the next SAR/INVALID SAR
-// breach's own reference high/low) stay backend-only.
+// Per the user's own display rule: the entire SAR/INVALID SAR/INVALID SAR
+// ENTRY ladder's own occurrence/SL/reactivation mechanics are UNCHANGED
+// regardless of display -- this governs display only, never what gets
+// computed. Every real step of the ladder -- "SAR", "SAR SL",
+// "INVALID SAR", "INVALID SAR SL", "INVALID SAR ENTRY" (a reactivation
+// after SEEK_REACTIVATION uses this same plain label, not a separate
+// "REACTIVATED" variant -- per the user's own later correction),
+// "INVALID SAR ENTRY SL", "SAR 2" -- is shown; only the internal
+// "... HH"/"... LL" reference-tracking labels (never real events, just
+// bookkeeping for the next SAR/INVALID SAR breach's own reference high/
+// low) stay backend-only.
 export function isSarLadderLabelDisplayed(label: string): boolean {
   return !label.endsWith(" HH") && !label.endsWith(" LL");
 }
@@ -740,6 +697,30 @@ export class InvalidSarState {
   refHigh: number;
   refLow: number;
   frozenEntryRefHigh = 0;
+  // Per the user's own rule: SAR 2 no longer ends the watch -- but the
+  // ORIGINAL SAR's own reference high keeps ratcheting up exactly as it
+  // always did (same quiet "SAR HH" mechanism, completely undisturbed by
+  // SAR 2), and clearing IT is still the real, front-end "INVALID SAR".
+  // SAR 2 additionally seeds its OWN, separate, lower shadow reference
+  // (this day's own High/Low) that ratchets the same way ("SAR 2 HH"/
+  // "SAR 2 LL", never displayed, same as the main ladder's own HH/LL)
+  // -- clearing THIS one is "INVALID SAR 2", backend-only (never shown
+  // on the front end; the real "INVALID SAR" against the main,
+  // continuously-ratcheted refHigh is what matters there). Confirmed
+  // real-data (ICICIBANK.NS): SAR 12/06/2006 (refHigh 91.82) -> SAR 2
+  // 13/06/2006 (shadow seeded at 84.71) -> shadow ratchets to 87.27
+  // 14/06/2006 -> INVALID SAR 2 15/06/2006 (clears 87.27, backend) ->
+  // INVALID SAR 16/06/2006 (clears the ORIGINAL 91.82, front end) --
+  // refHigh never left 91.82 the whole time. null until SAR 2 fires.
+  sar2RefHigh: number | null = null;
+  sar2RefLow: number | null = null;
+  // Per the user's own rule: once SAR 2 has confirmed for this cycle, a
+  // FURTHER decisive breach below it is not recorded again -- it stays
+  // silent (no event at all, not even a quiet ratchet) until something
+  // on the upside happens (INVALID SAR 2 or INVALID SAR). Cleared only
+  // when a genuinely fresh SAR cycle begins (freshSarNow, or escalating
+  // into INVALID_SAR_ACTIVE), never by SAR 2 itself recurring.
+  sar2Confirmed = false;
   // Seeded at the bare "INVALID SAR SL" day's own Low when entering
   // SEEK_REFORM -- see that case's own comment for why.
   reformFloor = 0;
@@ -832,6 +813,11 @@ function stepInvalidSar(
   invalidSarNow: boolean;
   sarSlNow: boolean;
   sar2Now: boolean;
+  // SAR 2's own shadow reference clearing -- backend-only, never the
+  // front-end "INVALID SAR" (see InvalidSarState.sar2RefHigh's own
+  // comment). Real but never displayed, same convention as the "... HH"
+  // bookkeeping labels elsewhere in this ladder.
+  invalidSar2Now: boolean;
   // A decisive refLow breach that is just a FRESH "SAR" re-arm, not
   // terminal "SAR 2" -- fires only when a "SAR SL" happened since the
   // last real SAR (see InvalidSarState.sarSlSinceLastSar's own comment).
@@ -852,6 +838,7 @@ function stepInvalidSar(
   let invalidSarNow = false;
   let sarSlNow = false;
   let sar2Now = false;
+  let invalidSar2Now = false;
   let freshSarNow = false;
   let invalidSarSlNow = false;
   let opened: { price: number } | null = null;
@@ -872,6 +859,26 @@ function stepInvalidSar(
         s.refHigh = cur.h;
         s.refLow = cur.l;
         s.mode = "INVALID_SAR_ACTIVE";
+        s.sar2RefHigh = null;
+        s.sar2RefLow = null;
+        s.sar2Confirmed = false;
+        break;
+      }
+      // "INVALID SAR 2" -- SAR 2's own shadow reference (seeded at that
+      // day's own High/Low, ratcheting the same quiet way as the main
+      // ladder's own "SAR 2 HH"/"SAR 2 LL") gets cleared before the
+      // ORIGINAL SAR's own, higher, continuously-ratcheting reference
+      // does. Backend-only -- never the front-end "INVALID SAR", which
+      // is reserved for clearing s.refHigh itself. Checked only once a
+      // SAR 2 has actually seeded the shadow (sar2RefHigh !== null).
+      if (
+        s.sar2RefHigh !== null &&
+        s.sar2RefLow !== null &&
+        breakoutShape(prev, cur, s.sar2RefHigh)
+      ) {
+        invalidSar2Now = true;
+        s.sar2RefHigh = cur.h;
+        s.sar2RefLow = cur.l;
         break;
       }
       // "SAR SL" -- confirmed: the upside shape alone (High clears the
@@ -920,13 +927,45 @@ function stepInvalidSar(
           s.refHigh = cur.h;
           s.refLow = cur.l;
           s.sarSlSinceLastSar = false;
+          s.sar2RefHigh = null;
+          s.sar2RefLow = null;
+          s.sar2Confirmed = false;
           break;
         }
+        // Per the user's own rule: "once DTF SAR 2 is coded then next
+        // candle below 1st SAR 2 need not be recorded as SAR 2 again...
+        // SAR 2 cannot be recorded again below the active SAR 2." Once
+        // SAR 2 has already confirmed for this cycle, a further decisive
+        // breach of refLow is simply not an event at all -- no update,
+        // no ratchet, nothing -- until an upside clearance (INVALID SAR
+        // 2 or INVALID SAR) happens instead. Confirmed real-data
+        // (ICICIBANK.NS): SAR 2 30/06/2008 -> 01/07/2008 decisively
+        // breaches the same refLow again -- genuinely no event that day.
+        if (s.sar2Confirmed) break;
+        // Per the user's own rule: INVALID SAR -> INVALID SAR ENTRY
+        // keeps running after SAR 2 confirms -- but the ORIGINAL SAR's
+        // own refHigh must NOT reset here; it keeps ratcheting exactly
+        // as it always did (see InvalidSarState.sar2RefHigh's own
+        // comment), and clearing IT is still the real "INVALID SAR".
+        // Only refLow resets (to this day's own Low) -- otherwise it
+        // stays frozen at its stale pre-SAR-2 value and, in a genuine
+        // continuing downtrend, the SAME already-decisive breach
+        // re-satisfies slShape again on every later day, firing "SAR 2"
+        // over and over (confirmed real-data, ICICIBANK.NS: ~20 repeat
+        // "SAR 2" firings through Nov-Dec 2021 with nothing re-arming
+        // the watch in between). sar2RefHigh/sar2RefLow seed the NEW
+        // shadow ladder this SAR 2 opens, at this day's own High/Low.
         sar2Now = true;
+        s.refLow = cur.l;
+        s.sar2RefHigh = cur.h;
+        s.sar2RefLow = cur.l;
+        s.sar2Confirmed = true;
         break;
       }
       if (cur.h > s.refHigh) s.refHigh = cur.h;
       if (cur.l < s.refLow) s.refLow = cur.l; // "SAR LL"
+      if (s.sar2RefHigh !== null && cur.h > s.sar2RefHigh) s.sar2RefHigh = cur.h; // "SAR 2 HH"
+      if (s.sar2RefLow !== null && cur.l < s.sar2RefLow) s.sar2RefLow = cur.l; // "SAR 2 LL"
       break;
     }
     case "INVALID_SAR_ACTIVE": {
@@ -950,7 +989,20 @@ function stepInvalidSar(
         break;
       }
       const slNow = slShape(cur, s.refLow);
-      if (!slNow && cur.h > s.refHigh && cur.h - s.refHigh >= ANY) s.refHigh = cur.h;
+      // Real-data bug (ICICIBANK.NS hypothetical, confirmed): the SL
+      // day's own High can still be a genuine new extreme even though
+      // its Low is what triggers the SL -- the ordinary quiet-ratchet
+      // High update must NOT be skipped just because slNow is also
+      // true, or SEEK_REFORM's own gated reform check (just below, which
+      // reads this frozen s.refHigh) is left comparing against a STALE,
+      // too-low reference and reforms a day early. Confirmed: SL day
+      // (103,99,99.50) against refHigh 102 -- without this, refHigh
+      // stays frozen at 102 and the very next day's High (102.90) wrongly
+      // looks like a reform; with it, refHigh ratchets to 103 and the
+      // real reform only confirms two days later, once price actually
+      // clears 103. The Low side is deliberately left untouched here --
+      // refLow's own story on an SL day is reformFloor, not this field.
+      if (cur.h > s.refHigh && cur.h - s.refHigh >= ANY) s.refHigh = cur.h;
       if (!slNow && cur.l < s.refLow) s.refLow = cur.l;
       if (slNow) {
         s.reformFloor = cur.l;
@@ -1043,7 +1095,12 @@ function stepInvalidSar(
       if (!slNow && cur.h > s.refHigh && cur.h - s.refHigh >= ANY) s.refHigh = cur.h;
       if (!slNow && cur.l < s.refLow) s.refLow = cur.l;
       if (slNow) {
-        closed = { exitType: "SAR ENTRY SL", exitPrice: s.refLow };
+        // Real-data bug (ICICIBANK.NS hypothetical, confirmed): matches
+        // the same "ENTRY SL" exit-price convention already used for
+        // "DTF BAR ENTRY SL" elsewhere in this file (exitPrice = refLow
+        // - THRESH, the decisive breakout point, not the raw reference
+        // itself) -- confirmed: ref low 102.50 -> exit 102.30.
+        closed = { exitType: "SAR ENTRY SL", exitPrice: s.refLow - THRESH };
         s.frozenEntryRefHigh = s.refHigh;
         s.mode = "SEEK_REACTIVATION";
       }
@@ -1133,7 +1190,7 @@ function stepInvalidSar(
   // InvalidSarState.historicalFloor's own comment.
   if (cur.l < s.historicalFloor) s.historicalFloor = cur.l;
 
-  return { invalidSarNow, sarSlNow, sar2Now, freshSarNow, invalidSarSlNow, opened, closed };
+  return { invalidSarNow, sarSlNow, sar2Now, invalidSar2Now, freshSarNow, invalidSarSlNow, opened, closed };
 }
 
 /** The single, shared checkpoint-recording rule for one stepInvalidSar
@@ -1165,13 +1222,21 @@ function checkpointForInvalidSarStep(
   cur: Day
 ): PostBarSl2Checkpoint[] {
   if (result.sar2Now) return [{ date: cur.date, label: "SAR 2", price: cur.l }];
+  // Backend-only -- per the user's own rule, clearing SAR 2's own
+  // shadow reference is never shown on the front end (only clearing the
+  // ORIGINAL SAR's own, continuously-ratcheting reference is the real,
+  // displayed "INVALID SAR", handled by the next line).
+  if (result.invalidSar2Now) return [];
   if (result.invalidSarNow) return [{ date: cur.date, label: "INVALID SAR", price: cur.h }];
   if (result.invalidSarSlNow) return [{ date: cur.date, label: "INVALID SAR SL", price: cur.l }];
   if (result.sarSlNow) return [{ date: cur.date, label: "SAR SL", price: cur.h }];
   if (result.freshSarNow) return [{ date: cur.date, label: "SAR", price: cur.l }];
   if (result.opened) {
-    const label = modeBefore === "SEEK_REACTIVATION" ? "INVALID SAR ENTRY REACTIVATED" : "INVALID SAR ENTRY";
-    return [{ date: cur.date, label, price: result.opened.price }];
+    // Per the user's own later correction (reversing the earlier explicit
+    // "bring back the full ladder" decision above): a reactivation after
+    // SEEK_REACTIVATION is displayed as plain "INVALID SAR ENTRY" too, not
+    // a separate "INVALID SAR ENTRY REACTIVATED" label.
+    return [{ date: cur.date, label: "INVALID SAR ENTRY", price: result.opened.price }];
   }
   if (result.closed) return [{ date: cur.date, label: "INVALID SAR ENTRY SL", price: result.closed.exitPrice }];
   const out: PostBarSl2Checkpoint[] = [];
@@ -1258,58 +1323,90 @@ export function runWtfTrace(
   barSl2LogOut?: { label: string; date: string; low: number }[],
   hiddenEventLogOut?: HiddenEventLogEntry[],
   // DTF days, PASSED ONLY by computePrimeTrend's own call path -- when
-  // given, runs the two-pass DTF-aware race (see the user's own rule:
-  // "unless DTF BAR ENTRY is achieved, a new WTF cycle can spawn any
-  // time the original cycle is trying to reach it, given a fresh
-  // RED1"). Pass 1 runs the plain, DTF-unaware engine to derive each
-  // letter's own BAR-ENTRY-active intervals; pass 2 re-runs with that
-  // as an input, so the new spawn trigger (and whichever branch wins
-  // the race, via the engine's own EXISTING leadership-contest
-  // mechanism -- nothing new there) can use it. Every other caller
-  // (lib/tarTbar.ts's own findWindows/misclassified-letter detection,
-  // raceFreshLineage's own re-slicing) omits this and keeps getting the
-  // exact same single-pass trace as before -- this feature is scoped to
-  // PRIME TREND's own computation only, not BAR THEORY's.
+  // given, runs the DTF-aware race (see the user's own rule: "unless
+  // DTF BAR ENTRY is achieved, a new WTF cycle can spawn any time the
+  // original cycle is trying to reach it, given a fresh RED1"). Every
+  // other caller (lib/tarTbar.ts's own findWindows/misclassified-letter
+  // detection, raceFreshLineage's own re-slicing) omits this and keeps
+  // getting the exact same DTF-unaware trace as before -- this feature
+  // is scoped to PRIME TREND's own computation only, not BAR THEORY's.
+  //
+  // Iterated to a FIXED POINT, not a fixed two-round bootstrap: the
+  // very first round has no DTF-awareness at all (nothing exists yet
+  // to seed it with), so by itself it can assign branches/letters on a
+  // different schedule than a DTF-aware round does -- the same letter
+  // can then mean two DIFFERENT branches between that round and the
+  // next. Looked up by letter, that silently answers "has PRIME TREND
+  // ever died" about the WRONG branch. Confirmed real-data
+  // (ICICIBANK.NS, letter E, 2014): a perfectly live TZ BUY 2 kept
+  // climbing right through a window its OWN PRIME TREND had genuinely
+  // died in, because the DTF-unaware round's own "E" was an unrelated,
+  // much later branch nowhere near this date. Each round here feeds
+  // its own resulting trace into the NEXT round's DTF-awareness,
+  // repeating until the trace stops changing -- at that point every
+  // letter's own PRIME TREND history is self-consistent with the trace
+  // that produced it, not frozen on the first, DTF-unaware round's own
+  // guess. Capped so a pathological oscillation (never observed) could
+  // not hang the computation; every real case converges in 2-3 rounds.
   dtfDays?: Day[]
 ): WtfTraceEntry[] {
   if (dtfDays !== undefined) {
-    const pass1Trace = runWtfTraceCore(wtfDays, new TZEngine(true));
     const wtfRowsForGate: OhlcRow[] = wtfDays.map((d) => ({ date: d.date, o: d.o, h: d.h, l: d.l, c: d.c }));
     const dtfRowsForGate: OhlcRow[] = dtfDays.map((d) => ({ date: d.date, o: d.o, h: d.h, l: d.l, c: d.c }));
-    const intervals = barEntryActiveIntervals(wtfRowsForGate, dtfRowsForGate, pass1Trace);
-    // `bornDate` excludes any interval that started before this branch
-    // itself was even spawned -- letters get recycled across completely
-    // unrelated branches over a long enough history, so an interval
-    // under this same letter from before `bornDate` necessarily belongs
-    // to an EARLIER, unrelated branch, not this one. See TZEngine's own
-    // constructor/ParentCycle.bornDate comments. Confirmed real-data
-    // (ICICIBANK.NS): without this, a fresh TZ BUY(D) forming 2012-09-10
-    // wrongly inherited the unrelated 2010-2011 D's own PRIME TREND
-    // history.
-    const barEntryActiveAt = (letter: string, date: string, bornDate: string): boolean => {
-      const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
-      return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
-    };
-    // "Has PRIME TREND ever activated for this letter strictly before
-    // this date" -- see TZEngine's own constructor comment. Any interval
-    // starting before `date` means it activated at some point already
-    // (whether that interval has since closed or is still open).
-    const barEntryEverActiveBefore = (letter: string, date: string, bornDate: string): boolean => {
-      const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
-      return ivs.some((iv) => iv.sinceDate < date);
-    };
-    return runWtfTraceCore(
-      wtfDays,
-      new TZEngine(true, barEntryActiveAt, barEntryEverActiveBefore),
-      barSl2LogOut,
-      hiddenEventLogOut
-    );
+    type GateFn = (letter: string, date: string, bornDate: string) => boolean;
+    let trace = runWtfTraceCore(wtfDays, new TZEngine(true));
+    let activeAt: GateFn | undefined;
+    let everActiveBefore: GateFn | undefined;
+    const MAX_ROUNDS = 6;
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      const intervals = barEntryActiveIntervals(wtfRowsForGate, dtfRowsForGate, trace);
+      // `bornDate` excludes any interval that started before this
+      // branch itself was even spawned -- letters get recycled across
+      // completely unrelated branches over a long enough history, so
+      // an interval under this same letter from before `bornDate`
+      // necessarily belongs to an earlier, unrelated branch, not this
+      // one. See TZEngine's own constructor/ParentCycle.bornDate
+      // comments. Confirmed real-data (ICICIBANK.NS): without this, a
+      // fresh TZ BUY(D) forming 2012-09-10 wrongly inherited the
+      // unrelated 2010-2011 D's own PRIME TREND history.
+      activeAt = (letter, date, bornDate) => {
+        const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
+        return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
+      };
+      // "Has PRIME TREND ever activated for this letter strictly before
+      // this date" -- see TZEngine's own constructor comment. Any
+      // interval starting before `date` means it activated at some
+      // point already (whether that interval has since closed or is
+      // still open).
+      everActiveBefore = (letter, date, bornDate) => {
+        const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
+        return ivs.some((iv) => iv.sinceDate < date);
+      };
+      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore));
+      const stable = wtfTraceEventsEqual(trace, nextTrace);
+      trace = nextTrace;
+      if (stable) break;
+    }
+    return runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore), barSl2LogOut, hiddenEventLogOut);
   }
   // `true`: this always runs on WEEKLY candles (PRIME TREND's fixed
   // WTF=weekly rule; lib/tarTbar.ts's own findWindows, this function's
   // other caller, is weekly-only too) -- enables the weekly-only bare-
   // BAR-SL-opens-REAR revision (see TZEngine's own constructor comment).
   return runWtfTraceCore(wtfDays, new TZEngine(true), barSl2LogOut, hiddenEventLogOut);
+}
+
+function wtfTraceEventsEqual(a: WtfTraceEntry[], b: WtfTraceEntry[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const ea = a[i].events;
+    const eb = b[i].events;
+    if (ea.length !== eb.length) return false;
+    for (let j = 0; j < ea.length; j++) {
+      if (ea[j] !== eb[j]) return false;
+    }
+  }
+  return true;
 }
 
 function runWtfTraceCore(
@@ -1776,7 +1873,6 @@ export type PostBarSl2CheckpointLabel =
   | "INVALID SAR LL"
   | "INVALID SAR SL"
   | "INVALID SAR ENTRY"
-  | "INVALID SAR ENTRY REACTIVATED"
   | "INVALID SAR ENTRY HH"
   | "INVALID SAR ENTRY LL"
   | "INVALID SAR ENTRY SL"
@@ -1888,8 +1984,14 @@ export function postBarSl2Race(
 
   const finish = () => {
     // "SAR 2 has not occurred" -- true unless the race was triggered
-    // (a real SAR 2) strictly before this fresh BAR formed.
-    if (freshBarEvent !== null && (result.outcome !== "RACE_TRIGGERED" || freshBarEvent.date < (result.raceTriggeredDate as string))) {
+    // (a real SAR 2) strictly before this fresh BAR formed. Checking
+    // raceTriggeredDate alone, not outcome === "RACE_TRIGGERED" -- SAR 2
+    // no longer ends this function's own loop, so outcome reflects
+    // whatever state the mechanism is in by the time finish() runs
+    // (OPEN/CLOSED_SEEKING_REACTIVATION/STILL_WATCHING/NONE), never
+    // "RACE_TRIGGERED" itself; raceTriggeredDate is the only field that
+    // still correctly records the FIRST SAR 2's own date regardless.
+    if (freshBarEvent !== null && (result.raceTriggeredDate === null || freshBarEvent.date < result.raceTriggeredDate)) {
       result.freshBarDate = freshBarEvent.date;
       result.freshBarLabel = freshBarEvent.label;
     }
@@ -1964,11 +2066,30 @@ export function postBarSl2Race(
     const stepCheckpoints = checkpointForInvalidSarStep(modeBefore, refHighBefore, refLowBefore, frozenBefore, invalidSarState, stepResult, cur);
     if (activeNow && !originSuppressed) result.checkpoints.push(...stepCheckpoints);
 
-    if (stepResult.sar2Now) {
-      result.outcome = "RACE_TRIGGERED";
+    // Per the user's own rule: INVALID SAR -> INVALID SAR ENTRY keeps
+    // running even after SAR 2 confirms -- SAR 2 is no longer terminal,
+    // so this loop no longer returns here. Only the FIRST sar2Now's own
+    // date/price get recorded (read downstream, via raceTriggeredDate
+    // alone -- see its own comment at those call sites -- for an
+    // unrelated question, genuine-new-lineage-vs-noise, which must stay
+    // pinned to the real, original race-trigger date even if this
+    // mechanism keeps going afterward). `outcome` itself is finalized
+    // below from the state machine's own mode once the loop ends, same
+    // as any other case -- it can no longer be "RACE_TRIGGERED" by the
+    // time this function returns. The state machine itself needs no
+    // other change here -- stepInvalidSar's own existing
+    // historicalFloor/SEEK_REFORM gate already enforces "a fresh SAR
+    // must breach below the earlier SAR 2's own low" (historicalFloor
+    // ratchets on every candle's low, unconditionally, regardless of
+    // mode), and ENTRY_ACTIVE's own SL -> SEEK_REACTIVATION ->
+    // (reactivate, or SEEK_REFORM once INVALID SAR's own reference also
+    // breaks) already enforces "INVALID SAR can only reactivate once
+    // both INVALID SAR SL and INVALID SAR ENTRY SL have fired" -- both
+    // pre-existing, confirmed-correct mechanics that were simply never
+    // given the chance to run past SAR 2 before.
+    if (stepResult.sar2Now && result.raceTriggeredDate === null) {
       result.raceTriggeredDate = cur.date;
       result.raceTriggeredPrice = cur.l;
-      return finish();
     }
   }
 
@@ -2071,8 +2192,15 @@ export function reinterpretPostBarSl2Spawn(
   }
   if (red2Date === null) return null; // RED1-RED2 never completed -- the ordinary spawn stands as-is.
 
+  // Checking raceTriggeredDate alone, not outcome === "RACE_TRIGGERED" --
+  // per the user's own rule, SAR 2 no longer ends postBarSl2Race's own
+  // loop, so `outcome` now reflects whatever this mechanism's own state
+  // is at the END of the available data (OPEN/CLOSED_SEEKING_REACTIVATION/
+  // STILL_WATCHING), never "RACE_TRIGGERED" itself once the loop keeps
+  // running past it -- raceTriggeredDate/raceTriggeredPrice are the only
+  // fields that still correctly record the FIRST SAR 2's own date/price.
   const sar2 =
-    sarResult.outcome === "RACE_TRIGGERED" && sarResult.raceTriggeredDate !== null
+    sarResult.raceTriggeredDate !== null
       ? { date: sarResult.raceTriggeredDate, price: sarResult.raceTriggeredPrice as number }
       : null;
 
@@ -2371,6 +2499,15 @@ function simulateDtfAll(
       // postSarWatch only ever seeds off a real SAR fire again, not off
       // Stage 1 reforming).
       if (postSarWatch !== null) {
+        // Per the user's own rule: "BAR ENTRY SL should occur only if
+        // low and close is below the BAR ENTRY REF. LOW less the
+        // threshold of .20 pts" -- a real, price-triggered event, never
+        // synthesized here just because Stage 1's own TZ BUY SL'd and
+        // wiped this watch out. Involving a synthetic/unrelated event
+        // is never acceptable, even to keep some other letter-keyed
+        // consumer's own bookkeeping tidy -- that consumer must instead
+        // track the real flow of events for this specific occurrence,
+        // not rely on an artificial close here.
         postSarWatch = null;
       }
     }
@@ -2605,19 +2742,7 @@ function simulateDtfAll(
           postSarWatch.barEntryRefHigh = barState.barEntryRefHigh;
           postSarWatch.barEntryRefLow = barState.barEntryRefLow;
           postSarWatch.topRef = Math.max(barState.topRef, barState.barRefHigh, barState.barEntryRefHigh);
-          // This is an already-established, already-escalated-to-BAR-
-          // ENTRY structure, not a virgin RED1-born BAR -- the one-time
-          // RED1->RED2 "fast lane" bonus in SEEK_REACTIVATION (reforms
-          // on a bare next-green against prev.h, ignoring topRef
-          // entirely) must never fire here. Without this, a RED1->RED2
-          // completing on ANY later candle (the continuous RED tracker
-          // runs unconditionally, independent of BAR/BAR ENTRY mode)
-          // would let BAR reform far below the real gate. Confirmed
-          // real-data (ICICIBANK.NS, letter D): without this,
-          // 2011-01-12 wrongly reformed BAR at 195.32, nowhere near the
-          // real 232.55 gate.
           postSarWatch.gateEstablished = true;
-          postSarWatch.birthTier = "RED1_RED2";
         }
         barState = null;
 
@@ -2705,6 +2830,17 @@ function simulateDtfAll(
 
     i += 1;
   }
+
+  // Per the user's own rule: "BAR ENTRY SL should occur only if low and
+  // close is below the BAR ENTRY REF. LOW less the threshold of .20
+  // pts" -- never synthesized at this instance's own scope boundary.
+  // SAR itself does not mean BAR ENTRY SL triggered ("I will judge that
+  // I have to exit" -- the user's own words); PRIME TREND genuinely
+  // stays active, with no closing event, until a real one occurs.
+  // "Involving synthetic or unrelated events is a crime" -- any
+  // downstream consumer that needs this interval to close must instead
+  // track the real flow of events for this specific occurrence, never
+  // a letter-keyed artificial close.
 
   // Window ended with an open BAR-ENTRY-level row -- the exit is whatever
   // ended this WTF instance (already resolved on inst), same as the old
@@ -2897,7 +3033,10 @@ export function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride
         if (!pattern.test(e)) continue;
         const synthetic: WtfInstance = { family: "TZ BUY 2", letter, formationDate, endDate: day.date, endEvent: e, endPrice: day.l };
         const race = postBarSl2Race(dtfDays, wtfTrace, synthetic);
-        if (race !== null && race.outcome === "RACE_TRIGGERED" && race.raceTriggeredDate !== null) {
+        // Checking raceTriggeredDate alone -- see its own comment at the
+        // other call site above for why outcome can no longer be
+        // "RACE_TRIGGERED" by the time this function returns.
+        if (race !== null && race.raceTriggeredDate !== null) {
           if (earliest === null || race.raceTriggeredDate < earliest) earliest = race.raceTriggeredDate;
         }
       }

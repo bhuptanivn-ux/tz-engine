@@ -187,11 +187,39 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
     }
   }
 
+  // Cross-mechanism precedence: INVALID SAR ENTRY wins over BAR THEORY
+  // (TAR/TAR ENTRY/BAR/BAR ENTRY) -- per the user's own rule, already
+  // quoted verbatim in tarTbar.ts's own invalidSarEntryActiveWindows
+  // comment but never wired to display until now: "once INVALID SAR
+  // ENTRY IS CONFIRMED THEN TAR ENTRY CANNOT OCCUR FOR THE BAR that has
+  // occurred after the RED 2 for which SAR-INVALID SAR-INVALID SAR
+  // ENTRY IS ACTIVE... it is important to record. But at the backend."
+  // Confirmed real-data (ICICIBANK.NS, letter C): INVALID SAR
+  // 2006-07-25, INVALID SAR ENTRY opens 2006-07-31 (same day TAR
+  // forms) -- TAR goes backend, INVALID SAR ENTRY stays front end.
+  // Scoped to the SPECIFIC RED2 that governs each BAR-theory window
+  // (the latest RED2(letter) dated before that window's own formation),
+  // never by letter alone -- a letter can have several sequential RED2
+  // cycles, and one cycle's own active INVALID SAR ENTRY must only mute
+  // the ONE BAR-theory window that formed after THAT RED2.
+  const red2DateByWtfLabel = new Map<string, string | null>();
+  for (const w of ctt.windowGoverningRed2) red2DateByWtfLabel.set(w.wtfLabel, w.red2Date);
+  function barTheorySuppressedByInvalidSar(wtfLabel: string, date: string): boolean {
+    const red2Date = red2DateByWtfLabel.get(wtfLabel);
+    if (red2Date === null || red2Date === undefined) return false;
+    const letter = wtfLabel.split(".")[0];
+    return ctt.invalidSarEntryActiveWindows.some(
+      (w) => w.letter === letter && w.red2Date === red2Date && date >= w.sinceDate && (w.untilDate === null || date < w.untilDate)
+    );
+  }
+
   // BAR THEORY's own TAR/TAR ENTRY ladder + nested BAR1->BAR2 route
   for (const r of ctt.results) {
     if (r.displaySuppressed) continue;
-    addDtf(r.entryDate, `${r.side} (BAR THEORY, ${r.wtfLabel})`);
-    if (r.exitType !== "still open") addDtf(r.exitDate, `${r.exitType} (BAR THEORY, ${r.wtfLabel})`);
+    if (!barTheorySuppressedByInvalidSar(r.wtfLabel, r.entryDate)) addDtf(r.entryDate, `${r.side} (BAR THEORY, ${r.wtfLabel})`);
+    if (r.exitType !== "still open" && !barTheorySuppressedByInvalidSar(r.wtfLabel, r.exitDate)) {
+      addDtf(r.exitDate, `${r.exitType} (BAR THEORY, ${r.wtfLabel})`);
+    }
   }
   for (const cp of ctt.barTheoryCheckpoints) {
     // displaySuppressed governs the TAR-vs-BAR-ENTRY route rivalry for
@@ -199,6 +227,7 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
     // event -- the bare "TAR" formation shows even when the TAR-ENTRY
     // route goes on to be the one with its own entry/exit row (e.g.
     // 2006-07-31 TAR -> 2006-08-08 TAR ENTRY, ICICIBANK letter C).
+    if (barTheorySuppressedByInvalidSar(cp.wtfLabel, cp.date)) continue;
     addDtf(cp.date, `${cp.label} (BAR THEORY, ${cp.wtfLabel})`);
   }
   for (const cp of ctt.hiddenRed2SarCheckpoints) {

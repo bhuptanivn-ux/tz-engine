@@ -1394,7 +1394,12 @@ function simulateBarLadderContinuation(
     const result = postBarSl2Race(dtfDays, wtfTrace, inst);
     if (result === null) return;
     sarCycles.push({ anchor, checkpoints: result.checkpoints });
-    if (result.outcome === "RACE_TRIGGERED" && result.raceTriggeredDate !== null) {
+    // Checking raceTriggeredDate alone, not outcome === "RACE_TRIGGERED"
+    // -- see primeTrend.ts's own postBarSl2Race, where SAR 2 no longer
+    // ends the loop, so outcome can no longer be "RACE_TRIGGERED" by the
+    // time this function returns; raceTriggeredDate is the only field
+    // that still correctly records the FIRST SAR 2's own date.
+    if (result.raceTriggeredDate !== null) {
       if (freezeDate === null || result.raceTriggeredDate < freezeDate) freezeDate = result.raceTriggeredDate;
       if (anchor === "BAR SL2") barSl2FreezeDate = result.raceTriggeredDate;
     }
@@ -1667,7 +1672,8 @@ function findReinterpretedWindows(
       endPrice: sl2.low,
     };
     const r = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(sl2.letter));
-    sar2DateBySl2Label.set(sl2.label, r !== null && r.outcome === "RACE_TRIGGERED" ? r.raceTriggeredDate : null);
+    // raceTriggeredDate alone -- see the other call sites' own comment.
+    sar2DateBySl2Label.set(sl2.label, r !== null ? r.raceTriggeredDate : null);
   }
   // A later BAR SL2 for the SAME letter only ever supersedes an earlier
   // one's own governance if a GENUINE reengagement (a REAR-family event,
@@ -1810,7 +1816,8 @@ function findReinterpretedWindows(
     // letter C on 2023-05-15 while letter B's own (equally misclassified)
     // structure is still alive -- both are noise, both get folded into
     // the same continuing `sl2.letter` lineage.
-    const sar2Date = sarResult.outcome === "RACE_TRIGGERED" ? sarResult.raceTriggeredDate : null;
+    // raceTriggeredDate alone -- see the other call sites' own comment.
+    const sar2Date = sarResult.raceTriggeredDate;
 
     // REAR-gating check (see invalidRearWindows' own comment above) --
     // deliberately independent of `reinterp`/`shouldBeBar` below, which
@@ -2321,7 +2328,7 @@ function findReinterpretedWindows(
       let openSinceBeforeKill = false;
       for (const c of checkpoints) {
         if (c.date > freshRed2KillDate) break;
-        if (c.label === "INVALID SAR ENTRY" || c.label === "INVALID SAR ENTRY REACTIVATED") openSinceBeforeKill = true;
+        if (c.label === "INVALID SAR ENTRY") openSinceBeforeKill = true;
         else if (c.label === "INVALID SAR ENTRY SL") openSinceBeforeKill = false;
       }
       const cutIdx = checkpoints.findIndex((c) => {
@@ -2937,7 +2944,29 @@ export function computeTarTbar(
   for (const g of firstSarByGroup) {
     if (!everEscalatedBefore(g.letter, g.firstSarDate)) gatedOutGroups.add(`${g.letter}|${g.red2Date}`);
   }
-  const hiddenRed2SarCheckpoints = hiddenRed2SarCheckpointsUngated.filter((c) => !gatedOutGroups.has(`${c.letter}|${c.red2Date}`));
+  // Per the user's own rule: once a NEWER red2/BAR-SL2-anchored episode's
+  // own SAR confirms for a letter, any OLDER episode's still-running SAR
+  // watch for that SAME letter is superseded from that date onward --
+  // its own ladder (including an already-open INVALID SAR ENTRY) can no
+  // longer produce a real event, including its own eventual SL.
+  // Confirmed real-data (ICICIBANK.NS, letter C): RED2(2006-04-10)'s own
+  // INVALID SAR ENTRY (opened 2006-07-31) must not SL on 2008-07-15 --
+  // the 2008-06-02 BAR SL2's own fresh SAR already confirmed on
+  // 2008-06-27, superseding the older episode from that date.
+  const supersededFrom = new Map<string, string>();
+  for (const older of firstSarByGroup) {
+    for (const newer of firstSarByGroup) {
+      if (newer.letter !== older.letter || newer.red2Date <= older.red2Date) continue;
+      const key = `${older.letter}|${older.red2Date}`;
+      const existing = supersededFrom.get(key);
+      if (existing === undefined || newer.firstSarDate < existing) supersededFrom.set(key, newer.firstSarDate);
+    }
+  }
+  const hiddenRed2SarCheckpoints = hiddenRed2SarCheckpointsUngated.filter((c) => {
+    if (gatedOutGroups.has(`${c.letter}|${c.red2Date}`)) return false;
+    const supersedeDate = supersededFrom.get(`${c.letter}|${c.red2Date}`);
+    return supersedeDate === undefined || c.date < supersedeDate;
+  });
 
   // Per-(letter, triggering RED2) "INVALID SAR ENTRY active" windows,
   // derived from hiddenRed2SarCheckpoints -- per the user's own rule:
@@ -2972,7 +3001,7 @@ export function computeTarTbar(
       list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
       let openSince: string | null = null;
       for (const c of list) {
-        if (c.label === "INVALID SAR ENTRY" || c.label === "INVALID SAR ENTRY REACTIVATED") {
+        if (c.label === "INVALID SAR ENTRY") {
           if (openSince === null) openSince = c.date;
         } else if (c.label === "INVALID SAR ENTRY SL" && openSince !== null) {
           invalidSarEntryActiveWindows.push({ letter, red2Date, sinceDate: openSince, untilDate: c.date });
@@ -3006,7 +3035,7 @@ export function computeTarTbar(
       list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
       let openSince: string | null = null;
       for (const c of list) {
-        if (c.label === "INVALID SAR ENTRY" || c.label === "INVALID SAR ENTRY REACTIVATED") {
+        if (c.label === "INVALID SAR ENTRY") {
           if (openSince === null) openSince = c.date;
         } else if (c.label === "INVALID SAR ENTRY SL" && openSince !== null) {
           invalidSarEntryActiveWindowsBarSl2.push({ letter, barSl2Date, sinceDate: openSince, untilDate: c.date });

@@ -757,9 +757,19 @@ export class TZEngine {
       tip !== null &&
       this.barEntryActiveAt !== undefined &&
       !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate);
+    // Real-data bug (ICICIBANK.NS, 2011-2014): "dormant" only ever clears
+    // when the dormant branch produces its own fresh milestone -- but once
+    // that branch's own PRIME TREND is confirmed dead, the full reset
+    // (evalBuy) freezes it completely, so it can never produce another
+    // milestone again, ever. Dormant then became a PERMANENT lock, and
+    // since this branch stayed "tip" (highest active seq), it blocked
+    // every sibling's own spawn eligibility for years (confirmed: real
+    // TZ GREEN/RED/TZ BUY/TZ BUY 2 cycles missing 2011-08-16 to
+    // 2014-05-05). A tip whose own PRIME TREND is dead can never clear its
+    // own dormant flag, so it must not be allowed to gate spawning either.
     const eligibleAnchor =
       tip !== null &&
-      !tip.dormant &&
+      (!tip.dormant || tipLacksPrimeTrend) &&
       tip.redEver &&
       (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzbuy2Sl || tipRear2Sl || tipRre2Sl || tipLacksPrimeTrend);
     const canSpawn = eligibleAnchor || tip === null;
