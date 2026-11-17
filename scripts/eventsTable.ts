@@ -18,6 +18,7 @@ import {
   computePrimeTrend,
   computePrimeTrendCheckpoints,
   computeStage1Checkpoints,
+  barEntryActiveIntervals,
   type OhlcRow,
 } from "../lib/primeTrend";
 import type { Day } from "../lib/tzEngineWtf";
@@ -104,6 +105,47 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
   // correct WTF ledger -- see the field comments in tarTbar.ts. ---
   const ctt = computeTarTbar(wtfRows, dtfRows);
 
+  // Per letter, every "TZ GREEN(letter)" spawn date, sorted -- lets a
+  // displayed event (which only ever carries a bare letter, never the
+  // spawn date) be attributed to the specific spawn instance that owns
+  // it, the same way ctt.wtfJuniorTerminations itself is keyed (letter
+  // is recycled across decades, so bare letter alone is not identity --
+  // see this whole file's own "letters never required" convention).
+  const bornDatesByLetter = new Map<string, string[]>();
+  for (const entry of wtfTrace) {
+    for (const ev of entry.events) {
+      const m = /^TZ GREEN\(([A-Za-z0-9]+)\)$/.exec(ev);
+      if (!m) continue;
+      const arr = bornDatesByLetter.get(m[1]) ?? [];
+      arr.push(entry.day.date);
+      bornDatesByLetter.set(m[1], arr);
+    }
+  }
+  function ownerBornDate(letter: string, date: string): string | null {
+    const dates = bornDatesByLetter.get(letter);
+    if (!dates) return null;
+    let owner: string | null = null;
+    for (const d of dates) {
+      if (d <= date) owner = d;
+      else break;
+    }
+    return owner;
+  }
+
+  // Per the user's own rule: "RED 1 in WTF will not be recorded in the
+  // front end, unless PRIME TREND stays active ... Prime trend IS not
+  // active whenever BAR ENTRY is not active" -- RED1/INVALID RED1 (the
+  // BAR-THEORY branch-level tracker's own first step) only ever
+  // displays while that letter's own BAR ENTRY (Stage 2) is currently
+  // active; same bornDate-exclusion as runWtfTrace's own `activeAt`
+  // (letters recycle, so an interval under this letter from before its
+  // own bornDate belongs to an earlier, unrelated branch).
+  const barEntryIntervals = barEntryActiveIntervals(wtfRows, dtfRows);
+  function primeTrendActive(letter: string, date: string, bornDate: string): boolean {
+    const ivs = (barEntryIntervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
+    return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
+  }
+
   for (const [date, evs] of Array.from(wtfEvents.entries())) {
     const kept = evs.filter((ev) => {
       const letter = letterOf(ev);
@@ -112,6 +154,16 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
         (m) => m.letter === letter && date >= m.sinceDate && (m.untilDate === null || date < m.untilDate)
       );
       if (misclassified) return false;
+      const bornDate = ownerBornDate(letter, date);
+      if (bornDate !== null) {
+        const terminated = ctt.wtfJuniorTerminations.some(
+          (t) => t.letter === letter && t.bornDate === bornDate && date >= t.terminatedAt
+        );
+        if (terminated) return false;
+        if ((ev.startsWith("RED1(") || ev.startsWith("INVALID RED1(")) && !primeTrendActive(letter, date, bornDate)) {
+          return false;
+        }
+      }
       // letterLineageConcludedWindows' own contract: drop this letter's
       // own RED1/RED2/BAR-family text for this stretch, but NEVER REAR
       // -- REAR is the real, legitimate reengagement event this whole

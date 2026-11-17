@@ -117,7 +117,7 @@
 // there).
 
 import { THRESH, EPS, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
-import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, barEntryActiveIntervals, containingWeekStart, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
+import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, computeStage1Checkpoints, barEntryActiveIntervals, containingWeekStart, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
   return cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h;
@@ -2459,6 +2459,40 @@ export function computeTarTbar(
   // ledger adds these in place of (not alongside) the blank noise it
   // already drops for that same letter/date range.
   letterLineageConcludedSimEvents: { letter: string; date: string; label: string }[];
+  // Per the user's own rule: "As soon as WTF or DTF event exceeds a
+  // level further ... all the Junior cycles should be terminated" --
+  // across the combined WTF+DTF tier ladder (TZ GREEN < RED < TZ BUY <
+  // TZ BUY 2 < DTF TZ BUY < DTF BAR ENTRY), the moment a SENIOR cycle
+  // (earlier bornDate, same or different letter) reaches a tier
+  // strictly above where a JUNIOR (later bornDate) currently sits, that
+  // junior is terminated outright from that date on -- direction is
+  // one-way, senior-over-junior only, never the reverse (a junior that
+  // races ahead never terminates a senior; the senior simply stays
+  // dormant/unaffected, per the user's own direct confirmation). Only a
+  // junior that is still GENUINELY RUNNING is eligible -- one that
+  // already died naturally (its own TZ GREEN SL/TZ BUY SL/TZ BUY 2 SL)
+  // is excluded entirely, never a termination target: it is already
+  // gone on its own terms, and its letter is immediately free to reuse
+  // (confirmed real-data bug, ICICIBANK.NS: without this exclusion,
+  // seven unrelated, decades-dead 2002-era spans all got wrongly swept
+  // into "terminated" the instant any senior reached a high tier years
+  // later, purely because they had never been marked dead). Confirmed
+  // real-data (ICICIBANK.NS): TZ GREEN(E) 26/11/12 terminated the
+  // moment D's own DTF TZ BUY (Stage 1) confirms 04/12/12 -- D (TZ
+  // GREEN 02/01/12) is senior, already at WTF TZ BUY 2 by then, and
+  // DTF TZ BUY is a tier higher than E's own TZ GREEN. A caller's WTF
+  // ledger must drop this letter+bornDate instance's own events from
+  // terminatedAt onward.
+  wtfJuniorTerminations: { letter: string; bornDate: string; terminatedAt: string }[];
+  // Every WTF spawn's own effective end date (natural SL or a
+  // wtfJuniorTerminations hit, whichever is earlier; null if still
+  // genuinely alive) -- see this field's own comment at its
+  // computation site above. A caller rebuilding the displayed letter
+  // sequence (so a freed letter is reused immediately, matching the
+  // user's own "simple flow: A, then B only once A frees up" rule)
+  // needs this; the raw engine's own lowestFreeId has no idea a
+  // termination ever happened.
+  wtfSpanLifetimes: { letter: string; bornDate: string; effectiveDeathDate: string | null }[];
 } {
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
   const dtfDays: Day[] = dtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
@@ -3211,6 +3245,116 @@ export function computeTarTbar(
     }
   }
 
+  // --- wtfJuniorTerminations: senior-over-junior tier-escalation gate,
+  // spanning WTF and DTF tiers together -- see this field's own comment
+  // on the return type above. ---
+  const wtfJuniorTerminations: { letter: string; bornDate: string; terminatedAt: string }[] = [];
+  const wtfSpanLifetimes: { letter: string; bornDate: string; effectiveDeathDate: string | null }[] = [];
+  {
+    // Race-aware trace (DTF-informed), matching the one computeStage1Checkpoints/
+    // computePrimeTrend themselves use internally (via prepare()) and the
+    // one the real WTF ledger displays -- the plain wtfTrace above (no
+    // dtfDays) does not show every sibling the race mechanism produces
+    // (confirmed real-data: TZ GREEN(E) 26/11/12 is invisible in the
+    // plain trace, only the race-aware one shows it), so matching
+    // formationDate/letter against it here would silently miss spans.
+    const raceAwareTrace = runWtfTrace(wtfDays, undefined, undefined, dtfDays);
+    type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; tierDates: { tier: number; date: string }[] };
+    const spans: Span[] = [];
+    const spansByLetter = new Map<string, Span[]>();
+    for (const entry of raceAwareTrace) {
+      for (const e of entry.events) {
+        const spawnMatch = /^TZ GREEN\(([A-Za-z0-9]+)\)$/.exec(e);
+        if (spawnMatch) {
+          const letter = spawnMatch[1];
+          const span: Span = { letter, bornDate: entry.day.date, tier: 1, diedAt: null, tierDates: [{ tier: 1, date: entry.day.date }] };
+          spans.push(span);
+          if (!spansByLetter.has(letter)) spansByLetter.set(letter, []);
+          spansByLetter.get(letter)!.push(span);
+          continue;
+        }
+        const m = /^(RED|TZ BUY|TZ BUY 2)\(([A-Za-z0-9]+)\)$/.exec(e);
+        if (m) {
+          const [, kind, letter] = m;
+          const list = spansByLetter.get(letter);
+          const span = list && list.length > 0 ? list[list.length - 1] : undefined;
+          if (span === undefined) continue;
+          const tier = kind === "RED" ? 2 : kind === "TZ BUY" ? 3 : 4;
+          span.tierDates.push({ tier, date: entry.day.date });
+          continue;
+        }
+        // Natural death -- this specific span is done on its own terms
+        // from here on, regardless of what tier it reached; it is never
+        // a termination target again, and its letter is immediately
+        // free for a brand-new spawn to reuse.
+        const dm = /^(?:TZ GREEN SL|TZ BUY SL|TZ BUY 2 SL)\(([A-Za-z0-9]+)\)$/.exec(e);
+        if (dm) {
+          const list = spansByLetter.get(dm[1]);
+          const span = list && list.length > 0 ? list[list.length - 1] : undefined;
+          if (span !== undefined && span.diedAt === null) span.diedAt = entry.day.date;
+        }
+      }
+    }
+    // DTF TZ BUY (Stage 1, tier 5) -- matched to its owning span by exact
+    // formationDate (that span's own "TZ BUY 2" date), never by bare
+    // letter alone (recycled across decades).
+    for (const inst of computeStage1Checkpoints(wtfRows, dtfRows)) {
+      const owner = (spansByLetter.get(inst.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === inst.formationDate));
+      if (owner === undefined) continue;
+      const first = inst.checkpoints.find((c) => c.label === "TZ BUY");
+      if (first !== undefined) owner.tierDates.push({ tier: 5, date: first.date });
+    }
+    // DTF BAR ENTRY (tier 6) -- same exact-formationDate match, from
+    // computePrimeTrend's own TZ BUY 2 family, level-0 "BAR ENTRY" rows.
+    for (const r of computePrimeTrend(wtfRows, dtfRows)) {
+      if (r.family !== "TZ BUY 2" || r.side !== "BAR ENTRY" || r.level !== 0) continue;
+      const owner = (spansByLetter.get(r.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === r.wtfFormationDate));
+      if (owner === undefined) continue;
+      owner.tierDates.push({ tier: 6, date: r.entryDate });
+    }
+    for (const s of spans) s.tierDates.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+    const terminated = new Set<Span>();
+    const allTierEvents: { span: Span; tier: number; date: string }[] = [];
+    for (const s of spans) for (const td of s.tierDates) allTierEvents.push({ span: s, tier: td.tier, date: td.date });
+    allTierEvents.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : a.tier - b.tier));
+
+    for (const ev of allTierEvents) {
+      if (terminated.has(ev.span)) continue;
+      if (ev.span.diedAt !== null && ev.span.diedAt <= ev.date) continue;
+      if (ev.tier > ev.span.tier) ev.span.tier = ev.tier;
+      for (const other of spans) {
+        if (other === ev.span || terminated.has(other)) continue;
+        if (other.bornDate <= ev.span.bornDate) continue; // only senior-over-junior
+        if (other.bornDate > ev.date) continue; // other not yet spawned as of this event
+        if (other.diedAt !== null && other.diedAt <= ev.date) continue; // already dead on its own terms
+        if (other.tier < ev.tier) {
+          terminated.add(other);
+          wtfJuniorTerminations.push({ letter: other.letter, bornDate: other.bornDate, terminatedAt: ev.date });
+        }
+      }
+    }
+
+    // Per the user's own rule: "unless a particular cycle's TZ GREEN SL
+    // does not trigger its LETTER cannot be used again ... any span
+    // that already died naturally [or was terminated]: the letter will
+    // be available to use immediately." The raw engine's own letter
+    // assignment (lowestFreeId) has no knowledge of wtfJuniorTerminations
+    // -- it only ever frees a letter on natural death -- so a caller
+    // that wants to DISPLAY the corrected next-available letter (not
+    // just suppress a terminated junior's own events) needs each
+    // span's own effective end date, whichever of natural death or
+    // termination came first.
+    for (const s of spans) {
+      const terminatedEntry = wtfJuniorTerminations.find((t) => t.letter === s.letter && t.bornDate === s.bornDate);
+      const effectiveDeathDate =
+        s.diedAt !== null && (terminatedEntry === undefined || s.diedAt <= terminatedEntry.terminatedAt)
+          ? s.diedAt
+          : terminatedEntry?.terminatedAt ?? null;
+      wtfSpanLifetimes.push({ letter: s.letter, bornDate: s.bornDate, effectiveDeathDate });
+    }
+  }
+
   return {
     windows,
     results,
@@ -3228,5 +3372,7 @@ export function computeTarTbar(
     barTheoryOpenIntervals,
     letterLineageConcludedWindows,
     letterLineageConcludedSimEvents,
+    wtfJuniorTerminations,
+    wtfSpanLifetimes,
   };
 }

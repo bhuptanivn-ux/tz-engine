@@ -1123,7 +1123,23 @@ export class TZEngine {
         // never fired at all.
         buy.awaitingBar2SinceRed2 = false;
       }
-    } else if (!primeTrendDead) {
+    } else {
+      // Per the user's own rule: "When reactivation occurs, it should
+      // work like the 1st time. In case failure has gone till WTF
+      // events like TZ BUY 2 or TZ BUY, 1st reactivation will be for
+      // WTF followed by DTF events of TZ BUY -> BAR -> BAR ENTRY." Once
+      // PRIME TREND has died (the freeze above already fired), WTF TZ
+      // BUY reactivates on the SAME ordinary breakout-above-reference
+      // shape as any other TZ BUY SL reactivation -- it does NOT wait
+      // for DTF BAR ENTRY to come back first (`!primeTrendDead` was
+      // the exact bug: BAR ENTRY essentially never reactivates on its
+      // own once dead, so that gate made this branch unreachable).
+      // Everything above WTF TZ BUY (TZ BUY 2, then DTF TZ BUY, BAR,
+      // BAR ENTRY) then escalates again through the ordinary,
+      // unmodified machinery below, exactly as a brand-new lineage
+      // would -- no separate cascade state needed. Confirmed real-data
+      // (ICICIBANK.NS, letter D): TZ BUY(D) must reactivate 2014-03-24
+      // above D's own highest high since BAR ENTRY SL'd 2013-02-06.
       const ref = buy.reentryThreshold !== null ? buy.reentryThreshold : preTodayBuyRef;
       if (!this.milestoneBlocked(pc) && cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
         buy.active = true;

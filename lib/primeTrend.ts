@@ -3136,13 +3136,13 @@ export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRo
  * nothing escalating underneath it was invisible everywhere until this.
  * Confirmed real-data (BSE.NS): 2017-06-05 TZ BUY -> 2017-06-06 TZ BUY
  * SL, under the 2017-05-29 TZ BUY 2 instance, never shown anywhere. */
-export function computeStage1Checkpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] {
+export function computeStage1Checkpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): { letter: string; formationDate: string; checkpoints: PostBarSl2Checkpoint[] }[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows, wtfTraceOverride);
 
-  const results: { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
+  const results: { letter: string; formationDate: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
   for (const inst of instances) {
     const [, , , checkpoints] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
-    if (checkpoints.length > 0) results.push({ letter: inst.letter, checkpoints });
+    if (checkpoints.length > 0) results.push({ letter: inst.letter, formationDate: inst.formationDate, checkpoints });
   }
   return results;
 }
