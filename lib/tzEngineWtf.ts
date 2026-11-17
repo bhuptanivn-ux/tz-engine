@@ -743,17 +743,31 @@ export class TZEngine {
     // active" no longer means "permanently stuck" -- D can be actively
     // re-climbing its own cascade (TZ BUY -> TZ BUY 2 -> DTF TZ BUY ->
     // BAR -> BAR ENTRY) for weeks with BAR ENTRY not yet reactivated,
-    // and this flag must not treat that as spawn-eligible. Only count
-    // as "lacks PRIME TREND" when the buy itself is ALSO not currently
-    // active -- genuinely stuck, the only case this flag was ever
-    // meant to cover (confirmed: in the original 2011-2014 scenario,
-    // buy.active was always false whenever PRIME TREND was inactive,
-    // since reactivation used to require BAR ENTRY first).
+    // and this flag must not treat that as spawn-eligible if PRIME
+    // TREND has NEVER been reached at all -- genuinely stuck (buy also
+    // inactive) is the only case that covers (confirmed: in the
+    // original 2011-2014 scenario, buy.active was always false
+    // whenever PRIME TREND was inactive, since reactivation used to
+    // require BAR ENTRY first). But per the user's own direct
+    // correction (ICICIBANK.NS, letter D, 18/08/14): once PRIME TREND
+    // has ACTUALLY confirmed and then genuinely died (BAR ENTRY SL
+    // 08/07/14), the race toward BAR ENTRY is over for this go-around
+    // and a junior is eligible to compete for the NEXT one regardless
+    // of whether the senior's own lower tier (TZ BUY 2) is still
+    // actively ratcheting its own HH, unfailed at its own level --
+    // "the senior's PRIME TREND never actually completed (confirmed
+    // to its own death/SL) ... OR DTF has not reached BAR ENTRY" is
+    // two separate clauses, not one: PRIME TREND genuinely dying is
+    // sufficient on its own, with no buy-inactive requirement.
+    const barEntryEverActivated =
+      tip !== null &&
+      this.barEntryEverActiveBefore !== undefined &&
+      this.barEntryEverActiveBefore(branchLabel(tip.id), cur.date, tip.bornDate);
     const tipLacksPrimeTrend =
       tip !== null &&
       this.barEntryActiveAt !== undefined &&
       !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate) &&
-      (tip.buy === null || !tip.buy.active);
+      (barEntryEverActivated || tip.buy === null || !tip.buy.active);
     // Real-data bug (ICICIBANK.NS, 2011-2014): "dormant" only ever clears
     // when the dormant branch produces its own fresh milestone -- but once
     // that branch's own PRIME TREND is confirmed dead, the full reset
