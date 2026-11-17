@@ -138,6 +138,20 @@ export class RearReenter {
 export class Buy {
   active = true;
   red1Ever = false;
+  // Per the user's own rule: "TZ GREEN - RED - TZ GREEN B: SPAWN
+  // ELIGIBILITY IF RED OCCURS ... Any Green after the RED is always
+  // regarded for SPAWN ELIGIBILITY" -- `red1Ever` itself is the wrong
+  // signal for this: it toggles back to false the moment INVALID RED1
+  // fires (resetRed1Regime), even though RED1 genuinely fired at some
+  // point in this buy's current life. This field never resets on
+  // invalidation -- only where red1Ever itself resets on a genuine new
+  // life (TZ BUY SL / reactivation) -- so spawn eligibility can see
+  // "RED1 has happened in this life" even after it is later
+  // invalidated. Confirmed real-data (ICICIBANK.NS, letter D): RED1(D)
+  // fires 2012-10-08, INVALID RED1(D) fires 2012-10-22 on the SAME
+  // candle TZ GREEN(E) tries to spawn -- using red1Ever directly
+  // wrongly blocked it.
+  everHadRed1ThisLife = false;
   refHighAtRed1 = 0;
   red1: Red1 | null = null;
   tzBuy2: Bar2 | null = null;
@@ -335,19 +349,12 @@ export class TZEngine {
   // can never fire and the engine's behavior is byte-for-byte unchanged
   // from before this feature existed.
   //
-  // `barEntryEverActiveBefore` answers a DIFFERENT question: "has DTF
-  // BAR ENTRY ever become active for this letter at any point strictly
-  // before this date" -- used (together with barEntryActiveAt, see
-  // primeTrendDeadForBranch) ONLY to tell apart the two situations
-  // tipLacksPrimeTrend alone cannot distinguish: PRIME TREND never
-  // having activated yet (the ORIGINAL scope of this trigger -- spawn
-  // behavior there is unchanged, old code path) vs. PRIME TREND having
-  // activated and then SL'd (the NEW case: that branch's own WTF buy
-  // structure gets fully reset and frozen, same as an ordinary TZ BUY
-  // SL -- see evalBuy). Per the user's own scoping: "the logic and the
-  // code remains the same for spawn... before PRIME TREND activates 1st
-  // time and after BAR SL2. The only change... is occurrence of new
-  // lineage and race in case PRIME TREND is activated and SL triggers."
+  // `barEntryEverActiveBefore` is accepted for backward compatibility
+  // with existing callers (lib/primeTrend.ts's runWtfTrace still
+  // builds and passes it) but is no longer read anywhere in this
+  // class -- see evalBuy's own comment: PRIME TREND dying no longer
+  // freezes or resets the WTF buy at all, per the user's own direct
+  // correction ("BAR ENTRY SL does not terminate PRIME TREND").
   constructor(
     private weeklyBarSlRear: boolean = false,
     private barEntryActiveAt?: (letter: string, date: string, bornDate: string) => boolean,
@@ -357,29 +364,6 @@ export class TZEngine {
   private nextSeq(): number {
     this.seqCounter += 1;
     return this.seqCounter;
-  }
-
-  // True only once PRIME TREND has activated and then SL'd for this
-  // branch's letter -- NOT before its first-ever activation (buy is
-  // still legitimately alive, nothing to reset) and NOT once the whole
-  // lineage has already ended with no PRIME TREND history of its own.
-  // Used in evalBuy to fully reset this branch's own WTF buy structure
-  // (same reset an ordinary TZ BUY SL already gets) the moment this
-  // transition happens, and to keep it frozen -- no BAR/BAR 2/REAR
-  // tracking, no reactivation watch either -- for as long as PRIME
-  // TREND stays dead. Per the user's own rule: "once the PRIME TREND is
-  // SL'd it is like TZ GREEN SL, all the later EVENTS and their
-  // reactivation will not matter... Only focus will be between CURRENT
-  // PRIME TREND TO REACTIVATE AND NEW LINEAGE." The branch itself is
-  // never killed -- only its own BAR ENTRY reactivating (tracked
-  // entirely on the DTF side) can bring it back into the race.
-  private primeTrendDeadForBranch(pc: ParentCycle, cur: Day): boolean {
-    return (
-      this.barEntryActiveAt !== undefined &&
-      this.barEntryEverActiveBefore !== undefined &&
-      !this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate) &&
-      this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate)
-    );
   }
 
   lowestFreeId(): number {
@@ -753,10 +737,23 @@ export class TZEngine {
     // of TZ GREEN (tip.redEver below, unchanged) -- once any tier has
     // been reached and then fails, reforming that same tier never needs
     // one again.
+    // Real-data bug (ICICIBANK.NS, letter D, 12/05/14): once WTF TZ BUY
+    // can reactivate without DTF BAR ENTRY reactivating first (see the
+    // reactivation branch in evalBuy), "PRIME TREND not currently
+    // active" no longer means "permanently stuck" -- D can be actively
+    // re-climbing its own cascade (TZ BUY -> TZ BUY 2 -> DTF TZ BUY ->
+    // BAR -> BAR ENTRY) for weeks with BAR ENTRY not yet reactivated,
+    // and this flag must not treat that as spawn-eligible. Only count
+    // as "lacks PRIME TREND" when the buy itself is ALSO not currently
+    // active -- genuinely stuck, the only case this flag was ever
+    // meant to cover (confirmed: in the original 2011-2014 scenario,
+    // buy.active was always false whenever PRIME TREND was inactive,
+    // since reactivation used to require BAR ENTRY first).
     const tipLacksPrimeTrend =
       tip !== null &&
       this.barEntryActiveAt !== undefined &&
-      !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate);
+      !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate) &&
+      (tip.buy === null || !tip.buy.active);
     // Real-data bug (ICICIBANK.NS, 2011-2014): "dormant" only ever clears
     // when the dormant branch produces its own fresh milestone -- but once
     // that branch's own PRIME TREND is confirmed dead, the full reset
@@ -767,11 +764,28 @@ export class TZEngine {
     // TZ GREEN/RED/TZ BUY/TZ BUY 2 cycles missing 2011-08-16 to
     // 2014-05-05). A tip whose own PRIME TREND is dead can never clear its
     // own dormant flag, so it must not be allowed to gate spawning either.
+    // Per the user's own rule: "TZ GREEN - RED - TZ GREEN B: SPAWN
+    // ELIGIBILITY IF RED OCCURS ... Any Green after the RED is always
+    // regarded for SPAWN ELIGIBILITY" -- this is RED1 (the BAR-THEORY
+    // cascade's own first climb-down marker within tip's CURRENT buy
+    // cycle), not the base `tip.redEver` (which is already required
+    // separately, below, and stays true for this buy's whole life).
+    // Once RED1 has fired for this cycle, a junior spawning after it
+    // is eligible regardless of whether tip's own buy is still
+    // actively climbing -- confirmed real-data (ICICIBANK.NS, letter
+    // D): RED1(D) fires 2012-10-08 (within the TZ BUY 2(D) cycle
+    // formed 2012-09-17, still very much active); TZ GREEN(E) spawning
+    // 2012-10-22 is legitimate, not a bug tipLacksPrimeTrend's own
+    // narrowing should have blocked. Reads `everHadRed1ThisLife`, not
+    // the resettable `red1Ever` -- INVALID RED1 fires on the SAME
+    // candle here, which would otherwise clear the signal right when
+    // it is needed (see that field's own comment).
+    const tipHadRed1 = tip !== null && tip.buy !== null && tip.buy.everHadRed1ThisLife;
     const eligibleAnchor =
       tip !== null &&
       (!tip.dormant || tipLacksPrimeTrend) &&
       tip.redEver &&
-      (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzbuy2Sl || tipRear2Sl || tipRre2Sl || tipLacksPrimeTrend);
+      (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzbuy2Sl || tipRear2Sl || tipRre2Sl || tipLacksPrimeTrend || tipHadRed1);
     const canSpawn = eligibleAnchor || tip === null;
     let newBranchId: number | null = null;
     if (canSpawn && cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
@@ -1027,37 +1041,28 @@ export class TZEngine {
     const preTodayBuyRef = buy.refHigh;
 
     let reactivatedToday = false;
-    // Per the user's own rule: "once the PRIME TREND is SL'd it is like
-    // TZ GREEN SL, all the later EVENTS and their reactivation will not
-    // matter... BAR SL 2 its REAR... will not matter" -- once this
-    // branch's own DTF PRIME TREND has activated and then SL'd (not
-    // before its first activation, not after a terminal BAR SL2 with no
-    // PRIME TREND history of its own -- see primeTrendDeadForBranch's
-    // own comment), this buy gets the EXACT SAME full reset an ordinary
-    // TZ BUY SL already does below, and stays frozen (no HH/LL/BAR/REAR
-    // tracking, no reactivation watch either) for as long as PRIME
-    // TREND stays dead. The branch itself is never killed -- only its
-    // own BAR ENTRY reactivating (tracked entirely on the DTF side) can
-    // bring it back into the race against the new lineage; nothing at
-    // the WTF level does. Confirmed real-data (ICICIBANK.NS, letter D):
-    // without this, D's own BAR tier kept reforming/SL'ing on candles
-    // that belonged to the new lineage's own TZ GREEN instead.
-    const primeTrendDead = this.primeTrendDeadForBranch(pc, cur);
-    if (buy.active && primeTrendDead) {
-      buy.reentryThreshold = this.currentTopRef(buy);
-      buy.active = false;
-      buy.barPending = false;
-      buy.red1 = null;
-      buy.barLineages = [];
-      buy.barSubCounter = 0;
-      buy.barDeadLabels = new Set();
-      buy.rearWinnerLabel = null;
-      buy.rear = null;
-      buy.rearReenter = null;
-      buy.tzBuy2 = null;
-      buy.tzBuy2HhMuted = false;
-      buy.awaitingBar2SinceRed2 = false;
-    } else if (buy.active) {
+    // Per the user's own direct correction: "BAR ENTRY SL does not
+    // terminate PRIME TREND ... it is not primetrendend. All the SL
+    // for a cycle which had PRIME TREND activated should be recorded.
+    // Because when the race occurs, it will know the race towards
+    // which level." PRIME TREND (DTF BAR ENTRY) dying does NOT freeze
+    // or reset this buy at the WTF level at all -- TZ BUY 2 (and, once
+    // IT also SL's, bare TZ BUY) keeps ratcheting and tracking its own
+    // SL completely normally, exactly as if BAR ENTRY had never
+    // existed. The reactivation cascade (BAR ENTRY SL -> BAR SL -> DTF
+    // TZ BUY SL -> WTF TZ BUY 2 SL -> WTF TZ BUY SL) falls through
+    // these ordinary, unmodified tiers one at a time, each with its
+    // own genuine price-based SL -- only once WTF TZ BUY itself SL's
+    // does the plain reactivation-above-reference branch below apply,
+    // "like the 1st time." Confirmed real-data (ICICIBANK.NS, letter
+    // D): TZ BUY 2 SL 2013-07-15 (own ref low ratcheted 2012-11-19,
+    // 2013-03-18, 2013-04-01, 2013-04-08), then bare TZ BUY SL
+    // 2013-07-29 (new low 2013-07-22) -- a PREVIOUS, now-removed
+    // version of this function force-froze buy.active the moment BAR
+    // ENTRY SL'd (2013-02-06), silently erasing both of these genuine
+    // SLs and the eleven months of real ref-low ratcheting between
+    // them.
+    if (buy.active) {
       if (buy.barHighPool > buy.refHigh) buy.refHigh = buy.barHighPool;
       const isSl = cur.l <= buy.refLow && buy.refLow - cur.l >= THRESH - EPS && cur.c <= buy.refLow + EPS;
       let hh = false;
@@ -1146,6 +1151,7 @@ export class TZEngine {
         buy.refHigh = cur.h;
         buy.refLow = cur.l;
         buy.red1Ever = false;
+        buy.everHadRed1ThisLife = false;
         buy.red1 = null;
         buy.tzBuy2 = null;
         buy.tzBuy2HhMuted = false;
@@ -1499,6 +1505,7 @@ export class TZEngine {
       ) {
         if (!buy.red1Ever) buy.refHighAtRed1 = buy.refHigh;
         buy.red1Ever = true;
+        buy.everHadRed1ThisLife = true;
         buy.red1 = new Red1(cur.h, cur.l);
         ev.push(`RED1(${branchLbl})`);
         this.hiddenEventLog.push({ letter: branchLbl, label: null, date: cur.date, event: "RED1" });

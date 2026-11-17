@@ -147,7 +147,24 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
   }
 
   for (const [date, evs] of Array.from(wtfEvents.entries())) {
-    const kept = evs.filter((ev) => {
+    // Per the user's own rule: "Do not write as RED1. Keep it RED ...
+    // RED1-RED2 is used once PRIME TREND is active for BAR THEORY" --
+    // before PRIME TREND (BAR ENTRY) activates, a RED1-shaped pullback
+    // is conceptually the ordinary top-level RED (the base TZ GREEN ->
+    // RED -> TZ BUY cycle's own marker, licensing spawn eligibility),
+    // not BAR THEORY's own RED1 -- relabel rather than hide. INVALID
+    // RED1 has no equivalent in the ordinary RED vocabulary (RED, once
+    // it fires, is never "invalidated" -- redEver is a one-time,
+    // permanent flag), so it stays hidden in that case.
+    const relabeled = evs.map((ev) => {
+      if (!ev.startsWith("RED1(")) return ev;
+      const letter = letterOf(ev);
+      if (!letter) return ev;
+      const bornDate = ownerBornDate(letter, date);
+      if (bornDate === null || primeTrendActive(letter, date, bornDate)) return ev;
+      return `RED(${letter})`;
+    });
+    const kept = relabeled.filter((ev) => {
       const letter = letterOf(ev);
       if (!letter) return true;
       const misclassified = ctt.misclassifiedLetters.some(
@@ -160,7 +177,7 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
           (t) => t.letter === letter && t.bornDate === bornDate && date >= t.terminatedAt
         );
         if (terminated) return false;
-        if ((ev.startsWith("RED1(") || ev.startsWith("INVALID RED1(")) && !primeTrendActive(letter, date, bornDate)) {
+        if (ev.startsWith("INVALID RED1(") && !primeTrendActive(letter, date, bornDate)) {
           return false;
         }
       }
