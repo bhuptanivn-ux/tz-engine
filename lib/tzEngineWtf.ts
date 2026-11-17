@@ -1494,7 +1494,30 @@ export class TZEngine {
   private progressTopLevelRed1(pc: ParentCycle, buy: Buy, branchLbl: string, prev: Day, cur: Day): string[] {
     if (buy.red1 === null || !buy.red1.active) {
       const ev: string[] = [];
+      // Per the user's own rule: "IF PRIME TREND IS ACTIVE, then only
+      // following weeks can be RED1-RED2-BAR-BAR2 ... If PRIME TREND
+      // once got active and later SL'd BUT NOT REACTIVATED at the time
+      // when WTF RED1 occurs then WTF RED1 will not be recorded,
+      // neither in frontend nor in backend." The one exception is the
+      // original scope of this mechanism -- a RED1 that fires BEFORE
+      // PRIME TREND has EVER activated for this buy's life serves
+      // SPAWN ELIGIBILITY ("TZ GREEN - RED - TZ GREEN B") and is still
+      // legitimate. So: eligible when PRIME TREND has never activated
+      // before, OR it is currently active right now -- never when it
+      // activated-then-died and has not yet reactivated. Confirmed
+      // real-data (ICICIBANK.NS, letter D): RED1(D) 08/10/12 (PRIME
+      // TREND never yet activated) is legitimate; RED1(D) 16/06/14
+      // (PRIME TREND activated-and-died 02/01/13-06/02/13, not yet
+      // reactivated as of 16/06/14 -- DTF BAR ENTRY only reactivates
+      // 01/07/14) must not attach at all, and the BAR SL(D) it would
+      // otherwise produce 07/07/14 must not occur either.
+      const primeTrendEverActivated =
+        this.barEntryEverActiveBefore !== undefined && this.barEntryEverActiveBefore(branchLbl, cur.date, pc.bornDate);
+      const primeTrendCurrentlyActive =
+        this.barEntryActiveAt !== undefined && this.barEntryActiveAt(branchLbl, cur.date, pc.bornDate);
+      const red1Eligible = !primeTrendEverActivated || primeTrendCurrentlyActive;
       if (
+        red1Eligible &&
         !buy.awaitingBar2SinceRed2 &&
         buy.tzBuy2 !== null &&
         !buy.tzBuy2.slActive &&
