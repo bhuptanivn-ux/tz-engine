@@ -177,7 +177,21 @@ function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
           (t) => t.letter === letter && t.bornDate === bornDate && date >= t.terminatedAt
         );
         if (terminated) return false;
-        if (ev.startsWith("INVALID RED1(") && !primeTrendActive(letter, date, bornDate)) {
+        // Per the user's own rule: "Without Active PRIME TREND, WTF
+        // RED1-RED2-BAR1-BAR2 should not occur ... After TZ BUY DTF,
+        // it will either look for TZ BUY SL or RED in DTF FOLLOWED BY
+        // BAR -> BAR ENTRY" -- the WHOLE branch-level BAR-THEORY family
+        // (not just RED1, which the earlier fix already relabels)
+        // stays backend-only until that letter's own PRIME TREND (BAR
+        // ENTRY) has genuinely activated; the real race toward BAR
+        // ENTRY runs on the DTF side instead.
+        const barTheoryFamily =
+          ev.startsWith("INVALID RED1(") ||
+          ev.startsWith("RED2(") ||
+          ev.startsWith("BAR(") ||
+          ev.startsWith("BAR 2(") ||
+          ev.startsWith("BAR SL(");
+        if (barTheoryFamily && !primeTrendActive(letter, date, bornDate)) {
           return false;
         }
       }
