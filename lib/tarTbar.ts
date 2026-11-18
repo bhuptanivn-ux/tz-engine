@@ -3223,7 +3223,7 @@ export function computeTarTbar(
     // plain trace, only the race-aware one shows it), so matching
     // formationDate/letter against it here would silently miss spans.
     const raceAwareTrace = runWtfTrace(wtfDays, undefined, undefined, dtfDays);
-    type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; tierDates: { tier: number; date: string }[] };
+    type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; greenSlDate: string | null; tierDates: { tier: number; date: string }[] };
     const spans: Span[] = [];
     const spansByLetter = new Map<string, Span[]>();
     for (const entry of raceAwareTrace) {
@@ -3231,7 +3231,7 @@ export function computeTarTbar(
         const spawnMatch = /^TZ GREEN\(([A-Za-z0-9]+)\)$/.exec(e);
         if (spawnMatch) {
           const letter = spawnMatch[1];
-          const span: Span = { letter, bornDate: entry.day.date, tier: 1, diedAt: null, tierDates: [{ tier: 1, date: entry.day.date }] };
+          const span: Span = { letter, bornDate: entry.day.date, tier: 1, diedAt: null, greenSlDate: null, tierDates: [{ tier: 1, date: entry.day.date }] };
           spans.push(span);
           if (!spansByLetter.has(letter)) spansByLetter.set(letter, []);
           spansByLetter.get(letter)!.push(span);
@@ -3258,15 +3258,26 @@ export function computeTarTbar(
           span.tierDates.push({ tier, date: entry.day.date });
           continue;
         }
-        // Natural death -- this specific span is done on its own terms
-        // from here on, regardless of what tier it reached; it is never
-        // a termination target again, and its letter is immediately
-        // free for a brand-new spawn to reuse.
+        // Natural death (for tier/termination purposes only) -- this
+        // specific span is done trying to climb from here on, regardless
+        // of what tier it reached, and is never a termination TARGET
+        // again. This does NOT by itself free the letter for a brand-new
+        // spawn: per the user's own rule, "TZ BUY SL/TZ BUY 2 SL etc,
+        // whether before or after PRIME TREND activation, should not
+        // allow spawn eligibility to reuse the same letter" -- only a
+        // literal TZ GREEN SL (tracked separately below as greenSlDate)
+        // or senior-over-junior termination releases the letter itself.
         const dm = /^(?:TZ GREEN SL|TZ BUY SL|TZ BUY 2 SL)\(([A-Za-z0-9]+)\)$/.exec(e);
         if (dm) {
           const list = spansByLetter.get(dm[1]);
           const span = list && list.length > 0 ? list[list.length - 1] : undefined;
           if (span !== undefined && span.diedAt === null) span.diedAt = entry.day.date;
+        }
+        const gsl = /^TZ GREEN SL\(([A-Za-z0-9]+)\)$/.exec(e);
+        if (gsl) {
+          const list = spansByLetter.get(gsl[1]);
+          const span = list && list.length > 0 ? list[list.length - 1] : undefined;
+          if (span !== undefined && span.greenSlDate === null) span.greenSlDate = entry.day.date;
         }
       }
     }
@@ -3320,20 +3331,18 @@ export function computeTarTbar(
     }
 
     // Per the user's own rule: "unless a particular cycle's TZ GREEN SL
-    // does not trigger its LETTER cannot be used again ... any span
-    // that already died naturally [or was terminated]: the letter will
-    // be available to use immediately." The raw engine's own letter
-    // assignment (lowestFreeId) has no knowledge of wtfJuniorTerminations
-    // -- it only ever frees a letter on natural death -- so a caller
+    // [triggers], its LETTER cannot be used again" -- TZ BUY SL / TZ BUY
+    // 2 SL, whether before or after PRIME TREND activation, do NOT
+    // release the letter for a brand-new spawn; only a literal TZ GREEN
+    // SL (greenSlDate) or senior-over-junior termination does. A caller
     // that wants to DISPLAY the corrected next-available letter (not
-    // just suppress a terminated junior's own events) needs each
-    // span's own effective end date, whichever of natural death or
-    // termination came first.
+    // just suppress a terminated junior's own events) needs each span's
+    // own effective end date, whichever of those two came first.
     for (const s of spans) {
       const terminatedEntry = wtfJuniorTerminations.find((t) => t.letter === s.letter && t.bornDate === s.bornDate);
       const effectiveDeathDate =
-        s.diedAt !== null && (terminatedEntry === undefined || s.diedAt <= terminatedEntry.terminatedAt)
-          ? s.diedAt
+        s.greenSlDate !== null && (terminatedEntry === undefined || s.greenSlDate <= terminatedEntry.terminatedAt)
+          ? s.greenSlDate
           : terminatedEntry?.terminatedAt ?? null;
       wtfSpanLifetimes.push({ letter: s.letter, bornDate: s.bornDate, effectiveDeathDate });
     }
