@@ -137,6 +137,19 @@ export class RearReenter {
 
 export class Buy {
   active = true;
+  // Dynamic lower bound for the spawn-eligibility check's own "has BAR
+  // ENTRY ever been active" question -- starts null (meaning "use
+  // this branch's own bornDate," matching the pc's whole lifetime),
+  // and gets set to the reactivation candle's own date every time the
+  // reactivation branch in evalBuy fires. Without this, a stale "BAR
+  // ENTRY was active once, years ago" signal from a PREVIOUS life
+  // wrongly keeps spawn eligibility open even while THIS life's own
+  // buy is freshly, actively climbing again (TZ BUY 2 just confirmed,
+  // buy.active=true) -- confirmed real-data (ICICIBANK.NS, letter D,
+  // 12/05/14): TZ GREEN(E) spawned that week purely because BAR ENTRY
+  // was once active back in 2013, even though D's CURRENT life (since
+  // reactivating 24/03/14) had never reached BAR ENTRY at all yet.
+  currentLifeSince: string | null = null;
   red1Ever = false;
   // Per the user's own rule: "TZ GREEN - RED - TZ GREEN B: SPAWN
   // ELIGIBILITY IF RED OCCURS ... Any Green after the RED is always
@@ -737,37 +750,24 @@ export class TZEngine {
     // of TZ GREEN (tip.redEver below, unchanged) -- once any tier has
     // been reached and then fails, reforming that same tier never needs
     // one again.
-    // Real-data bug (ICICIBANK.NS, letter D, 12/05/14): once WTF TZ BUY
-    // can reactivate without DTF BAR ENTRY reactivating first (see the
-    // reactivation branch in evalBuy), "PRIME TREND not currently
-    // active" no longer means "permanently stuck" -- D can be actively
-    // re-climbing its own cascade (TZ BUY -> TZ BUY 2 -> DTF TZ BUY ->
-    // BAR -> BAR ENTRY) for weeks with BAR ENTRY not yet reactivated,
-    // and this flag must not treat that as spawn-eligible if PRIME
-    // TREND has NEVER been reached at all -- genuinely stuck (buy also
-    // inactive) is the only case that covers (confirmed: in the
-    // original 2011-2014 scenario, buy.active was always false
-    // whenever PRIME TREND was inactive, since reactivation used to
-    // require BAR ENTRY first). But per the user's own direct
-    // correction (ICICIBANK.NS, letter D, 18/08/14): once PRIME TREND
-    // has ACTUALLY confirmed and then genuinely died (BAR ENTRY SL
-    // 08/07/14), the race toward BAR ENTRY is over for this go-around
-    // and a junior is eligible to compete for the NEXT one regardless
-    // of whether the senior's own lower tier (TZ BUY 2) is still
-    // actively ratcheting its own HH, unfailed at its own level --
-    // "the senior's PRIME TREND never actually completed (confirmed
-    // to its own death/SL) ... OR DTF has not reached BAR ENTRY" is
-    // two separate clauses, not one: PRIME TREND genuinely dying is
-    // sufficient on its own, with no buy-inactive requirement.
-    const barEntryEverActivated =
-      tip !== null &&
-      this.barEntryEverActiveBefore !== undefined &&
-      this.barEntryEverActiveBefore(branchLabel(tip.id), cur.date, tip.bornDate);
+    // Per the user's own simple statement of this rule: "Since PRIME
+    // TREND IS NOT ACTIVE, new cycle can occur" -- no buy-active or
+    // activation-history qualifier at all. Every narrower version of
+    // this flag tried earlier this session (requiring buy inactive,
+    // requiring PRIME TREND to have "ever" activated, scoping that to
+    // the buy's current life) was chasing the wrong fix for what
+    // turned out to be a SEPARATE concern -- same-day senior-vs-junior
+    // precedence (see the collision check right after a fresh spawn,
+    // below) -- not a narrower spawn-eligibility condition. Confirmed
+    // real-data (ICICIBANK.NS, letter D): spawn eligibility is open
+    // continuously from 28/04/14 through 30/06/14 (PRIME TREND never
+    // active that whole stretch) even while D's own TZ BUY 2 is
+    // actively, continuously ratcheting -- TZ GREEN(E) attempting on
+    // 05/05/14 (the same day TZ BUY 2(D) confirms) is terminated
+    // immediately by the senior-precedence rule, not by spawn
+    // eligibility ever having been closed.
     const tipLacksPrimeTrend =
-      tip !== null &&
-      this.barEntryActiveAt !== undefined &&
-      !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate) &&
-      (barEntryEverActivated || tip.buy === null || !tip.buy.active);
+      tip !== null && this.barEntryActiveAt !== undefined && !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate);
     // Real-data bug (ICICIBANK.NS, 2011-2014): "dormant" only ever clears
     // when the dormant branch produces its own fresh milestone -- but once
     // that branch's own PRIME TREND is confirmed dead, the full reset
@@ -803,11 +803,27 @@ export class TZEngine {
     const canSpawn = eligibleAnchor || tip === null;
     let newBranchId: number | null = null;
     if (canSpawn && cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
-      const nid = this.lowestFreeId();
-      const newPc = new ParentCycle(nid, this.nextSeq(), cur.h, cur.l, cur.date);
-      this.branches.set(nid, newPc);
-      perBranchEvents.set(nid, [`TZ GREEN(${branchLabel(nid)})`]);
-      newBranchId = nid;
+      // Per the user's own rule: "Senior cycle event and junior cycle
+      // event occurs on same day and senior event is higher or same
+      // as junior than junior cycle will terminate ... letter is open
+      // for next TZ GREEN." A fresh spawn (tier 1) landing the SAME
+      // candle as ANY event from the current senior (tip already had
+      // to clear redEver to allow spawning at all, so its own tier is
+      // structurally >= 1) is terminated immediately -- not just not
+      // displayed, but destroyed outright, same as wtfJuniorTerminations'
+      // senior-over-junior rule, just same-day instead of a later
+      // candle. Confirmed real-data (ICICIBANK.NS, letter D): TZ
+      // GREEN(E) landing the same week TZ BUY 2(D) HH-ratchets never
+      // shows at all; its letter is immediately free for the next
+      // genuinely quiet week's own fresh spawn.
+      const tipHasEventToday = tip !== null && (perBranchEvents.get(tip.id)?.length ?? 0) > 0;
+      if (!tipHasEventToday) {
+        const nid = this.lowestFreeId();
+        const newPc = new ParentCycle(nid, this.nextSeq(), cur.h, cur.l, cur.date);
+        this.branches.set(nid, newPc);
+        perBranchEvents.set(nid, [`TZ GREEN(${branchLabel(nid)})`]);
+        newBranchId = nid;
+      }
     }
 
     for (const seq of greenSlSeqs) {
@@ -1166,6 +1182,7 @@ export class TZEngine {
         buy.refLow = cur.l;
         buy.red1Ever = false;
         buy.everHadRed1ThisLife = false;
+        buy.currentLifeSince = cur.date;
         buy.red1 = null;
         buy.tzBuy2 = null;
         buy.tzBuy2HhMuted = false;

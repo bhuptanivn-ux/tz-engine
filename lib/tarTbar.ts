@@ -3279,6 +3279,17 @@ export function computeTarTbar(
           const list = spansByLetter.get(letter);
           const span = list && list.length > 0 ? list[list.length - 1] : undefined;
           if (span === undefined) continue;
+          // A "TZ BUY(letter)" landing while this span is already
+          // marked dead is evalBuy's own reactivation branch firing,
+          // not the original formation -- clear diedAt, the same way
+          // the real Buy object resets its own internal state on
+          // reactivation. Without this, a span that died once (e.g.
+          // D's own 2013-07-29 TZ BUY SL) stays "dead" here forever,
+          // even after genuinely reactivating and climbing again --
+          // confirmed real-data (ICICIBANK.NS, letter D): without this
+          // reset, D's own later BAR ENTRY (2014-07-01) was silently
+          // skipped as a termination trigger entirely.
+          if (kind === "TZ BUY" && span.diedAt !== null) span.diedAt = null;
           const tier = kind === "RED" ? 2 : kind === "TZ BUY" ? 3 : 4;
           span.tierDates.push({ tier, date: entry.day.date });
           continue;
