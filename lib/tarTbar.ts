@@ -116,7 +116,7 @@
 // did not fire in the PAYTM window verified (TAR ENTRY was reached
 // there).
 
-import { THRESH, EPS, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
+import { THRESH, EPS, branchLabel, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
 import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, computeStage1Checkpoints, barEntryActiveIntervals, containingWeekStart, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
@@ -2635,46 +2635,10 @@ export function computeTarTbar(
   // so that final TZ BUY(A)/TZ BUY SL(A) pair is correctly cut off by
   // the window boundary below and never shown.
   const letterLineageConcludedSimEvents: { letter: string; date: string; label: string }[] = [];
-  {
-    const wtfDates = wtfDays.map((d) => d.date);
-    // The window's own `untilDate` (from letterLineageConcludedWindows)
-    // answers a DIFFERENT question -- whether a LATER BAR SL2 legitimately
-    // supersedes THIS one as governor -- and is null whenever no such
-    // later BAR SL2 exists, even once a real REAR/fresh TZ BUY 2 has
-    // since reactivated this letter outright (confirmed real-data,
-    // ICICIBANK.NS letter C: REAR(C) 2010-04-05, with no later BAR SL2
-    // at all, leaves that field null forever). The simulated ladder needs
-    // the ACTUAL chronological reengagement date instead, found the same
-    // way hasLegitimateReengagement itself scans, just with no upper
-    // bound -- otherwise the simulation runs on indefinitely past the
-    // point the real engine has already taken back over, producing a
-    // parallel, conflicting narrative.
-    const rearOrRestartPattern = (letter: string) => new RegExp(`^REAR(?: RE-ENTER)?(?: 2)?(?: SL)?\\(${letter}\\)$|^TZ BUY 2\\(${letter}\\)$`);
-    function firstReengagementAfter(letter: string, fromExclusive: string): string | null {
-      const pattern = rearOrRestartPattern(letter);
-      for (const entry of wtfTrace) {
-        if (entry.day.date <= fromExclusive) continue;
-        if (entry.events.some((e) => pattern.test(e))) return entry.day.date;
-      }
-      return null;
-    }
-    for (const w of letterLineageConcludedWindows) {
-      const startDate = containingWeekStart(wtfDates, w.sinceDate);
-      if (startDate === null) continue;
-      const startIdx = wtfDays.findIndex((d) => d.date === startDate);
-      if (startIdx === -1) continue;
-      const realUntil = firstReengagementAfter(w.letter, w.sinceDate);
-      const simTrace = runWtfTrace(wtfDays.slice(startIdx));
-      for (const entry of simTrace) {
-        if (realUntil !== null && entry.day.date >= realUntil) break;
-        for (const e of entry.events) {
-          const base = e.replace(/\([^)]*\)$/, "");
-          if (/HH$/.test(base) || /LL$/.test(base)) continue;
-          letterLineageConcludedSimEvents.push({ letter: w.letter, date: entry.day.date, label: base });
-        }
-      }
-    }
-  }
+  // Populated further below, after wtfSpanLifetimes is computed -- the
+  // letter this simulated ladder gets tagged under needs that same
+  // natural-death-or-termination occupancy model (see that field's own
+  // comment), not a from-scratch one.
 
   function sarExitAtFor(wtfLabel: string, formationDate: string, endDate: string | null): (date: string) => number | null {
     const letter = wtfLabel.split(".")[0];
@@ -3363,6 +3327,81 @@ export function computeTarTbar(
           ? s.diedAt
           : terminatedEntry?.terminatedAt ?? null;
       wtfSpanLifetimes.push({ letter: s.letter, bornDate: s.bornDate, effectiveDeathDate });
+    }
+  }
+
+  // Per the user's own rule: re-tagging a letterLineageConcludedWindows
+  // simulated ladder under the SAME governing letter (w.letter) is
+  // wrong -- that letter's own cycle can still reactivate (BAR SL2 only
+  // starts a race toward REAR, it does not kill the buy), so if its own
+  // real events and this simulated ladder's events ever land on the
+  // same date, they would collide under one label. "The letter for
+  // cycle which faces BAR SL2 will not be used for next cycle unless
+  // its TZ GREEN SL also triggers" -- this simulated ladder needs its
+  // OWN fresh letter: the lowest one not currently occupied as of
+  // `sinceDate`, same convention as the live engine's own lowestFreeId,
+  // and same natural-death-or-termination occupancy model as
+  // wtfSpanLifetimes above (a dormant junior that was superseded via
+  // wtfJuniorTerminations but never literally hit its own "TZ GREEN SL"
+  // must count as free, not occupied forever -- confirmed real-data,
+  // ICICIBANK.NS: a from-scratch model keyed only on literal "TZ GREEN
+  // SL" text wrongly walked all the way to letter J here, since B/D/E/
+  // F/G/H/I were all historically terminated/superseded letters that
+  // never produced that literal text). `wtfSpanLifetimes` already
+  // captures exactly this ("is this letter+bornDate's own life over,
+  // whichever of natural death or termination came first"), computed
+  // just above -- reused here rather than rebuilt from scratch.
+  {
+    const wtfDates = wtfDays.map((d) => d.date);
+    const rearOrRestartPattern = (letter: string) => new RegExp(`^REAR(?: RE-ENTER)?(?: 2)?(?: SL)?\\(${letter}\\)$|^TZ BUY 2\\(${letter}\\)$`);
+    function firstReengagementAfter(letter: string, fromExclusive: string): string | null {
+      const pattern = rearOrRestartPattern(letter);
+      for (const entry of wtfTrace) {
+        if (entry.day.date <= fromExclusive) continue;
+        if (entry.events.some((e) => pattern.test(e))) return entry.day.date;
+      }
+      return null;
+    }
+    const realOccupancy = new Map<string, { start: string; end: string | null }[]>();
+    for (const s of wtfSpanLifetimes) {
+      const list = realOccupancy.get(s.letter) ?? [];
+      list.push({ start: s.bornDate, end: s.effectiveDeathDate });
+      realOccupancy.set(s.letter, list);
+    }
+    const simOccupancy = new Map<string, { start: string; end: string | null }[]>();
+    function isOccupied(letter: string, date: string): boolean {
+      const real = realOccupancy.get(letter) ?? [];
+      if (real.some((iv) => date >= iv.start && (iv.end === null || date < iv.end))) return true;
+      const sim = simOccupancy.get(letter) ?? [];
+      return sim.some((iv) => date >= iv.start && (iv.end === null || date < iv.end));
+    }
+    function lowestFreeLetterAt(date: string): string {
+      let n = 1;
+      while (isOccupied(branchLabel(n), date)) n += 1;
+      return branchLabel(n);
+    }
+    const sortedWindows = [...letterLineageConcludedWindows].sort((a, b) => (a.sinceDate < b.sinceDate ? -1 : a.sinceDate > b.sinceDate ? 1 : 0));
+    for (const w of sortedWindows) {
+      const startDate = containingWeekStart(wtfDates, w.sinceDate);
+      if (startDate === null) continue;
+      const startIdx = wtfDays.findIndex((d) => d.date === startDate);
+      if (startIdx === -1) continue;
+      const realUntil = firstReengagementAfter(w.letter, w.sinceDate);
+      const newLetter = lowestFreeLetterAt(w.sinceDate);
+      const simTrace = runWtfTrace(wtfDays.slice(startIdx));
+      let simDied: string | null = null;
+      for (const entry of simTrace) {
+        if (realUntil !== null && entry.day.date >= realUntil) break;
+        for (const e of entry.events) {
+          const base = e.replace(/\([^)]*\)$/, "");
+          if (/HH$/.test(base) || /LL$/.test(base)) continue;
+          letterLineageConcludedSimEvents.push({ letter: newLetter, date: entry.day.date, label: base });
+          if (base === "TZ GREEN SL" && simDied === null) simDied = entry.day.date;
+        }
+      }
+      const list = simOccupancy.get(newLetter) ?? [];
+      list.push({ start: w.sinceDate, end: simDied });
+      simOccupancy.set(newLetter, list);
     }
   }
 
