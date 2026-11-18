@@ -1735,14 +1735,6 @@ export function containingWeekStart(wtfDates: string[], d: string): string | nul
 // more row.
 // --------------------------------------------------------------------
 
-export const DTF_SL_EXIT_TYPES = new Set([
-  "DTF TZ BUY SL (wipes ENTRY)",
-  "DTF BAR ENTRY SL",
-  "DTF BAR SL (wipes ENTRY)",
-  "DTF BAR SL + DTF BAR ENTRY SL",
-  "SAR ENTRY SL",
-]);
-
 interface Red2Event {
   date: string;
   refLow: number;
@@ -1761,49 +1753,6 @@ function red2EventsForLetter(wtfTrace: WtfTraceEntry[], letter: string, formatio
     if (evs.includes(label)) events.push({ date: day.date, refLow: day.l });
   }
   return events;
-}
-
-/** Merges the WTF anchor's own terminal failure label onto the last
- * (non-nested) row among the given `sides` -- the BAR/BAR ENTRY ladder's
- * rows and the PBAR/PBAR ENTRY ladder's rows are interleaved in `rows`
- * in whatever order they actually closed, so each track's own trailing
- * row must be found and merged independently rather than assuming the
- * array's last entry overall belongs to the track that deserves the
- * merge. */
-function mergeTrailingWtfSl(rows: PrimeTrendResult[], sides: PrimeTrendResult["side"][], label: string | null) {
-  if (label === null) return;
-  for (let r = rows.length - 1; r >= 0; r--) {
-    if (!sides.includes(rows[r].side)) continue;
-    if (DTF_SL_EXIT_TYPES.has(rows[r].exitType)) {
-      rows[r] = { ...rows[r], exitType: `DTF SL - ${label}` };
-    }
-    break;
-  }
-}
-
-/** Short label for an instance's own terminal WTF-side event, for the
- * merged "DTF SL - <WTF SL>" exit-type annotation -- null if the instance
- * never explicitly fails (still open, or collaterally terminated with no
- * event) within the data. Deliberately excludes "BAR SL2(" -- that WTF-side
- * instance-ending event ("BAR SL 2") is a different thing from the DTF-side
- * nested cascade's own "BAR 2 SL" (or combined "BAR 1 SL + BAR 2 SL"), a
- * big logic difference confirmed via DIXON: the BAR 1 - BAR 2 cycle's own
- * exit on 2022-05-02 is a real, independently-dated, independently-priced
- * DTF BAR 2 SL, a full week before the WTF anchor's own BAR SL 2 on
- * 2022-05-09 -- merging the two into one label conflates them. */
-export function wtfSlLabel(endEvent: string | null): string | null {
-  if (endEvent === null) return null;
-  if (
-    endEvent.startsWith("TZ BUY 2 SL(") ||
-    endEvent.startsWith("REAR 2 SL(") ||
-    endEvent.startsWith("REAR RE-ENTER 2 SL(") ||
-    endEvent.startsWith("TZ BUY SL(") ||
-    endEvent.startsWith("REAR SL(") ||
-    endEvent.startsWith("REAR RE-ENTER SL(")
-  ) {
-    return endEvent.split("(")[0];
-  }
-  return null;
 }
 
 // --------------------------------------------------------------------
@@ -2907,18 +2856,18 @@ function simulateDtfAll(
     );
   }
 
-  // Merge the last outer (non-nested) row's exit type with the instance's
-  // own later WTF-side failure, when that cycle closed on a DTF-side SL
-  // and the WTF anchor itself independently failed afterward with no
-  // further DTF reactivation in between. (With BAR theory currently
-  // dormant -- see this module's header -- BAR ENTRY/REAR ENTRY/REAR
-  // RE-ENTER and INVALID SAR ENTRY are the only tracks that can produce a
-  // row here; this used to also need to check PBAR ENTRY/TAR ENTRY/BAR 1
-  // - BAR 2 independently, since they could alternate or run in parallel
-  // with each other -- see lib/primeTrendBarTheory.ts if that returns.)
-  const wtfLabel = wtfSlLabel(inst.endEvent);
-  mergeTrailingWtfSl(rows, ["BAR ENTRY", "REAR ENTRY", "REAR RE-ENTER", "INVALID SAR ENTRY"], wtfLabel);
-
+  // Per the user's own rule: show the correct event on the actual day it
+  // happened, for both WTF and DTF -- no merging. This file used to merge
+  // a DTF-side row's own exit type with the instance's LATER, independent
+  // WTF-side failure label (whenever no further DTF reactivation happened
+  // in between), to avoid showing a DTF close with no explanation. But the
+  // merge had no check on how far apart the two events actually were --
+  // confirmed real-data (ICICIBANK.NS, letter D): a DTF close on
+  // 2013-02-14 was merge-labeled with "TZ BUY 2 SL" even though that WTF
+  // event doesn't fire until 2013-04-01 (46 days later); a separate
+  // instance's DTF close was merge-labeled "TZ BUY SL" 346 days before
+  // the real one. Removed entirely -- each row now always shows its own,
+  // real, independently-dated exit type.
   const stage1Active = s1 !== null && s1.active;
   // BAR (tier 1) currently active -- the main ladder's own pre-escalation
   // state, distinct from stage2Active below.
