@@ -1546,6 +1546,45 @@ export class TZEngine {
   }
 
   // -----------------------------------------------------------------
+  /** Single, shared gate for "is BAR THEORY (RED1/RED2/BAR/BAR 2, and
+   * fresh WTF BAR formation generally) allowed to progress for this
+   * branch right now" -- per the user's own rule: "IF PRIME TREND IS
+   * ACTIVE, then only following weeks can be RED1-RED2-BAR-BAR2 ... If
+   * PRIME TREND once got active and later SL'd BUT NOT REACTIVATED at
+   * the time when WTF RED1 occurs then WTF RED1 will not be recorded,
+   * neither in frontend nor in backend." The one exception is the
+   * original scope of this mechanism -- a RED1 (or fresh BAR) that
+   * forms BEFORE PRIME TREND has EVER activated for this buy's life
+   * serves SPAWN ELIGIBILITY ("TZ GREEN - RED - TZ GREEN B") and is
+   * still legitimate. So: allowed when PRIME TREND has never activated
+   * before, OR it is currently active right now -- never when it
+   * activated-then-died and has not yet reactivated.
+   *
+   * Every one of RED1's two attach sites (progressTopLevelRed1,
+   * attachFreshRed1) and every fresh-WTF-BAR-formation site
+   * (checkBarPending, the INVALID-BAR-SL same-lineage reform, and
+   * evalBarLineagesProgress's own freshBarReady check) must call
+   * through here rather than re-deriving this condition inline --
+   * four of those five sites were independently missing this gate at
+   * different points in this file's history (each only discovered via
+   * its own separate real-data case) specifically because the
+   * condition was copied by hand instead of shared. A future change to
+   * this rule (or a future site that needs it) only has one place to
+   * get right.
+   *
+   * Confirmed real-data (ICICIBANK.NS, letter D): RED1(D) 08/10/12
+   * (PRIME TREND never yet activated) is legitimate; RED1(D) 16/06/14
+   * (PRIME TREND activated-and-died 02/01/13-06/02/13, not yet
+   * reactivated as of 16/06/14) must not attach at all; BAR(D.1)
+   * 2011-02-14 (PRIME TREND died 2011-01-10, not yet reactivated) must
+   * not form at all either. */
+  private barTheoryAllowed(letter: string, date: string, bornDate: string): boolean {
+    const everActivated = this.barEntryEverActiveBefore !== undefined && this.barEntryEverActiveBefore(letter, date, bornDate);
+    const currentlyActive = this.barEntryActiveAt !== undefined && this.barEntryActiveAt(letter, date, bornDate);
+    return !everActivated || currentlyActive;
+  }
+
+  // -----------------------------------------------------------------
   /** The top-level, buy-wide RED1->RED2 attach-or-progress step --
    * factored out of the main dispatch chain so it can run from TWO
    * sites: its own ordinary dispatch slot (no BAR lineage currently
@@ -1558,28 +1597,14 @@ export class TZEngine {
   private progressTopLevelRed1(pc: ParentCycle, buy: Buy, branchLbl: string, prev: Day, cur: Day): string[] {
     if (buy.red1 === null || !buy.red1.active) {
       const ev: string[] = [];
-      // Per the user's own rule: "IF PRIME TREND IS ACTIVE, then only
-      // following weeks can be RED1-RED2-BAR-BAR2 ... If PRIME TREND
-      // once got active and later SL'd BUT NOT REACTIVATED at the time
-      // when WTF RED1 occurs then WTF RED1 will not be recorded,
-      // neither in frontend nor in backend." The one exception is the
-      // original scope of this mechanism -- a RED1 that fires BEFORE
-      // PRIME TREND has EVER activated for this buy's life serves
-      // SPAWN ELIGIBILITY ("TZ GREEN - RED - TZ GREEN B") and is still
-      // legitimate. So: eligible when PRIME TREND has never activated
-      // before, OR it is currently active right now -- never when it
-      // activated-then-died and has not yet reactivated. Confirmed
-      // real-data (ICICIBANK.NS, letter D): RED1(D) 08/10/12 (PRIME
-      // TREND never yet activated) is legitimate; RED1(D) 16/06/14
-      // (PRIME TREND activated-and-died 02/01/13-06/02/13, not yet
-      // reactivated as of 16/06/14 -- DTF BAR ENTRY only reactivates
-      // 01/07/14) must not attach at all, and the BAR SL(D) it would
-      // otherwise produce 07/07/14 must not occur either.
+      // See barTheoryAllowed's own doc comment for the rule this gate
+      // enforces.
+      const red1Eligible = this.barTheoryAllowed(branchLbl, cur.date, pc.bornDate);
+      // Needed separately below (not just the combined gate) to scope
+      // everHadRed1ThisLife to the "before PRIME TREND ever activated"
+      // exception case specifically.
       const primeTrendEverActivated =
         this.barEntryEverActiveBefore !== undefined && this.barEntryEverActiveBefore(branchLbl, cur.date, pc.bornDate);
-      const primeTrendCurrentlyActive =
-        this.barEntryActiveAt !== undefined && this.barEntryActiveAt(branchLbl, cur.date, pc.bornDate);
-      const red1Eligible = !primeTrendEverActivated || primeTrendCurrentlyActive;
       if (
         red1Eligible &&
         !buy.awaitingBar2SinceRed2 &&
@@ -1671,11 +1696,7 @@ export class TZEngine {
     // this exact path (buy.red1 already inactive from RED2 2010-11-22,
     // D.1 past BAR 2 since 2011-03-28) while PRIME TREND had died
     // 2011-01-10 and not yet reactivated.
-    const primeTrendEverActivated =
-      this.barEntryEverActiveBefore !== undefined && this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate);
-    const primeTrendCurrentlyActive =
-      this.barEntryActiveAt !== undefined && this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate);
-    if (primeTrendEverActivated && !primeTrendCurrentlyActive) return ev;
+    if (!this.barTheoryAllowed(branchLabel(pc.id), cur.date, pc.bornDate)) return ev;
     if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
       if (!stageObj.red1Since) stageObj.refHighAtRed1 = stageObj.refHigh;
       stageObj.red1Since = true;
@@ -1768,14 +1789,7 @@ export class TZEngine {
     // real-data (ICICIBANK.NS, letter D): BAR(D.1) wrongly reforming
     // 2011-02-14 (PRIME TREND died 2011-01-10, not yet reactivated)
     // collaterally destroyed TZ GREEN(E)'s own same-day spawn attempt.
-    if (
-      this.barEntryActiveAt !== undefined &&
-      this.barEntryEverActiveBefore !== undefined &&
-      this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate) &&
-      !this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate)
-    ) {
-      return [];
-    }
+    if (!this.barTheoryAllowed(branchLabel(pc.id), cur.date, pc.bornDate)) return [];
     if (cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
       const subLabel = this.nextBarLabel(buy, branchLabel(pc.id));
       const newLin = new BarLineage(subLabel, cur.h, cur.l);
@@ -2235,13 +2249,8 @@ export class TZEngine {
             // Per the user's own rule: this reform is a fresh "BAR("
             // occurring just as much as a brand-new lineage is -- not
             // applicable at all while PRIME TREND is not currently
-            // active (see checkBarPending's own identical gate and its
-            // comment for the real-data case this closes).
-            const primeTrendGateOpen =
-              this.barEntryActiveAt === undefined ||
-              this.barEntryEverActiveBefore === undefined ||
-              !this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate) ||
-              this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate);
+            // active (see barTheoryAllowed's own doc comment).
+            const primeTrendGateOpen = this.barTheoryAllowed(branchLabel(pc.id), cur.date, pc.bornDate);
             if (isNewest && this.barEntryShape(prev, cur) && buy.barPending && primeTrendGateOpen) {
               lin.sl = null;
               lin.refHigh = cur.h;
@@ -2444,13 +2453,8 @@ export class TZEngine {
     const freshBarReady = newestIsDead || buy.barPending;
     // Per the user's own rule: this fresh BAR lineage formation is not
     // applicable at all while PRIME TREND is not currently active --
-    // same gate as checkBarPending's own (see its comment for the
-    // real-data case).
-    const primeTrendGateOpenForFreshBar =
-      this.barEntryActiveAt === undefined ||
-      this.barEntryEverActiveBefore === undefined ||
-      !this.barEntryEverActiveBefore(labelId, cur.date, pc.bornDate) ||
-      this.barEntryActiveAt(labelId, cur.date, pc.bornDate);
+    // see barTheoryAllowed's own doc comment.
+    const primeTrendGateOpenForFreshBar = this.barTheoryAllowed(labelId, cur.date, pc.bornDate);
     if (!reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur) && primeTrendGateOpenForFreshBar) {
       const surviving: BarLineage[] = [];
       const dropped: BarLineage[] = [];
