@@ -3272,12 +3272,21 @@ export function computeTarTbar(
     }
     // DTF TZ BUY (Stage 1, tier 5) -- matched to its owning span by exact
     // formationDate (that span's own "TZ BUY 2" date), never by bare
-    // letter alone (recycled across decades).
+    // letter alone (recycled across decades). EVERY "TZ BUY" checkpoint
+    // in this instance's own ladder is its own termination trigger, not
+    // just the first -- a later reconfirmation (after an intervening
+    // "TZ BUY SL") is just as real a tier-5 escalation as the original.
+    // Confirmed real-data (ICICIBANK.NS, letter D): DTF TZ BUY confirms
+    // 2010-08-19, SL's 2010-08-27, reconfirms 2010-09-06 -- the SAME day
+    // TZ GREEN(E) spawns -- so E must be terminated same-day (same-day
+    // senior-precedence) off this reconfirmation, not left alive until
+    // D's later BAR ENTRY (2010-09-13) is reached instead.
     for (const inst of computeStage1Checkpoints(wtfRows, dtfRows)) {
       const owner = (spansByLetter.get(inst.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === inst.formationDate));
       if (owner === undefined) continue;
-      const first = inst.checkpoints.find((c) => c.label === "TZ BUY");
-      if (first !== undefined) owner.tierDates.push({ tier: 5, date: first.date });
+      for (const c of inst.checkpoints) {
+        if (c.label === "TZ BUY") owner.tierDates.push({ tier: 5, date: c.date });
+      }
     }
     // DTF BAR ENTRY (tier 6) -- same exact-formationDate match, from
     // computePrimeTrend's own TZ BUY 2 family, level-0 "BAR ENTRY" rows.
