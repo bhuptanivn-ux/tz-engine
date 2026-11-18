@@ -65,7 +65,7 @@ function dedupeBare(arr: string[]): string[] {
   return Array.from(new Set(arr.map(bareLabel)));
 }
 
-function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
+export function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
   const dtfRows = loadCsv(dailyCsv);
   const wtfRows = loadCsv(weeklyCsv);
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
@@ -348,4 +348,4 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) main();
