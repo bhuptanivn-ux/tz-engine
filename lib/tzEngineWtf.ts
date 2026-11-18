@@ -835,12 +835,21 @@ export class TZEngine {
       // HH(B)" that candle must NOT block a brand-new TZ GREEN(C) from
       // spawning; only a genuine fresh tier event (e.g. TZ BUY 2(D)
       // 2014-05-05) does.
+      // The comment above says "a GENUINE tier event" -- excluding only
+      // HH/LL noise is too broad: it also catches BAR-theory sub-events
+      // (RED1/RED2/BAR/INVALID RED1/etc.) that are not tier escalations
+      // at all, same-day senior-precedence was never meant to cover
+      // those. Scoped to the actual WTF tier ladder this rule and
+      // wtfJuniorTerminations both key off (TZ GREEN/RED/TZ BUY/TZ BUY
+      // 2 -- DTF tiers never appear in perBranchEvents, which is
+      // WTF-only). Confirmed real-data (ICICIBANK.NS, letter D):
+      // INVALID RED1(D) 2012-10-22 wrongly blocked TZ GREEN(E) from
+      // spawning that same candle (the entry-shape price condition was
+      // otherwise satisfied) -- INVALID RED1 is not a tier event.
+      const TIER_EVENT_BASES = new Set(["TZ GREEN", "RED", "TZ BUY", "TZ BUY 2"]);
       const tipHasEventToday =
         tip !== null &&
-        (perBranchEvents.get(tip.id) ?? []).some((e) => {
-          const base = e.slice(0, e.indexOf("("));
-          return !base.endsWith("HH") && !base.endsWith("LL");
-        });
+        (perBranchEvents.get(tip.id) ?? []).some((e) => TIER_EVENT_BASES.has(e.slice(0, e.indexOf("("))));
       if (!tipHasEventToday) {
         const nid = this.lowestFreeId();
         const newPc = new ParentCycle(nid, this.nextSeq(), cur.h, cur.l, cur.date);
