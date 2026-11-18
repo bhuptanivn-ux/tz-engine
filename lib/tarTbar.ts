@@ -3387,21 +3387,53 @@ export function computeTarTbar(
       const startIdx = wtfDays.findIndex((d) => d.date === startDate);
       if (startIdx === -1) continue;
       const realUntil = firstReengagementAfter(w.letter, w.sinceDate);
-      const newLetter = lowestFreeLetterAt(w.sinceDate);
       const simTrace = runWtfTrace(wtfDays.slice(startIdx));
-      let simDied: string | null = null;
+      // Per the user's own rule: the isolated simulation is a REAL
+      // TZEngine run with its own ordinary spawn-eligibility logic, so
+      // it can legitimately spawn its OWN distinct sibling letter
+      // within this same window (e.g. "TZ GREEN - RED - TZ GREEN B"
+      // once a RED fires with no buy formed yet) -- flattening every
+      // internal letter it ever produces into ONE external tag would
+      // silently merge two genuinely different cycles under one label.
+      // Confirmed real-data (ICICIBANK.NS): the simulation's own
+      // internal "B" spawning 2008-09-01 (after internal "A"'s own RED
+      // 2008-08-18, with A's buy still null) must get its own fresh
+      // external letter (E), not reuse A's (D). Each internal top-level
+      // letter the simulation ever introduces gets mapped, on first
+      // sight, to its own lowest-free external letter as of that exact
+      // date -- the SAME internal letter reusing its own slot later
+      // (dying and respawning within this window, same as the live
+      // engine's own ordinary reuse) keeps the SAME external mapping.
+      const internalToExternal = new Map<string, string>();
       for (const entry of simTrace) {
         if (realUntil !== null && entry.day.date >= realUntil) break;
         for (const e of entry.events) {
           const base = e.replace(/\([^)]*\)$/, "");
           if (/HH$/.test(base) || /LL$/.test(base)) continue;
-          letterLineageConcludedSimEvents.push({ letter: newLetter, date: entry.day.date, label: base });
-          if (base === "TZ GREEN SL" && simDied === null) simDied = entry.day.date;
+          const letterMatch = /\(([A-Za-z0-9]+)\)$/.exec(e);
+          const internalLetter = letterMatch !== null ? letterMatch[1].split(".")[0] : "A";
+          let extLetter = internalToExternal.get(internalLetter);
+          if (extLetter === undefined) {
+            extLetter = lowestFreeLetterAt(entry.day.date);
+            internalToExternal.set(internalLetter, extLetter);
+          }
+          const list = simOccupancy.get(extLetter) ?? [];
+          const last = list.length > 0 ? list[list.length - 1] : undefined;
+          // Reopen this external letter's own occupancy on a respawn --
+          // the SAME internal letter dying (closing it) and later
+          // reforming within this same window is a fresh life, same as
+          // the live engine's own ordinary letter reuse.
+          if (last === undefined || last.end !== null) {
+            list.push({ start: entry.day.date, end: null });
+            simOccupancy.set(extLetter, list);
+          }
+          letterLineageConcludedSimEvents.push({ letter: extLetter, date: entry.day.date, label: base });
+          if (base === "TZ GREEN SL") {
+            const cur = simOccupancy.get(extLetter) as { start: string; end: string | null }[];
+            cur[cur.length - 1].end = entry.day.date;
+          }
         }
       }
-      const list = simOccupancy.get(newLetter) ?? [];
-      list.push({ start: w.sinceDate, end: simDied });
-      simOccupancy.set(newLetter, list);
     }
   }
 
