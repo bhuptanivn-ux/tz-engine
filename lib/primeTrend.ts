@@ -1357,9 +1357,19 @@ export function runWtfTrace(
     let trace = runWtfTraceCore(wtfDays, new TZEngine(true));
     let activeAt: GateFn | undefined;
     let everActiveBefore: GateFn | undefined;
+    let sar2ConfirmedBefore: GateFn | undefined;
     const MAX_ROUNDS = 6;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const intervals = barEntryActiveIntervals(wtfRowsForGate, dtfRowsForGate, trace);
+      // "BAR SL 2 - SAR - SAR 2 is mandatory for REAR" -- see
+      // TZEngine's own sar2EverConfirmedBefore constructor comment.
+      // Recomputed each round from the CURRENT round's trace, same as
+      // `intervals` above.
+      const sar2Dates = sar2ConfirmedByLetter(wtfRowsForGate, dtfRowsForGate, trace);
+      sar2ConfirmedBefore = (letter, date, bornDate) => {
+        const entries = (sar2Dates.get(letter) ?? []).filter((e) => e.formationDate >= bornDate);
+        return entries.some((e) => date >= e.sar2Date);
+      };
       // `bornDate` excludes any interval that started before this
       // branch itself was even spawned -- letters get recycled across
       // completely unrelated branches over a long enough history, so
@@ -1382,12 +1392,17 @@ export function runWtfTrace(
         const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
         return ivs.some((iv) => iv.sinceDate < date);
       };
-      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore));
+      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore));
       const stable = wtfTraceEventsEqual(trace, nextTrace);
       trace = nextTrace;
       if (stable) break;
     }
-    return runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore), barSl2LogOut, hiddenEventLogOut);
+    return runWtfTraceCore(
+      wtfDays,
+      new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore),
+      barSl2LogOut,
+      hiddenEventLogOut
+    );
   }
   // `true`: this always runs on WEEKLY candles (PRIME TREND's fixed
   // WTF=weekly rule; lib/tarTbar.ts's own findWindows, this function's
@@ -3116,15 +3131,46 @@ export function computePrimeTrend(
  * real-data (DIXON.NS): this is what makes the otherwise-invisible
  * 2021-08-24 "SAR 2" (nothing open at that exact moment, so it never
  * appears in computePrimeTrend's own row-based output) show up at all. */
-export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] {
+export function computePrimeTrendCheckpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): { letter: string; formationDate: string; checkpoints: PostBarSl2Checkpoint[] }[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows, wtfTraceOverride);
 
-  const results: { letter: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
+  const results: { letter: string; formationDate: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
   for (const inst of instances) {
     const [, , checkpoints] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
-    if (checkpoints.length > 0) results.push({ letter: inst.letter, checkpoints });
+    if (checkpoints.length > 0) results.push({ letter: inst.letter, formationDate: inst.formationDate, checkpoints });
   }
   return results;
+}
+
+/** Per the user's own rule: "BAR SL 2 - SAR - SAR 2 is mandatory for
+ * REAR" -- WTF REAR (the climb back above a BAR 2 lineage's own
+ * reference high once WTF BAR SL2 has confirmed) only becomes eligible
+ * from the date the corresponding DTF SAR 2 -- this RED2/BAR-SL2-anchored
+ * ladder's own "SAR 2" checkpoint, seeded off that SAME BAR SL2's
+ * reference low -- itself confirms, never automatically off WTF's BAR
+ * SL2 alone. Since the SAR ladder only watches DTF candles strictly
+ * AFTER the WTF BAR SL2 date, SAR 2 (if it ever confirms at all)
+ * necessarily lands on a later date, never the same candle -- an
+ * instance whose ladder never reaches "SAR 2" (stays stuck at INVALID
+ * SAR ENTRY, same real-data shape as branchLabel's own DIXON.NS comment)
+ * never opens WTF REAR at all. One entry per instance that ever reaches
+ * "SAR 2" (its FIRST such checkpoint only -- once reached, REAR stays
+ * eligible from then on for that instance's own life). */
+export function sar2ConfirmedByLetter(
+  wtfRows: OhlcRow[],
+  dtfRows: OhlcRow[],
+  wtfTraceOverride?: WtfTraceEntry[]
+): Map<string, { formationDate: string; sar2Date: string }[]> {
+  const result = new Map<string, { formationDate: string; sar2Date: string }[]>();
+  for (const { letter, formationDate, checkpoints } of computePrimeTrendCheckpoints(wtfRows, dtfRows, wtfTraceOverride)) {
+    const sar2 = checkpoints.find((c) => c.label === "SAR 2");
+    if (sar2 === undefined) continue;
+    const entry = { formationDate, sar2Date: sar2.date };
+    const existing = result.get(letter);
+    if (existing) existing.push(entry);
+    else result.set(letter, [entry]);
+  }
+  return result;
 }
 
 /** Stage 1 (DTF TZ BUY)'s own full activation/SL ladder, per instance --

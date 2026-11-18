@@ -368,10 +368,25 @@ export class TZEngine {
   // class -- see evalBuy's own comment: PRIME TREND dying no longer
   // freezes or resets the WTF buy at all, per the user's own direct
   // correction ("BAR ENTRY SL does not terminate PRIME TREND").
+  // `sar2EverConfirmedBefore` -- per the user's own rule: "BAR SL 2 - SAR
+  // - SAR 2 is mandatory for REAR," i.e. WTF REAR (the climb back above a
+  // BAR 2 lineage's own reference high once BAR SL2 has confirmed) only
+  // becomes eligible from the date the corresponding DTF SAR 2 (the
+  // RED2/BAR-SL2-anchored DTF ladder in lib/primeTrend.ts, seeded off
+  // this SAME BAR SL2's own reference low) itself confirms -- never
+  // automatically off WTF's own BAR SL2 alone. Since that DTF ladder only
+  // watches DTF candles strictly AFTER the WTF BAR SL2 date, SAR 2 (if it
+  // ever confirms at all) necessarily lands on a LATER date, never the
+  // same candle. Same bootstrap convention as barEntryActiveAt/
+  // barEntryEverActiveBefore: only lib/primeTrend.ts's runWtfTrace's own
+  // DTF-aware pass supplies this; every other caller leaves it undefined,
+  // in which case this gate stays permissive (unconstrained) exactly as
+  // before this feature existed.
   constructor(
     private weeklyBarSlRear: boolean = false,
     private barEntryActiveAt?: (letter: string, date: string, bornDate: string) => boolean,
-    private barEntryEverActiveBefore?: (letter: string, date: string, bornDate: string) => boolean
+    private barEntryEverActiveBefore?: (letter: string, date: string, bornDate: string) => boolean,
+    private sar2EverConfirmedBefore?: (letter: string, date: string, bornDate: string) => boolean
   ) {}
 
   private nextSeq(): number {
@@ -2159,7 +2174,16 @@ export class TZEngine {
           if (cur.h >= sl.refHigh && cur.h - sl.refHigh >= THRESH - EPS && cur.c >= sl.refHigh) {
             linEv.push(`INVALID BAR SL(${lin.label})`);
             buy.barHighPool = Math.max(buy.barHighPool, cur.h);
-            if (isNewest && this.barEntryShape(prev, cur)) {
+            // Per the user's own rule: a new BAR lineage -- whether a
+            // brand-new label or this same lineage reforming after its
+            // own INVALID BAR SL -- requires a fresh RED1-RED2 (buy.
+            // barPending) to have completed; recovering back above the
+            // SL reference alone is not enough. This mirrors the
+            // newestIsDead/freshBarReady fix just made to the sibling
+            // fresh-BAR-formation check below, for the same reason:
+            // escalated (bar2 !== null) lineages always need the door
+            // reopened by RED1-RED2, never automatically.
+            if (isNewest && this.barEntryShape(prev, cur) && buy.barPending) {
               lin.sl = null;
               lin.refHigh = cur.h;
               lin.refLow = cur.l;
@@ -2274,10 +2298,20 @@ export class TZEngine {
           // own TZ BUY/TZ BUY 2 progress), since each branch has its own
           // Buy instance and thus its own independent rearWinnerLabel.
           if (lin.label === buy.rearWinnerLabel) {
+            // Per the user's own rule: "BAR SL 2 - SAR - SAR 2 is
+            // mandatory for REAR" -- WTF REAR does not open just because
+            // WTF's own BAR SL2 confirmed; it also needs the DTF SAR 2
+            // (the corresponding DTF-level ladder, anchored off this same
+            // BAR SL2's own reference low) to have ALSO confirmed, by
+            // this candle's date. See sar2EverConfirmedBefore's own
+            // constructor comment for why this is permissive
+            // (unconstrained) whenever that callback is not supplied.
+            const sar2Gate =
+              this.sar2EverConfirmedBefore === undefined || this.sar2EverConfirmedBefore(labelId, cur.date, pc.bornDate);
             const preRef = preTodayBar2Ref.get(lin.label);
             const rearRef = preRef !== undefined && preRef !== null ? preRef : (lin.bar2 as Bar2).refHigh;
             const isRear = cur.l >= prev.l && cur.h > rearRef && cur.h - rearRef >= THRESH - EPS && cur.c >= rearRef;
-            if (isRear) {
+            if (isRear && sar2Gate) {
               rearWinner = [cur.h, cur.l];
               break;
             }
@@ -2335,7 +2369,19 @@ export class TZEngine {
     // earlier, narrower version of this flag prevented (back when REAR
     // had no path of its own for a bare lineage at all).
     const literalNewest = buy.barLineages.length > 0 ? buy.barLineages[buy.barLineages.length - 1] : null;
-    const newestIsDead = literalNewest === null || (literalNewest.sl !== null && !literalNewest.sl.sl2);
+    // Per the user's own rule: a BARE (never-escalated, bar2 === null)
+    // BAR's plain SL is a dead end that reopens the door for a fresh BAR 1
+    // on the very next entry-shape candle with no RED1-RED2 of its own
+    // needed. But once a lineage has ESCALATED to BAR 2, only a fresh
+    // RED1-RED2 (buy.barPending, set whenever RED2 actually confirms --
+    // before, on, or after this SL/SL2) reopens that door again, whether
+    // this lineage died via a plain SL or went all the way to BAR SL2.
+    // The old version of this check treated ANY SL-without-SL2 lineage as
+    // an automatic dead end regardless of whether it had ever escalated,
+    // wrongly letting a fresh BAR form without RED1-RED2 completing.
+    const newestIsDead =
+      literalNewest === null ||
+      (literalNewest.bar2 === null && literalNewest.sl !== null && !literalNewest.sl.sl2);
     const freshBarReady = newestIsDead || buy.barPending;
     if (!reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
       const surviving: BarLineage[] = [];
