@@ -1756,6 +1756,26 @@ export class TZEngine {
 
   // -----------------------------------------------------------------
   private checkBarPending(pc: ParentCycle, buy: Buy, prev: Day, cur: Day, supersedeRear = true): string[] {
+    // Per the user's own rule: "If DTF BAR SL or BAR ENTRY SL or TZ BUY
+    // SL is triggered, should not allow WTF BAR to occur" -- BAR THEORY
+    // is not applicable at all while PRIME TREND is not currently
+    // active, not even as backend-only state (unlike the dormant
+    // convention elsewhere in this file, which keeps computing but
+    // withholds only the visible text -- here the EVENT itself must
+    // not occur, full stop, since even a backend-only "BAR(" would
+    // still wrongly count as a same-day milestone against a sibling's
+    // fresh spawn). No gate at all existed here before. Confirmed
+    // real-data (ICICIBANK.NS, letter D): BAR(D.1) wrongly reforming
+    // 2011-02-14 (PRIME TREND died 2011-01-10, not yet reactivated)
+    // collaterally destroyed TZ GREEN(E)'s own same-day spawn attempt.
+    if (
+      this.barEntryActiveAt !== undefined &&
+      this.barEntryEverActiveBefore !== undefined &&
+      this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate) &&
+      !this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate)
+    ) {
+      return [];
+    }
     if (cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
       const subLabel = this.nextBarLabel(buy, branchLabel(pc.id));
       const newLin = new BarLineage(subLabel, cur.h, cur.l);
@@ -2212,7 +2232,17 @@ export class TZEngine {
             // fresh-BAR-formation check below, for the same reason:
             // escalated (bar2 !== null) lineages always need the door
             // reopened by RED1-RED2, never automatically.
-            if (isNewest && this.barEntryShape(prev, cur) && buy.barPending) {
+            // Per the user's own rule: this reform is a fresh "BAR("
+            // occurring just as much as a brand-new lineage is -- not
+            // applicable at all while PRIME TREND is not currently
+            // active (see checkBarPending's own identical gate and its
+            // comment for the real-data case this closes).
+            const primeTrendGateOpen =
+              this.barEntryActiveAt === undefined ||
+              this.barEntryEverActiveBefore === undefined ||
+              !this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate) ||
+              this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate);
+            if (isNewest && this.barEntryShape(prev, cur) && buy.barPending && primeTrendGateOpen) {
               lin.sl = null;
               lin.refHigh = cur.h;
               lin.refLow = cur.l;
@@ -2412,7 +2442,16 @@ export class TZEngine {
       literalNewest === null ||
       (literalNewest.bar2 === null && literalNewest.sl !== null && !literalNewest.sl.sl2);
     const freshBarReady = newestIsDead || buy.barPending;
-    if (!reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur)) {
+    // Per the user's own rule: this fresh BAR lineage formation is not
+    // applicable at all while PRIME TREND is not currently active --
+    // same gate as checkBarPending's own (see its comment for the
+    // real-data case).
+    const primeTrendGateOpenForFreshBar =
+      this.barEntryActiveAt === undefined ||
+      this.barEntryEverActiveBefore === undefined ||
+      !this.barEntryEverActiveBefore(labelId, cur.date, pc.bornDate) ||
+      this.barEntryActiveAt(labelId, cur.date, pc.bornDate);
+    if (!reactivatedThisCandle && buy.active && freshBarReady && this.barEntryShape(prev, cur) && primeTrendGateOpenForFreshBar) {
       const surviving: BarLineage[] = [];
       const dropped: BarLineage[] = [];
       for (const l of buy.barLineages) {
