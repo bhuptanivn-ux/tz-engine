@@ -1568,7 +1568,12 @@ export class TZEngine {
       ) {
         if (!buy.red1Ever) buy.refHighAtRed1 = buy.refHigh;
         buy.red1Ever = true;
-        buy.everHadRed1ThisLife = true;
+        // Only the "before PRIME TREND ever activated" exception case
+        // serves spawn eligibility -- RED1 firing normally while PRIME
+        // TREND is currently active is ordinary BAR-theory operation and
+        // must not separately keep the spawn-eligibility escape hatch
+        // open afterward.
+        if (!primeTrendEverActivated) buy.everHadRed1ThisLife = true;
         buy.red1 = new Red1(cur.h, cur.l);
         ev.push(`RED1(${branchLbl})`);
         this.hiddenEventLog.push({ letter: branchLbl, label: null, date: cur.date, event: "RED1" });
