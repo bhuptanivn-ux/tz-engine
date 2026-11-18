@@ -1647,6 +1647,26 @@ export class TZEngine {
   private attachFreshRed1(pc: ParentCycle, buy: Buy, stageObj: BarLineage | Rear | RearReenter, prev: Day, cur: Day): string[] {
     const ev: string[] = [];
     if (buy.awaitingBar2SinceRed2) return ev;
+    // Per the user's own rule: once the cascade has progressed this far
+    // (this lineage already past BAR 2 -- the only case that reaches
+    // this function at all, see its own call site), a fresh RED can
+    // never occur again regardless of how far back things later SL --
+    // the reactivation that follows is always TZ BUY's own climb back
+    // above its reference high, never a RED marker. Same gate as
+    // progressTopLevelRed1's own (eligible when PRIME TREND has never
+    // activated before, OR it is currently active right now -- never
+    // when it activated-then-died and has not yet reactivated). This
+    // function had NO such gate at all before, bypassing it entirely
+    // for any lineage already past BAR 2. Confirmed real-data
+    // (ICICIBANK.NS, letter D): RED1(D) wrongly attached 2011-05-02 via
+    // this exact path (buy.red1 already inactive from RED2 2010-11-22,
+    // D.1 past BAR 2 since 2011-03-28) while PRIME TREND had died
+    // 2011-01-10 and not yet reactivated.
+    const primeTrendEverActivated =
+      this.barEntryEverActiveBefore !== undefined && this.barEntryEverActiveBefore(branchLabel(pc.id), cur.date, pc.bornDate);
+    const primeTrendCurrentlyActive =
+      this.barEntryActiveAt !== undefined && this.barEntryActiveAt(branchLabel(pc.id), cur.date, pc.bornDate);
+    if (primeTrendEverActivated && !primeTrendCurrentlyActive) return ev;
     if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
       if (!stageObj.red1Since) stageObj.refHighAtRed1 = stageObj.refHigh;
       stageObj.red1Since = true;
