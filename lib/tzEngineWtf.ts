@@ -807,16 +807,25 @@ export class TZEngine {
       // event occurs on same day and senior event is higher or same
       // as junior than junior cycle will terminate ... letter is open
       // for next TZ GREEN." A fresh spawn (tier 1) landing the SAME
-      // candle as ANY event from the current senior (tip already had
-      // to clear redEver to allow spawning at all, so its own tier is
-      // structurally >= 1) is terminated immediately -- not just not
-      // displayed, but destroyed outright, same as wtfJuniorTerminations'
-      // senior-over-junior rule, just same-day instead of a later
-      // candle. Confirmed real-data (ICICIBANK.NS, letter D): TZ
-      // GREEN(E) landing the same week TZ BUY 2(D) HH-ratchets never
-      // shows at all; its letter is immediately free for the next
-      // genuinely quiet week's own fresh spawn.
-      const tipHasEventToday = tip !== null && (perBranchEvents.get(tip.id)?.length ?? 0) > 0;
+      // candle as a GENUINE tier event from the current senior (tip
+      // already had to clear redEver to allow spawning at all, so its
+      // own tier is structurally >= 1) is terminated immediately --
+      // not just not displayed, but destroyed outright, same as
+      // wtfJuniorTerminations' senior-over-junior rule, just same-day
+      // instead of a later candle. A mere HH/LL continuation/ratchet
+      // is NOT a tier event -- it does not represent the senior
+      // "having" an event that day in the sense this rule means, only
+      // noise on an already-reached tier. Confirmed real-data
+      // (ICICIBANK.NS, letter B/C, 2002-06-03): B's own "TZ GREEN
+      // HH(B)" that candle must NOT block a brand-new TZ GREEN(C) from
+      // spawning; only a genuine fresh tier event (e.g. TZ BUY 2(D)
+      // 2014-05-05) does.
+      const tipHasEventToday =
+        tip !== null &&
+        (perBranchEvents.get(tip.id) ?? []).some((e) => {
+          const base = e.slice(0, e.indexOf("("));
+          return !base.endsWith("HH") && !base.endsWith("LL");
+        });
       if (!tipHasEventToday) {
         const nid = this.lowestFreeId();
         const newPc = new ParentCycle(nid, this.nextSeq(), cur.h, cur.l, cur.date);
