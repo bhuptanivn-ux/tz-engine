@@ -233,8 +233,29 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] 
     if (alreadyRealFor(date, baseLabel(label))) continue;
     addWtf(date, label);
   }
+  // Per the user's own finding: this simulation is an independent,
+  // from-scratch rerun with no memory of the concluded letter it's meant
+  // to stand in for, so its own internal branches can land on an EXTERNAL
+  // letter that is, coincidentally, ALSO a real, currently-live letter
+  // with its own real event already displayed that same date (confirmed
+  // real-data, ICICIBANK.NS: a "RED1" from this simulation gets mapped to
+  // external letter F on 2017-11-27, the SAME date F's own real TZ GREEN
+  // SL already displays -- that collision is fabrication, not a gap to
+  // fill). Only skip on that specific collision (this external letter
+  // already has ITS OWN real event that date) -- NOT on "some other
+  // letter already used this bare label", which would also block the
+  // mechanism's genuine, still-needed use (letter G has been
+  // misclassified, hence silent, since 2022-05-30; this simulation is
+  // currently the only display for G's own live, ongoing cycle, under a
+  // DIFFERENT external letter that has nothing else real that date).
+  function letterAlreadyRealFor(date: string, letter: string): boolean {
+    const existing = wtfEvents.get(date);
+    if (!existing) return false;
+    return existing.some((ev) => letterOf(ev) === letter);
+  }
   for (const { letter, date, label } of ctt.letterLineageConcludedSimEvents) {
     if (alreadyRealFor(date, label)) continue;
+    if (letterAlreadyRealFor(date, letter)) continue;
     addWtf(date, `${label}(${letter})`);
   }
 
