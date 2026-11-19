@@ -3314,14 +3314,17 @@ export function computeTarTbar(
     for (const s of spans) for (const td of s.tierDates) allTierEvents.push({ span: s, tier: td.tier, date: td.date });
     allTierEvents.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : a.tier - b.tier));
 
+    const wtfDatesForWeekCheck = wtfDays.map((d) => d.date);
     for (const ev of allTierEvents) {
       if (terminated.has(ev.span)) continue;
       if (ev.span.diedAt !== null && ev.span.diedAt <= ev.date) continue;
       if (ev.tier > ev.span.tier) ev.span.tier = ev.tier;
+      const dtfWeekStart = ev.tier >= 5 ? containingWeekStart(wtfDatesForWeekCheck, ev.date) : null;
       for (const other of spans) {
         if (other === ev.span || terminated.has(other)) continue;
         if (other.bornDate <= ev.span.bornDate) continue; // only senior-over-junior
         if (other.bornDate > ev.date) continue; // other not yet spawned as of this event
+        if (dtfWeekStart !== null && other.bornDate === dtfWeekStart && other.bornDate !== ev.date) continue; // same WTF week, different (earlier) day -- not yet senior-over-junior
         if (other.diedAt !== null && other.diedAt <= ev.date) continue; // already dead on its own terms
         if (other.tier < ev.tier) {
           terminated.add(other);
