@@ -3253,7 +3253,7 @@ export function computeTarTbar(
           // confirmed real-data (ICICIBANK.NS, letter D): without this
           // reset, D's own later BAR ENTRY (2014-07-01) was silently
           // skipped as a termination trigger entirely.
-          if (kind === "TZ BUY" && span.diedAt !== null) span.diedAt = null;
+          if ((kind === "TZ BUY" || kind === "TZ BUY 2") && span.diedAt !== null) span.diedAt = null;
           const tier = kind === "RED" ? 2 : kind === "TZ BUY" ? 3 : 4;
           span.tierDates.push({ tier, date: entry.day.date });
           continue;
