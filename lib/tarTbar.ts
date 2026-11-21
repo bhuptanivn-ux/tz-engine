@@ -3408,7 +3408,14 @@ export function computeTarTbar(
       const startIdx = wtfDays.findIndex((d) => d.date === startDate);
       if (startIdx === -1) continue;
       const realUntil = firstReengagementAfter(w.letter, w.sinceDate);
-      const simTrace = runWtfTrace(wtfDays.slice(startIdx));
+      // DTF-aware, per the user's own rule applied the same way as the
+      // real engine: this isolated simulation must ALSO deactivate a
+      // junior branch the moment a senior's DTF escalation happens, not
+      // run blind to DTF entirely. Without this, the simulation kept
+      // producing fabricated events (e.g. "RED1"/"TZ GREEN SL" mapped to
+      // an external letter) representing a branch that should have been
+      // terminated, the same bug the real engine had before this fix.
+      const simTrace = runWtfTrace(wtfDays.slice(startIdx), undefined, undefined, dtfDays);
       // Per the user's own rule: the isolated simulation is a REAL
       // TZEngine run with its own ordinary spawn-eligibility logic, so
       // it can legitimately spawn its OWN distinct sibling letter

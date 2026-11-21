@@ -205,6 +205,12 @@ export class Buy {
   // (not-yet-confirmed-or-invalidated) RED1 is unaffected by this flag;
   // it only gates a FRESH attachment after RED2 has confirmed.
   awaitingBar2SinceRed2 = false;
+  // Tracks whether `barTheoryAllowed` was false as of the last time
+  // evalBuy ran for this buy -- the edge (false -> true, i.e. DTF BAR
+  // ENTRY just reactivated) is what triggers forgetting old BAR-THEORY
+  // state, not "BAR ENTRY is currently dead" itself. See evalBuy's own
+  // comment on why this must be edge-triggered, not level-triggered.
+  barTheoryWasBlocked = false;
   constructor(public refHigh: number, public refLow: number) {}
 }
 
@@ -386,7 +392,26 @@ export class TZEngine {
     private weeklyBarSlRear: boolean = false,
     private barEntryActiveAt?: (letter: string, date: string, bornDate: string) => boolean,
     private barEntryEverActiveBefore?: (letter: string, date: string, bornDate: string) => boolean,
-    private sar2EverConfirmedBefore?: (letter: string, date: string, bornDate: string) => boolean
+    private sar2EverConfirmedBefore?: (letter: string, date: string, bornDate: string) => boolean,
+    // Per the user's own rule: "ALL the junior cycle has to follow the
+    // same rule. If senior has higher event then junior cycle will be
+    // terminated. It cannot wait for getting SL'd." A senior's DTF-
+    // anchored escalation (DTF TZ BUY confirm, DTF BAR ENTRY confirm)
+    // must ACTUALLY deactivate a junior branch the moment it happens --
+    // not just suppress its later display after the fact. Before this,
+    // termination was computed only as a downstream display filter
+    // (lib/tarTbar.ts's wtfJuniorTerminations), while the branch itself
+    // kept computing internally forever -- confirmed real-data
+    // (ICICIBANK.NS): the raw trace still showed "TZ GREEN HH(F)" on
+    // 2018-01-22, six days after senior E's DTF TZ BUY confirmed
+    // 2018-01-16, i.e. the engine's own real state had a junior still
+    // "active" at TZ GREEN while its senior was already active at TZ
+    // BUY DTF -- a state the user's own rule says cannot exist. Only
+    // lib/primeTrend.ts's runWtfTrace supplies this (derived from the
+    // previous round's trace, same fixed-point bootstrap convention as
+    // barEntryActiveAt); every other caller leaves it undefined, in
+    // which case this trigger can never fire.
+    private seniorEscalatedAt?: (letter: string, date: string, bornDate: string) => boolean
   ) {}
 
   private nextSeq(): number {
@@ -620,12 +645,30 @@ export class TZEngine {
 
     let anyLiveBuy = false;
     for (const pc of this.branches.values()) {
-      if (
-        pc.active &&
-        pc.buy !== null &&
-        this.buyCurrentlyLive(pc) &&
-        !(pc.dormant && this.buyHasNoRacingStructure(pc.buy))
-      ) {
+      // Per the user's own direct correction: "Any Senior ALIVE TZ BUY 2
+      // cannot block Junior Lineage to escalate ... As long as Senior is
+      // dormant, Junior can escalate" -- a dormant senior's own racing
+      // structure (BAR lineages/REAR/REAR RE-ENTER) must not except it
+      // from this exemption (the previous, narrower exemption requiring
+      // buyHasNoRacingStructure too was itself a bug).
+      //
+      // Separately, per the user's own escalation rule for a junior
+      // ("Is PRIME TREND active? NO ... Spawn eligibility says, if prime
+      // trend is not active Junior Lineage can start and escalate"): a
+      // senior whose own BAR THEORY (RED1/RED2/BAR/BAR 2) is CURRENTLY
+      // computing only in the backend -- PRIME TREND (DTF BAR ENTRY) has
+      // died for it and not yet reactivated -- must not block a junior's
+      // escalation either, even while that senior is still the active,
+      // non-dormant tip and its base TZ BUY 2 has not itself SL'd.
+      // Confirmed real-data (ICICIBANK.NS): E's BAR ENTRY SL'd
+      // 2020-03-09 and never reactivates; E stays active/non-dormant the
+      // whole time (F never reaches a tier that would demote it) with
+      // RED1/RED2 still progressing backend-only -- this wrongly blocked
+      // F's own genuine TZ BUY breakout 2020-07-20 (high/low/close all
+      // clear F's own reference), forcing a fresh spawn (G) instead of
+      // F's correct escalation.
+      const seniorBarTheoryAllowed = this.barTheoryAllowed(branchLabel(pc.id), cur.date, pc.bornDate);
+      if (pc.active && pc.buy !== null && this.buyCurrentlyLive(pc) && !pc.dormant && seniorBarTheoryAllowed) {
         anyLiveBuy = true;
         break;
       }
@@ -672,6 +715,10 @@ export class TZEngine {
     for (const pid of Array.from(this.branches.keys())) {
       const pc = this.branches.get(pid) as ParentCycle;
       if (!pc.active) continue;
+      if (this.seniorEscalatedAt !== undefined && this.seniorEscalatedAt(branchLabel(pc.id), cur.date, pc.bornDate)) {
+        pc.active = false;
+        continue;
+      }
       const buyWasNone = pc.buy === null;
       const allEvents = this.evalParent(pc, prev, cur, anyLiveBuy);
       perBranchEvents.set(pid, allEvents);
@@ -1096,6 +1143,48 @@ export class TZEngine {
   private evalBuy(pc: ParentCycle, buy: Buy, prev: Day, cur: Day): string[] {
     let ev: string[] = [];
     const branchLbl = branchLabel(pc.id);
+
+    // Per the user's own rule: once DTF BAR ENTRY (PRIME TREND) dies, WTF
+    // BAR-THEORY progress (RED1/RED2, any BAR/BAR 2 lineage, REAR/REAR
+    // RE-ENTER) keeps computing in the backend exactly as before -- it
+    // must NOT be interrupted or blocked while dead, only kept off the
+    // front end (already handled by scripts/eventsTable.ts's own
+    // primeTrendActive-gated suppression). What must happen instead is
+    // that this accumulated state is FORGOTTEN the moment BAR ENTRY
+    // reactivates, so the next RED to form after that is genuinely
+    // "RED1" again, not blocked by (or silently continuing) pre-death
+    // progress. This is deliberately edge-triggered (false -> true only,
+    // via barTheoryWasBlocked) rather than applied continuously while
+    // dead -- continuously clearing on every dead day was tried first
+    // and pre-empted RED1->RED2 from ever completing while dead at all,
+    // which both contradicts "must not stop computing" and, worse,
+    // changes what RED1/RED2/BAR text appears in the raw per-letter
+    // trace that lib/primeTrend.ts's computeSeniorEscalationGate (the
+    // seniorEscalatedAt gate) reads to decide when a SIBLING branch gets
+    // terminated -- confirmed real-data (ICICIBANK.NS): continuous
+    // clearing silently suppressed RED2(D) 2013-02-11 internally (not
+    // just on the front end), which reshuffled E's entire subsequent
+    // branch history. Edge-triggering at reactivation only touches state
+    // from THIS point forward, after whatever already happened while
+    // dead has already been faithfully recorded. Deliberately does NOT
+    // touch buy.active/refHigh/refLow/tzBuy2/reentryThreshold -- those
+    // are the base WTF TZ BUY/TZ BUY 2 tracking, which the user's own
+    // earlier, hard-won correction established BAR ENTRY SL must never
+    // freeze or reset (see this function's own note below on "BAR ENTRY
+    // SL does not terminate PRIME TREND").
+    const barTheoryAllowedNow = this.barTheoryAllowed(branchLbl, cur.date, pc.bornDate);
+    if (barTheoryAllowedNow && buy.barTheoryWasBlocked) {
+      buy.barPending = false;
+      buy.red1 = null;
+      buy.barLineages = [];
+      buy.barSubCounter = 0;
+      buy.barDeadLabels = new Set();
+      buy.rearWinnerLabel = null;
+      buy.rear = null;
+      buy.rearReenter = null;
+      buy.awaitingBar2SinceRed2 = false;
+    }
+    buy.barTheoryWasBlocked = !barTheoryAllowedNow;
 
     const hasDeeperActive =
       buy.barLineages.length > 0 || buy.barPending || buy.rear !== null || buy.rearReenter !== null;

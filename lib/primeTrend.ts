@@ -1311,6 +1311,107 @@ export interface WtfTraceEntry {
   hasTierAfter: Record<PrimeTrendFamily, Set<number>>;
 }
 
+/** Per the user's own rule: "ALL the junior cycle has to follow the same
+ * rule. If senior has higher event then junior cycle will be terminated.
+ * It cannot wait for getting SL'd." Builds a (letter, date, bornDate) =>
+ * boolean gate -- true from the exact date a SENIOR letter (born earlier
+ * or the same date) first reaches a higher tier than this (letter,
+ * bornDate) branch currently holds, where tier is: 1 TZ GREEN (spawn), 2
+ * RED, 3 TZ BUY, 4 TZ BUY 2, 5 DTF TZ BUY confirm, 6 DTF BAR ENTRY
+ * confirm. Fed into TZEngine's own `seniorEscalatedAt` so the branch
+ * ACTUALLY deactivates at that point, not merely gets hidden afterward
+ * by a downstream display filter (see TZEngine's own constructor
+ * comment on `seniorEscalatedAt` for the confirmed real-data bug this
+ * closes). Mirrors lib/tarTbar.ts's own wtfJuniorTerminations logic
+ * (same tier numbering, same same-WTF-week-different-day exception for
+ * DTF-anchored tiers 5/6), ported here rather than imported -- tarTbar.ts
+ * itself calls this module's runWtfTrace, so the reverse import would be
+ * circular -- and takes the CURRENT round's `trace` directly (via
+ * computeStage1Checkpoints/computePrimeTrend's own wtfTraceOverride) so
+ * it fits the same fixed-point bootstrap this function's caller already
+ * uses for barEntryActiveAt. */
+function computeSeniorEscalationGate(
+  wtfRows: OhlcRow[],
+  dtfRows: OhlcRow[],
+  trace: WtfTraceEntry[]
+): (letter: string, date: string, bornDate: string) => boolean {
+  type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; tierDates: { tier: number; date: string }[] };
+  const spans: Span[] = [];
+  const spansByLetter = new Map<string, Span[]>();
+  for (const entry of trace) {
+    for (const e of entry.events) {
+      const spawnMatch = /^TZ GREEN\(([A-Za-z0-9]+)\)$/.exec(e);
+      if (spawnMatch) {
+        const letter = spawnMatch[1];
+        const span: Span = { letter, bornDate: entry.day.date, tier: 1, diedAt: null, tierDates: [{ tier: 1, date: entry.day.date }] };
+        spans.push(span);
+        if (!spansByLetter.has(letter)) spansByLetter.set(letter, []);
+        spansByLetter.get(letter)!.push(span);
+        continue;
+      }
+      const m = /^(RED|TZ BUY|TZ BUY 2)\(([A-Za-z0-9]+)\)$/.exec(e);
+      if (m) {
+        const [, kind, letter] = m;
+        const list = spansByLetter.get(letter);
+        const span = list && list.length > 0 ? list[list.length - 1] : undefined;
+        if (span === undefined) continue;
+        if ((kind === "TZ BUY" || kind === "TZ BUY 2") && span.diedAt !== null) span.diedAt = null;
+        const tier = kind === "RED" ? 2 : kind === "TZ BUY" ? 3 : 4;
+        span.tierDates.push({ tier, date: entry.day.date });
+        continue;
+      }
+      const dm = /^(?:TZ GREEN SL|TZ BUY SL|TZ BUY 2 SL)\(([A-Za-z0-9]+)\)$/.exec(e);
+      if (dm) {
+        const list = spansByLetter.get(dm[1]);
+        const span = list && list.length > 0 ? list[list.length - 1] : undefined;
+        if (span !== undefined && span.diedAt === null) span.diedAt = entry.day.date;
+      }
+    }
+  }
+  for (const inst of computeStage1Checkpoints(wtfRows, dtfRows, trace)) {
+    const owner = (spansByLetter.get(inst.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === inst.formationDate));
+    if (owner === undefined) continue;
+    for (const c of inst.checkpoints) {
+      if (c.label === "TZ BUY") owner.tierDates.push({ tier: 5, date: c.date });
+    }
+  }
+  for (const r of computePrimeTrend(wtfRows, dtfRows, undefined, trace)) {
+    if (r.family !== "TZ BUY 2" || r.side !== "BAR ENTRY" || r.level !== 0) continue;
+    const owner = (spansByLetter.get(r.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === r.wtfFormationDate));
+    if (owner === undefined) continue;
+    owner.tierDates.push({ tier: 6, date: r.entryDate });
+  }
+  for (const s of spans) s.tierDates.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  const terminated = new Set<Span>();
+  const terminations: { letter: string; bornDate: string; terminatedAt: string }[] = [];
+  const allTierEvents: { span: Span; tier: number; date: string }[] = [];
+  for (const s of spans) for (const td of s.tierDates) allTierEvents.push({ span: s, tier: td.tier, date: td.date });
+  allTierEvents.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : a.tier - b.tier));
+
+  const wtfDatesForWeekCheck = wtfRows.map((r) => r.date);
+  for (const ev of allTierEvents) {
+    if (terminated.has(ev.span)) continue;
+    if (ev.span.diedAt !== null && ev.span.diedAt <= ev.date) continue;
+    if (ev.tier > ev.span.tier) ev.span.tier = ev.tier;
+    const dtfWeekStart = ev.tier >= 5 ? containingWeekStart(wtfDatesForWeekCheck, ev.date) : null;
+    for (const other of spans) {
+      if (other === ev.span || terminated.has(other)) continue;
+      if (other.bornDate <= ev.span.bornDate) continue;
+      if (other.bornDate > ev.date) continue;
+      if (dtfWeekStart !== null && other.bornDate === dtfWeekStart && other.bornDate !== ev.date) continue;
+      if (other.diedAt !== null && other.diedAt <= ev.date) continue;
+      if (other.tier < ev.tier) {
+        terminated.add(other);
+        terminations.push({ letter: other.letter, bornDate: other.bornDate, terminatedAt: ev.date });
+      }
+    }
+  }
+
+  return (letter: string, date: string, bornDate: string): boolean =>
+    terminations.some((t) => t.letter === letter && t.bornDate === bornDate && date >= t.terminatedAt);
+}
+
 /** Branch LETTERS get recycled -- once a branch dies (whether via an
  * explicit SL or via collateral termination from the multi-branch
  * leadership rules, which emits no SL-type event at all), its id frees up
@@ -1358,6 +1459,7 @@ export function runWtfTrace(
     let activeAt: GateFn | undefined;
     let everActiveBefore: GateFn | undefined;
     let sar2ConfirmedBefore: GateFn | undefined;
+    let seniorEscalatedAt: GateFn | undefined;
     const MAX_ROUNDS = 6;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const intervals = barEntryActiveIntervals(wtfRowsForGate, dtfRowsForGate, trace);
@@ -1392,14 +1494,15 @@ export function runWtfTrace(
         const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
         return ivs.some((iv) => iv.sinceDate < date);
       };
-      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore));
+      seniorEscalatedAt = computeSeniorEscalationGate(wtfRowsForGate, dtfRowsForGate, trace);
+      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt));
       const stable = wtfTraceEventsEqual(trace, nextTrace);
       trace = nextTrace;
       if (stable) break;
     }
     return runWtfTraceCore(
       wtfDays,
-      new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore),
+      new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt),
       barSl2LogOut,
       hiddenEventLogOut
     );
