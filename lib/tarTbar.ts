@@ -1204,8 +1204,25 @@ function simulateWindow(
   return liveStatuses;
 }
 
-function findWindows(wtfDays: Day[]): TarTbarWindow[] {
-  const trace = runWtfTrace(wtfDays);
+// Per the user's own rule: "Once Prime trend is active, BAR THEORY will
+// not maintain separate letter scheme" -- a WTF "BAR(" formation's own
+// governing letter must be the SAME letter the rest of the codebase
+// (stage1ActiveIntervals, barEntryActiveIntervals, the real WTF ledger)
+// already uses for that branch, never an independently-derived one.
+// Confirmed real-data (ICICIBANK.NS): without dtfDays, this function's
+// own DTF-unaware trace assigned a BAR formation to letters "E"/"F",
+// while the canonical DTF-aware trace (used everywhere else) correctly
+// calls the SAME branch "A" -- the mismatch silently closed
+// computeTarTbar's own stage1ActiveAtFor(...) gate forever (letter "F"
+// has no recorded Stage 1 interval at all, since the real one is filed
+// under "A"), which is almost certainly why TAR/TAR ENTRY fires only
+// ONCE in this engine's entire 24-year history. This is the exact
+// "DTF-unaware round can assign the same letter to a different branch"
+// failure mode runWtfTrace's own docstring already warns about -- same
+// category of bug already fixed once in this file (wtfJuniorTerminations'
+// own raceAwareTrace, letterLineageConcludedSimEvents' own simTrace).
+function findWindows(wtfDays: Day[], dtfDays: Day[]): TarTbarWindow[] {
+  const trace = runWtfTrace(wtfDays, undefined, undefined, dtfDays);
   const formations: { date: string; label: string; formationHigh: number }[] = [];
   const sls: { date: string; label: string }[] = [];
   // A BAR-theory window also ends the moment its PARENT WTF family dies
@@ -1546,7 +1563,16 @@ function findReinterpretedWindows(
 } {
   const barSl2BackendLog: { label: string; date: string; low: number }[] = [];
   const hiddenEventLog: HiddenEventLogEntry[] = [];
-  const wtfTrace = runWtfTrace(wtfDays, barSl2BackendLog, hiddenEventLog);
+  // Per the user's own rule: "Once Prime trend is active, BAR THEORY
+  // will not maintain separate letter scheme" -- dtfDays is already a
+  // parameter here but was never threaded through, so this function's
+  // own letter/RED2 bookkeeping (hiddenRed2SarCheckpoints, among others)
+  // came from the SAME kind of DTF-unaware trace already found and
+  // fixed once in findWindows -- confirmed real-data (ICICIBANK.NS):
+  // this is exactly why governingRed2For("A", ...) found no RED2 at all
+  // for letter A's real 2021-11-08 RED2, permanently closing BAR
+  // THEORY's own window-eligibility gate for every later BAR under it.
+  const wtfTrace = runWtfTrace(wtfDays, barSl2BackendLog, hiddenEventLog, dtfDays);
   const windows: TarTbarWindow[] = [];
 
   // Per-letter "ever reached a real DTF escalation" dates -- Stage 2's
@@ -2528,7 +2554,7 @@ export function computeTarTbar(
   // 2026-02-24, yet "BAR(A.8)" 2026-08-03 (formed well after, with no
   // newer BAR SL2 in between) was still producing a real BAR-theory
   // "TAR"/"RED1"/"RED2"/"BAR"/"BAR SL" DTF cascade.
-  const rawWindows = findWindows(wtfDays).filter(
+  const rawWindows = findWindows(wtfDays, dtfDays).filter(
     (w) =>
       !misclassifiedLetters.some(
         (m) => w.wtfLabel.split(".")[0] === m.letter && w.formationDate >= m.sinceDate && (m.untilDate === null || w.formationDate <= m.untilDate)

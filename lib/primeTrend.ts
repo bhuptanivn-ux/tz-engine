@@ -3159,6 +3159,137 @@ export function prepare(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride
  * its own permanent row, not just the last one. Instances with no
  * confirmed entry at all are silently excluded, per the PRIME TREND
  * filter rule (see PRIME_TREND_RULEBOOK.md). */
+/** Same race rule as computeRacedOutGate above, applied to this
+ * function's OWN level-0 "BAR ENTRY" rows directly, not just the
+ * separate Stage 1 (tier 5) ladder -- confirmed real-data (ICICIBANK.NS):
+ * instance B (formed 2018-11-12), already raced out by instance A
+ * (formed 2020-11-09, BAR ENTRY active continuously 2020-12-24 through
+ * 2021-11-16), still independently reconfirmed its OWN fresh "BAR ENTRY"
+ * on 2021-04-01 -- a SEPARATE blind spot from the Stage 1 one: that fix
+ * only filtered the tier 5 ladder computeStage1Checkpoints returns, and
+ * never touched this function's own tier 6 output, which has the exact
+ * same "no awareness of a newer instance already active" gap. Built the
+ * same self-contained way (sourced from THIS function's own per-instance
+ * `rows`, never calling computeStage1Checkpoints/barEntryActiveIntervals,
+ * to avoid the same recursion already found and fixed once). */
+/** Mirrors barEntryActiveIntervals' own per-row interval-building
+ * algorithm EXACTLY, including its "DTF SAR -- the post-SAR watch takes
+ * over from here, continuing this same anchor's own active/inactive
+ * cycle" rule -- just keyed per INSTANCE (letter@formationDate) instead
+ * of per letter, and built from data the caller already has rather than
+ * calling barEntryActiveIntervals/computePrimeTrend directly (which
+ * recurses -- see computeRacedOutGate's own comment on the recursion
+ * already found once). Confirmed real-data bug this closes
+ * (ICICIBANK.NS): a first version of the race-gate treated ANY non-
+ * "still open" exitType as closing an instance's active interval,
+ * including "DTF SAR" -- but DTF SAR is instance A's OWN continuation
+ * (reaching the next, favorable stage), not a death, so treating it as
+ * a close wrongly let a long-raced-out instance (B) resume producing
+ * its own stale checkpoints (TZ BUY SL 2021-11-26) the moment A's own
+ * row's exitDate (2021-11-16) passed, even though A's reign had not
+ * actually ended. */
+function buildBarEntryIntervalsByInstance(
+  wtfRows: OhlcRow[],
+  dtfRows: OhlcRow[],
+  wtfTrace: WtfTraceEntry[],
+  instanceRows: { letter: string; formationDate: string; rows: PrimeTrendResult[] }[]
+): Map<string, { entryDate: string; untilDate: string | null }[]> {
+  const postSarEventsByLetter = new Map<string, { date: string; active: boolean }[]>();
+  for (const { letter, checkpoints } of computePrimeTrendCheckpoints(wtfRows, dtfRows, wtfTrace)) {
+    const events: { date: string; active: boolean }[] = [];
+    for (const c of checkpoints) {
+      if (c.label === "BAR ENTRY SL" || c.label === "BAR SL") events.push({ date: c.date, active: false });
+      else if (c.label === "BAR ENTRY") events.push({ date: c.date, active: true });
+    }
+    if (events.length === 0) continue;
+    const existing = postSarEventsByLetter.get(letter);
+    if (existing) existing.push(...events);
+    else postSarEventsByLetter.set(letter, events);
+  }
+  for (const events of postSarEventsByLetter.values()) events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  const result = new Map<string, { entryDate: string; untilDate: string | null }[]>();
+  const addInterval = (key: string, interval: { entryDate: string; untilDate: string | null }) => {
+    const existing = result.get(key);
+    if (existing) existing.push(interval);
+    else result.set(key, [interval]);
+  };
+
+  for (const { letter, formationDate, rows } of instanceRows) {
+    const key = `${letter}@${formationDate}`;
+    for (const r of rows) {
+      if (r.family !== "TZ BUY 2" || r.side !== "BAR ENTRY" || r.level !== 0) continue;
+      if (r.exitType === "still open") {
+        addInterval(key, { entryDate: r.entryDate, untilDate: null });
+        continue;
+      }
+      if (r.exitType !== "DTF SAR") {
+        addInterval(key, { entryDate: r.entryDate, untilDate: r.exitDate });
+        continue;
+      }
+      const events = postSarEventsByLetter.get(letter) ?? [];
+      let cycleStart = r.entryDate;
+      let searchFrom = r.exitDate;
+      for (;;) {
+        const inactiveEvt = events.find((e) => !e.active && e.date > searchFrom);
+        if (!inactiveEvt) {
+          addInterval(key, { entryDate: cycleStart, untilDate: null });
+          break;
+        }
+        addInterval(key, { entryDate: cycleStart, untilDate: inactiveEvt.date });
+        const activeEvt = events.find((e) => e.active && e.date > inactiveEvt.date);
+        if (!activeEvt) break;
+        cycleStart = activeEvt.date;
+        searchFrom = activeEvt.date;
+      }
+    }
+  }
+  return result;
+}
+
+function filterRacedOutBarEntryRows(
+  wtfRows: OhlcRow[],
+  dtfRows: OhlcRow[],
+  wtfTrace: WtfTraceEntry[],
+  instanceRows: { letter: string; formationDate: string; rows: PrimeTrendResult[] }[]
+): PrimeTrendResult[] {
+  const barEntryRowsByInstance = buildBarEntryIntervalsByInstance(wtfRows, dtfRows, wtfTrace, instanceRows);
+
+  // Deliberately NOT computeRacedOutGate's own "is this instance itself
+  // already active" self-exemption -- here that check is circular: the
+  // very row being evaluated IS the candidate interval that would make
+  // "itself active" trivially true. The only question for a BAR ENTRY
+  // row's own FORMATION is "was some OTHER, newer instance already
+  // active at this entryDate", full stop, never exempted by the row's
+  // own existence.
+  function someOtherNewerInstanceActive(ownKey: string, formationDate: string, date: string): boolean {
+    for (const [otherKey, ivs] of barEntryRowsByInstance) {
+      if (otherKey === ownKey) continue;
+      const otherFormationDate = otherKey.slice(otherKey.lastIndexOf("@") + 1);
+      if (otherFormationDate <= formationDate) continue; // only a NEWER instance can race this one out
+      if (ivs.some((iv) => date >= iv.entryDate && (iv.untilDate === null || date < iv.untilDate))) return true;
+    }
+    return false;
+  }
+
+  const results: PrimeTrendResult[] = [];
+  for (const { letter, formationDate, rows } of instanceRows) {
+    const ownKey = `${letter}@${formationDate}`;
+    for (const r of rows) {
+      if (
+        r.family === "TZ BUY 2" &&
+        r.side === "BAR ENTRY" &&
+        r.level === 0 &&
+        someOtherNewerInstanceActive(ownKey, formationDate, r.entryDate)
+      ) {
+        continue;
+      }
+      results.push(r);
+    }
+  }
+  return results;
+}
+
 export function computePrimeTrend(
   wtfRows: OhlcRow[],
   dtfRows: OhlcRow[],
@@ -3167,12 +3298,12 @@ export function computePrimeTrend(
 ): PrimeTrendResult[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows, wtfTraceOverride);
 
-  const results: PrimeTrendResult[] = [];
+  const instanceRows: { letter: string; formationDate: string; rows: PrimeTrendResult[] }[] = [];
   for (const inst of instances) {
     const [rows] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst, barTheoryOpenAt ? barTheoryOpenAt(inst.letter) : undefined);
-    results.push(...rows);
+    instanceRows.push({ letter: inst.letter, formationDate: inst.formationDate, rows });
   }
-  return results;
+  return filterRacedOutBarEntryRows(wtfRows, dtfRows, wtfTrace, instanceRows);
 }
 
 /** The RED2-anchored recurring SAR mechanism's own full dated checkpoint
@@ -3234,13 +3365,82 @@ export function sar2ConfirmedByLetter(
  * nothing escalating underneath it was invisible everywhere until this.
  * Confirmed real-data (BSE.NS): 2017-06-05 TZ BUY -> 2017-06-06 TZ BUY
  * SL, under the 2017-05-29 TZ BUY 2 instance, never shown anywhere. */
+/** Per the user's own race rule: "When a junior cycle is already trading
+ * with a higher EVENT and same day or later if SENIOR CYCLE OR CYCLE
+ * trades with an event lower than the junior event ... the price will
+ * only ratchet higher. Senior cycle will stay dormant since their event
+ * is lower." computeStage1Checkpoints runs each WTF TZ BUY 2 instance's
+ * own DTF Stage 1 ladder (simulateDtfAll) completely independently, with
+ * NO awareness of whether some OTHER, NEWER instance's own DTF BAR ENTRY
+ * (PRIME TREND) is CURRENTLY active while THIS one's own is not --
+ * confirmed real-data (ICICIBANK.NS): an instance formed 2018-11-12 kept
+ * mechanically reconfirming its own Stage 1 "TZ BUY" (2021-01-13) even
+ * though its OWN BAR ENTRY had died 2020-03-09 and never reactivated,
+ * while a much newer instance (formed 2020-11-09) was ACTIVELY sitting
+ * in BAR ENTRY (confirmed 2020-12-24) at that very moment -- the older
+ * instance should have gone dormant (ratchet only, no displayed
+ * escalation) the moment the newer one overtook it, same as the
+ * engine's own existing `racedOutByNewerTzBuy2` already does for bare
+ * WTF TZ BUY 2, just extended to the DTF BAR ENTRY tier this function's
+ * own Stage 1 ladder feeds into.
+ *
+ * Deliberately compares CURRENT active state, not peak-ever-reached tier
+ * -- a first attempt tracking monotonic peak tier missed this exact
+ * case, since the older instance had ALSO reached BAR ENTRY once, years
+ * earlier, before its own Prime Trend died; comparing peaks found them
+ * equal. What actually matters is which one is live right now.
+ *
+ * Deliberately built from `rows` -- the SAME per-instance simulateDtfAll
+ * call this function already makes for its own `checkpoints`, just the
+ * array element that call previously discarded -- rather than the
+ * higher-level `computePrimeTrend`/`barEntryActiveIntervals`: those
+ * route through `prepare`'s own `postBarSl2Race`/SAR gating, which
+ * itself needs Stage 1 checkpoints, so calling them FROM this function
+ * recurses infinitely (confirmed: "Maximum call stack size exceeded").
+ * Sourcing the same information from data this function is already
+ * computing avoids that cycle entirely and adds no new cross-function
+ * calls.
+ *
+ * This is a pure downstream filter on the returned checkpoints only; it
+ * does not touch the WTF engine's own branch computation (buy.active,
+ * dormant, etc.) at all, so it carries none of the cross-timeframe
+ * feedback-loop risk a change inside tzEngineWtf.ts or the runWtfTrace
+ * fixed point would. */
+function computeRacedOutGate(
+  barEntryRowsByInstance: Map<string, { entryDate: string; untilDate: string | null }[]>
+): (letter: string, formationDate: string, date: string) => boolean {
+  function isBarEntryActive(key: string, date: string): boolean {
+    return (barEntryRowsByInstance.get(key) ?? []).some(
+      (iv) => date >= iv.entryDate && (iv.untilDate === null || date < iv.untilDate)
+    );
+  }
+  const keys = Array.from(barEntryRowsByInstance.keys());
+  return (letter: string, formationDate: string, date: string): boolean => {
+    const ownKey = `${letter}@${formationDate}`;
+    if (isBarEntryActive(ownKey, date)) return false; // this instance itself is currently at BAR ENTRY -- not raced out
+    return keys.some((otherKey) => {
+      if (otherKey === ownKey) return false;
+      const otherFormationDate = otherKey.slice(otherKey.lastIndexOf("@") + 1);
+      return otherFormationDate > formationDate && isBarEntryActive(otherKey, date);
+    });
+  };
+}
+
 export function computeStage1Checkpoints(wtfRows: OhlcRow[], dtfRows: OhlcRow[], wtfTraceOverride?: WtfTraceEntry[]): { letter: string; formationDate: string; checkpoints: PostBarSl2Checkpoint[] }[] {
   const { dtfDays, wtfTrace, wtfDates, instances } = prepare(wtfRows, dtfRows, wtfTraceOverride);
 
   const results: { letter: string; formationDate: string; checkpoints: PostBarSl2Checkpoint[] }[] = [];
+  const instanceRows: { letter: string; formationDate: string; rows: PrimeTrendResult[] }[] = [];
   for (const inst of instances) {
-    const [, , , checkpoints] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
+    const [rows, , , checkpoints] = simulateDtfAll(dtfDays, wtfTrace, wtfDates, inst);
     if (checkpoints.length > 0) results.push({ letter: inst.letter, formationDate: inst.formationDate, checkpoints });
+    instanceRows.push({ letter: inst.letter, formationDate: inst.formationDate, rows });
+  }
+
+  const barEntryRowsByInstance = buildBarEntryIntervalsByInstance(wtfRows, dtfRows, wtfTrace, instanceRows);
+  const racedOutAt = computeRacedOutGate(barEntryRowsByInstance);
+  for (const r of results) {
+    r.checkpoints = r.checkpoints.filter((c) => !racedOutAt(r.letter, r.formationDate, c.date));
   }
   return results;
 }

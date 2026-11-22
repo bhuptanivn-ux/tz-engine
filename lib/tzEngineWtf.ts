@@ -220,6 +220,20 @@ export class ParentCycle {
   redEver = false;
   refHighAtRed = 0;
   buy: Buy | null = null;
+  // Per the user's own direct correction: `redEver` is a one-time,
+  // permanent flag for this branch's whole life -- it answers "has this
+  // branch EVER had a RED," not "has there been a RED since this
+  // senior's most recent escalation." Spawn eligibility's own RED
+  // requirement needs the SECOND question: true only between a RED and
+  // this senior's NEXT escalation (TZ BUY/TZ BUY 2 confirming), false
+  // again the moment that escalation lands, even if no junior captured
+  // the window in between. Confirmed real-data (ICICIBANK.NS): RED(C)
+  // 2003-03-03 legitimately opens the window for TZ GREEN(D) 2003-05-12
+  // (no senior escalated yet); TZ BUY(C) 2003-07-14 closes it again, so
+  // a spawn attempt on 2003-07-28 (no RED since) must NOT fire, even
+  // though `redEver` has been permanently true since 2003-03-03.
+  redSinceEscalation = false;
+
   // Real-data bug (ICICIBANK.NS hypothetical, confirmed): once this
   // branch's own TZ GREEN HH climb first coincides, on the same candle,
   // with a genuine-BAR-SL2 lineage elsewhere reaching its own INVALID
@@ -857,11 +871,29 @@ export class TZEngine {
     // candle here, which would otherwise clear the signal right when
     // it is needed (see that field's own comment).
     const tipHadRed1 = tip !== null && tip.buy !== null && tip.buy.everHadRed1ThisLife;
-    const eligibleAnchor =
-      tip !== null &&
-      (!tip.dormant || tipLacksPrimeTrend) &&
-      tip.redEver &&
-      (tip.buy === null || !tip.buy.active || tipDeepFailure || tipTzbuy2Sl || tipRear2Sl || tipRre2Sl || tipLacksPrimeTrend || tipHadRed1);
+    // Per the user's own direct, categorical correction: "Spawn
+    // eligibility is not allowed only if PRIME TREND IS ACTIVE. PERIOD."
+    // -- `tipLacksPrimeTrend` is the SOLE governing condition for whether
+    // a brand-new spawn can form under `tip`, not one option among
+    // several (tipDeepFailure/tipTzbuy2Sl/tipRear2Sl/tipRre2Sl/tipHadRed1
+    // used to each independently grant eligibility even while
+    // tipLacksPrimeTrend was false, i.e. even while PRIME TREND was
+    // CURRENTLY active for `tip`). Confirmed real-data (ICICIBANK.NS): a
+    // senior's own DTF BAR ENTRY (PRIME TREND) activates 2019-11-08; a
+    // brand-new junior spawning 2019-11-11 -- three days later, while
+    // that PRIME TREND is still active -- is illegitimate ("IF BAR ENTRY
+    // is active HOW CAN JUNIOR SPAWN?"), yet the old OR-list let it
+    // through because `tipHadRed1` was independently true (this senior's
+    // own RED1 had already fired on the way to BAR ENTRY). Dropping the
+    // OR-list in favor of the single PERIOD condition does not revisit
+    // the historical cases those branches were each added for -- every
+    // one of them (tipDeepFailure, tipTzbuy2Sl, tipRear2Sl, tipRre2Sl,
+    // tipHadRed1) was confirmed on real data where PRIME TREND had not
+    // yet activated at all (tipLacksPrimeTrend already true on its own
+    // terms), never on a case requiring it to override a CURRENTLY
+    // active PRIME TREND -- that override was always the bug, never the
+    // point of any of those fixes.
+    const eligibleAnchor = tip !== null && tip.redSinceEscalation && tipLacksPrimeTrend;
     const canSpawn = eligibleAnchor || tip === null;
     let newBranchId: number | null = null;
     if (canSpawn && cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
@@ -1119,6 +1151,7 @@ export class TZEngine {
     if (!pc.redEver) {
       if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
         pc.redEver = true;
+        pc.redSinceEscalation = true;
         pc.refHighAtRed = pc.refHigh;
         ev.push(`RED(${label})`);
       }
@@ -1128,6 +1161,7 @@ export class TZEngine {
       const refHigh = Math.max(pc.refHigh, pc.refHighAtRed);
       if (cur.l >= prev.l && cur.h > refHigh && cur.h - refHigh >= THRESH - EPS && cur.c >= refHigh) {
         pc.buy = new Buy(cur.h, cur.l);
+        pc.redSinceEscalation = false;
         ev.push(`TZ BUY(${label})`);
       }
     }
@@ -1309,6 +1343,7 @@ export class TZEngine {
         buy.tzBuy2 = null;
         buy.tzBuy2HhMuted = false;
         buy.reentryThreshold = null;
+        pc.redSinceEscalation = false;
         ev.push(`TZ BUY(${branchLbl})`);
         reactivatedToday = true;
       } else if (!this.milestoneBlocked(pc) && cur.h > ref && cur.h - ref >= ANY) {
@@ -1940,6 +1975,7 @@ export class TZEngine {
         const ref = preTodayBuyRef !== null ? preTodayBuyRef : buy.refHigh;
         if (cur.l >= prev.l && cur.h > ref && cur.h - ref >= THRESH - EPS && cur.c >= ref) {
           buy.tzBuy2 = new Bar2(cur.h, cur.l);
+          pc.redSinceEscalation = false;
           ev.push(`TZ BUY 2(${label})`);
         }
       }
@@ -1960,6 +1996,7 @@ export class TZEngine {
         b2.refLow = cur.l;
         b2.slActive = false;
         b2.reentryThreshold = null;
+        pc.redSinceEscalation = false;
         buy.tzBuy2HhMuted = false;
         ev.push(`TZ BUY 2(${label})`);
       } else if (cur.h > ref && cur.h - ref >= ANY) {
