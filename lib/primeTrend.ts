@@ -1401,7 +1401,16 @@ function computeSeniorEscalationGate(
       if (other.bornDate > ev.date) continue;
       if (dtfWeekStart !== null && other.bornDate === dtfWeekStart && other.bornDate !== ev.date) continue;
       if (other.diedAt !== null && other.diedAt <= ev.date) continue;
-      if (other.tier < ev.tier) {
+      // Per the user's own direct correction (same rule as
+      // tarTbar.ts's own wtfJuniorTerminations): termination requires
+      // the JUNIOR to ALSO escalate on this EXACT SAME DATE as the
+      // senior's event, tier for tier -- not "the senior's event, on
+      // ANY date, exceeds the junior's own running/historical tier
+      // snapshot." A junior not escalating today stays untouched today,
+      // however far the senior has climbed -- it only ratchets.
+      const otherToday = other.tierDates.find((td) => td.date === ev.date);
+      if (otherToday === undefined) continue;
+      if (otherToday.tier <= ev.tier) {
         terminated.add(other);
         terminations.push({ letter: other.letter, bornDate: other.bornDate, terminatedAt: ev.date });
       }

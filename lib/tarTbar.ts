@@ -3352,7 +3352,18 @@ export function computeTarTbar(
         if (other.bornDate > ev.date) continue; // other not yet spawned as of this event
         if (dtfWeekStart !== null && other.bornDate === dtfWeekStart && other.bornDate !== ev.date) continue; // same WTF week, different (earlier) day -- not yet senior-over-junior
         if (other.diedAt !== null && other.diedAt <= ev.date) continue; // already dead on its own terms
-        if (other.tier < ev.tier) {
+        // Per the user's own direct correction: termination requires the
+        // JUNIOR to ALSO escalate on this EXACT SAME DATE as the senior's
+        // event, with the senior's tier that day >= the junior's tier
+        // that day -- not "the senior's event, on ANY date, exceeds the
+        // junior's own running/historical tier snapshot." A junior that
+        // is not escalating today is not terminated today, no matter how
+        // far the senior has climbed -- it only ratchets, never taking
+        // over, until it legitimately re-leads. "Senior Escalation cannot
+        // come midway if Junior is already active."
+        const otherToday = other.tierDates.find((td) => td.date === ev.date);
+        if (otherToday === undefined) continue;
+        if (otherToday.tier <= ev.tier) {
           terminated.add(other);
           wtfJuniorTerminations.push({ letter: other.letter, bornDate: other.bornDate, terminatedAt: ev.date });
         }
