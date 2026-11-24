@@ -65,7 +65,7 @@ function dedupeBare(arr: string[]): string[] {
   return Array.from(new Set(arr.map(bareLabel)));
 }
 
-export function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] {
+export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetters = false): string[] {
   const dtfRows = loadCsv(dailyCsv);
   const wtfRows = loadCsv(weeklyCsv);
   const wtfDays: Day[] = wtfRows.map((r) => ({ date: r.date, o: r.o, h: r.h, l: r.l, c: r.c }));
@@ -345,22 +345,49 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string): string[] 
 
   const out: string[] = [];
   out.push("DATE\tWTF EVENT\tDTF EVENT");
+  const fmt = withLetters ? withLettersBare : dedupeBare;
   for (const date of sortedDates) {
-    const w = dedupeBare(wtfEvents.get(date) ?? []).join(", ");
-    const d = dedupeBare(dtfEvents.get(date) ?? []).join(", ");
+    const w = fmt(wtfEvents.get(date) ?? []).join(", ");
+    const d = fmt(dtfEvents.get(date) ?? []).join(", ");
     out.push(`${date}\t${w}\t${d}`);
   }
   console.error(`total rows with events: ${sortedDates.length}`);
   return out;
 }
 
+// Same rows and same bare event names as dedupeBare -- only appends the
+// cycle letter(s) each event already carried internally. Never adds,
+// drops or merges anything dedupeBare wouldn't.
+function withLettersBare(arr: string[]): string[] {
+  const letters = new Map<string, Set<string>>();
+  const red2Anchored = new Set<string>();
+  for (const ev of arr) {
+    const bare = bareLabel(ev);
+    if (!letters.has(bare)) letters.set(bare, new Set());
+    const open = ev.lastIndexOf("(");
+    const close = ev.lastIndexOf(")");
+    if (open < 0 || close < open) continue;
+    const inside = ev.slice(open + 1, close);
+    if (/\bRED2\b/.test(inside)) red2Anchored.add(bare);
+    const letter = inside.split(",").pop()!.trim().replace(/^hidden\s+/, "");
+    if (letter) letters.get(bare)!.add(letter);
+  }
+  return Array.from(letters.entries()).map(([bare, ls]) => {
+    const l = Array.from(ls).join("/");
+    if (red2Anchored.has(bare)) return `${bare} (RED 2${l ? `, ${l}` : ""})`;
+    return l ? `${bare}(${l})` : bare;
+  });
+}
+
 function main() {
-  const [dailyCsv, weeklyCsv, outTsv] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const withLetters = args.includes("--letters");
+  const [dailyCsv, weeklyCsv, outTsv] = args.filter((a) => a !== "--letters");
   if (!dailyCsv || !weeklyCsv) {
-    console.error("Usage: npx tsx scripts/eventsTable.ts <dailyCsv> <weeklyCsv> [outTsv]");
+    console.error("Usage: npx tsx scripts/eventsTable.ts <dailyCsv> <weeklyCsv> [outTsv] [--letters]");
     process.exit(1);
   }
-  const out = buildEventsTable(dailyCsv, weeklyCsv);
+  const out = buildEventsTable(dailyCsv, weeklyCsv, withLetters);
   if (outTsv) {
     fs.writeFileSync(outTsv, out.join("\n"));
     console.error(`written to ${path.resolve(outTsv)}`);
