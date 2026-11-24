@@ -274,11 +274,35 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
     if (r.exitType !== "still open") addDtf(r.exitDate, `${r.exitType} (PRIME TREND, ${r.letter})`);
   }
 
+  // BAR-SL2-anchored SAR family (SAR/.../SAR 2, terminal at SAR 2) --
+  // the backend's own single ladder (ctt.barSl2SarCheckpoints), shown only
+  // for a BAR SL2 whose own WTF row is itself displayed above (a BAR SL2
+  // suppressed from the WTF ledger, e.g. inside a concluded-lineage
+  // window, is noise and so is its ladder).
+  const shownBarSl2Labels = new Set<string>();
+  for (const evs of wtfEvents.values()) {
+    for (const ev of evs) {
+      const m = /^BAR SL2\(([^)]+)\)$/.exec(ev);
+      if (m) shownBarSl2Labels.add(m[1]);
+    }
+  }
+  // Per the user's own rule: when RED2 and BAR SL2 confirm for the same
+  // letter on the same day, that SAR/SAR 2 belongs to BAR SL2 -- so a
+  // RED2-ladder row identical to a BAR-SL2-ladder row (same letter, date,
+  // event) is the same event and is shown once, as BAR SL 2.
+  const barSl2RowKeys = new Set<string>();
+  for (const c of ctt.barSl2SarCheckpoints) {
+    if (!shownBarSl2Labels.has(c.barSl2Label) || isNoise(c.label)) continue;
+    addDtf(c.date, `${c.label} (BAR SL 2, ${c.letter})`);
+    barSl2RowKeys.add(`${c.letter}|${c.date}|${c.label}`);
+  }
+
   // RED2-anchored SAR family (SAR/INVALID SAR/.../SAR 2)
   const ptCheckpoints = computePrimeTrendCheckpoints(wtfRows, dtfRows);
   for (const { letter, checkpoints } of ptCheckpoints) {
     for (const cp of checkpoints) {
       if (isNoise(cp.label)) continue;
+      if (barSl2RowKeys.has(`${letter}|${cp.date}|${cp.label}`)) continue;
       addDtf(cp.date, `${cp.label} (RED2, ${letter})`);
     }
   }
@@ -336,6 +360,7 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
   }
   for (const cp of ctt.hiddenRed2SarCheckpoints) {
     if (isNoise(cp.label)) continue;
+    if (barSl2RowKeys.has(`${cp.letter}|${cp.date}|${cp.label}`)) continue;
     addDtf(cp.date, `${cp.label} (RED2 ${cp.red2Date}, hidden ${cp.letter})`);
   }
 
@@ -360,21 +385,26 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
 // drops or merges anything dedupeBare wouldn't.
 function withLettersBare(arr: string[]): string[] {
   const letters = new Map<string, Set<string>>();
-  const red2Anchored = new Set<string>();
+  const anchors = new Map<string, Set<string>>();
   for (const ev of arr) {
     const bare = bareLabel(ev);
-    if (!letters.has(bare)) letters.set(bare, new Set());
+    if (!letters.has(bare)) {
+      letters.set(bare, new Set());
+      anchors.set(bare, new Set());
+    }
     const open = ev.lastIndexOf("(");
     const close = ev.lastIndexOf(")");
     if (open < 0 || close < open) continue;
     const inside = ev.slice(open + 1, close);
-    if (/\bRED2\b/.test(inside)) red2Anchored.add(bare);
+    if (/\bBAR SL 2\b/.test(inside)) anchors.get(bare)!.add("BAR SL 2");
+    else if (/\bRED2\b/.test(inside)) anchors.get(bare)!.add("RED 2");
     const letter = inside.split(",").pop()!.trim().replace(/^hidden\s+/, "");
     if (letter) letters.get(bare)!.add(letter);
   }
   return Array.from(letters.entries()).map(([bare, ls]) => {
     const l = Array.from(ls).join("/");
-    if (red2Anchored.has(bare)) return `${bare} (RED 2${l ? `, ${l}` : ""})`;
+    const a = Array.from(anchors.get(bare)!).join(" + ");
+    if (a) return `${bare} (${a}${l ? `, ${l}` : ""})`;
     return l ? `${bare}(${l})` : bare;
   });
 }

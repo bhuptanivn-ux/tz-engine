@@ -1560,6 +1560,7 @@ function findReinterpretedWindows(
   firstSarByGroup: { letter: string; red2Date: string; firstSarDate: string }[];
   everEscalatedDates: Map<string, string[]>;
   letterLineageConcludedWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
+  barSl2SarCheckpoints: { letter: string; barSl2Label: string; barSl2Date: string; date: string; label: string; price: number }[];
 } {
   const barSl2BackendLog: { label: string; date: string; low: number }[] = [];
   const hiddenEventLog: HiddenEventLogEntry[] = [];
@@ -1688,6 +1689,9 @@ function findReinterpretedWindows(
   // real-data confirmation already established ("[the next lineage] was
   // activated for the 1st time as on 02/02/26").
   const sar2DateBySl2Label = new Map<string, string | null>();
+  // The same BAR-SL2-anchored SAR ladder results, exposed for display --
+  // see computeTarTbar's own `barSl2SarCheckpoints` field.
+  const barSl2SarCheckpoints: { letter: string; barSl2Label: string; barSl2Date: string; date: string; label: string; price: number }[] = [];
   for (const sl2 of barSl2Events) {
     const inst: WtfInstance = {
       family: "TZ BUY 2",
@@ -1700,6 +1704,11 @@ function findReinterpretedWindows(
     const r = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(sl2.letter));
     // raceTriggeredDate alone -- see the other call sites' own comment.
     sar2DateBySl2Label.set(sl2.label, r !== null ? r.raceTriggeredDate : null);
+    if (r !== null) {
+      for (const c of r.checkpoints) {
+        barSl2SarCheckpoints.push({ letter: sl2.letter, barSl2Label: sl2.label, barSl2Date: sl2.date, date: c.date, label: c.label, price: c.price });
+      }
+    }
   }
   // A later BAR SL2 for the SAME letter only ever supersedes an earlier
   // one's own governance if a GENUINE reengagement (a REAR-family event,
@@ -2384,7 +2393,7 @@ function findReinterpretedWindows(
     }
   }
 
-  return { windows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints, firstSarByGroup, everEscalatedDates, letterLineageConcludedWindows };
+  return { windows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints, firstSarByGroup, everEscalatedDates, letterLineageConcludedWindows, barSl2SarCheckpoints };
 }
 
 // Additive helper (session of 2026-10-22), NOT yet verified beyond
@@ -2479,6 +2488,12 @@ export function computeTarTbar(
   // WTF ledger must drop this letter's own RED1/RED2/BAR-family text
   // (never REAR) for this stretch, same as a misclassified sibling's.
   letterLineageConcludedWindows: { letter: string; sinceDate: string; untilDate: string | null }[];
+  // Every BAR SL2's own BAR-SL2-anchored SAR ladder (SAR/.../SAR 2), the
+  // exact backend result findReinterpretedWindows already computes to
+  // decide letterLineageConcludedWindows -- exposed for display. Covers
+  // every backend BAR SL2, displayed or not; a caller shows a ladder only
+  // when its own WTF "BAR SL2(label)" row is itself displayed.
+  barSl2SarCheckpoints: { letter: string; barSl2Label: string; barSl2Date: string; date: string; label: string; price: number }[];
   // A standalone, fresh top-level TZ GREEN/RED/TZ BUY ladder simulated
   // over each letterLineageConcludedWindows stretch -- see this field's
   // own computation site below for the full derivation. A caller's WTF
@@ -2533,7 +2548,7 @@ export function computeTarTbar(
     const intervals = stage1Intervals.get(letter) ?? [];
     return (date: string) => intervals.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
   }
-  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints: hiddenRed2SarCheckpointsUngated, firstSarByGroup, everEscalatedDates, letterLineageConcludedWindows } = findReinterpretedWindows(wtfDays, dtfDays, stage1ActiveAtFor);
+  const { windows: reinterpretedWindows, misclassifiedLetters, invalidRearWindows, hiddenPassthroughEvents, hiddenRed2SarCheckpoints: hiddenRed2SarCheckpointsUngated, firstSarByGroup, everEscalatedDates, letterLineageConcludedWindows, barSl2SarCheckpoints: barSl2SarCheckpointsBackend } = findReinterpretedWindows(wtfDays, dtfDays, stage1ActiveAtFor);
   // Drop any raw-trace window for a misclassified letter, from its own
   // spawn date onward -- its ENTIRE downstream existence (not just the
   // "TZ GREEN(" tier reinterpretedWindows already covers) is noise,
@@ -2604,13 +2619,22 @@ export function computeTarTbar(
   for (const c of hiddenRed2SarCheckpointsUngated) {
     if (c.label === "SAR") addSarExit(c.letter, c.date, c.price);
   }
+  // One BAR-SL2-anchored SAR ladder for the whole module: the exact one
+  // findReinterpretedWindows already computes (DTF-aware trace) to decide
+  // letterLineageConcludedWindows -- previously recomputed here a second
+  // time off this function's own DTF-UNAWARE `wtfTrace`, which can assign
+  // a letter to a different branch and so disagree with the first copy.
+  // Restricted to BAR SL2s that actually appear in the DTF-aware trace
+  // (the backend log also carries silent dormant-sub-lineage BAR SL2s
+  // that never reach the WTF ledger at all), same set this block used.
   const barSl2Events: { letter: string; label: string; date: string; low: number }[] = [];
-  for (const { day, events } of wtfTrace) {
+  for (const { day, events } of runWtfTrace(wtfDays, undefined, undefined, dtfDays)) {
     for (const e of events) {
       const m = /^BAR SL2\(([^)]+)\)$/.exec(e);
       if (m) barSl2Events.push({ letter: m[1].split(".")[0], label: m[1], date: day.date, low: day.l });
     }
   }
+  const visibleBarSl2Labels = new Set(barSl2Events.map((e) => e.label));
   // This same BAR-SL2-anchored SAR cycle's FULL checkpoint ladder
   // (every label, not just "SAR"), kept per {letter, barSl2Date} so
   // `invalidSarEntryActiveWindowsBarSl2` below can be built from it the
@@ -2621,15 +2645,9 @@ export function computeTarTbar(
   // will be recorded [at the backend]"), this must apply whichever
   // ladder (RED2-anchored or BAR-SL2-anchored) is currently active, not
   // only the RED2 one.
-  const barSl2SarCheckpoints: { letter: string; barSl2Date: string; date: string; label: string; price: number }[] = [];
-  for (const sl2 of barSl2Events) {
-    const inst: WtfInstance = { family: "TZ BUY 2", letter: sl2.letter, formationDate: wtfDays[0].date, endDate: sl2.date, endEvent: `BAR SL2(${sl2.label})`, endPrice: sl2.low };
-    const sarResult = postBarSl2Race(dtfDays, wtfTrace, inst, stage1ActiveAtFor(sl2.letter));
-    if (sarResult === null) continue;
-    for (const c of sarResult.checkpoints) {
-      if (c.label === "SAR") addSarExit(sl2.letter, c.date, c.price);
-      barSl2SarCheckpoints.push({ letter: sl2.letter, barSl2Date: sl2.date, date: c.date, label: c.label, price: c.price });
-    }
+  const barSl2SarCheckpoints = barSl2SarCheckpointsBackend.filter((c) => visibleBarSl2Labels.has(c.barSl2Label));
+  for (const c of barSl2SarCheckpoints) {
+    if (c.label === "SAR") addSarExit(c.letter, c.date, c.price);
   }
   for (const list of sarExitsByLetter.values()) list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
@@ -3518,6 +3536,7 @@ export function computeTarTbar(
     barTheoryActiveWindows,
     barTheoryOpenIntervals,
     letterLineageConcludedWindows,
+    barSl2SarCheckpoints,
     letterLineageConcludedSimEvents,
     wtfJuniorTerminations,
     wtfSpanLifetimes,
