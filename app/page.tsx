@@ -239,6 +239,15 @@ function eventKind(token: string): string {
   return (idx === -1 ? token : token.slice(0, idx)).trim();
 }
 
+// User's naming rule: there is no separate "REAR RE-ENTER" event. A
+// re-activation above the REAR reference high after REAR SL is shown as
+// REAR again (REAR RE-ENTER 2 -> REAR 2, REAR RE-ENTER SL -> REAR SL).
+// Only the shown name changes; colors and row overrides still key on the
+// engine's own token.
+function displayEvent(s: string): string {
+  return s.replace(/\bREAR RE-ENTER\b/g, "REAR");
+}
+
 // HH/LL are continuous reference-tracking noise (they fire almost every
 // week) rather than milestone/SL events, so they're excluded from the
 // filter dropdown entirely — not just deduped.
@@ -290,7 +299,7 @@ export default function Home() {
     const set = new Set<string>();
     for (const v of events.values()) {
       for (const tok of splitEventTokens(v)) {
-        const kind = eventKind(tok);
+        const kind = displayEvent(eventKind(tok));
         if (!isHhOrLlKind(kind)) set.add(kind);
       }
     }
@@ -300,7 +309,7 @@ export default function Home() {
   const filteredRows = useMemo(() => {
     if (eventFilter.size === 0) return rows;
     return rows.filter((r) =>
-      splitEventTokens(events.get(r.date) || "").some((tok) => eventFilter.has(eventKind(tok)))
+      splitEventTokens(events.get(r.date) || "").some((tok) => eventFilter.has(displayEvent(eventKind(tok))))
     );
   }, [rows, events, eventFilter]);
 
@@ -575,7 +584,7 @@ export default function Home() {
     const header = "Date,Open,High,Low,Close,Event";
     const body = filteredRows
       .map((r) =>
-        [r.date, r.open, r.high, r.low, r.close, csvEscape(events.get(r.date) || "")].join(",")
+        [r.date, r.open, r.high, r.low, r.close, csvEscape(displayEvent(events.get(r.date) || ""))].join(",")
       )
       .join("\n");
     const blob = new Blob([`${header}\n${body}`], { type: "text/csv;charset=utf-8;" });
@@ -808,7 +817,7 @@ export default function Home() {
           </div>
           <p className="muted event-disclaimer">
             The Event column runs the TZ BUY engine (TZ GREEN → TZ BUY → TZ BUY 2 → BAR/BAR 2 →
-            REAR/REAR 2 → REAR RE-ENTER/REAR RE-ENTER 2), verified end-to-end against real OHLC
+            REAR/REAR 2 → REAR SL → REAR/REAR 2 again), verified end-to-end against real OHLC
             data across many scrips and repeatedly corrected against hand-traced real events (see
             WTF_RULEBOOK.md). Still a technical-analysis heuristic, not investment advice. The
             first row never shows an event: each day is only evaluated against the one before it.
@@ -908,7 +917,7 @@ export default function Home() {
                             : plainEventBadgeStyle(kind);
                           return (
                             <span key={i} className="event-badge" style={style}>
-                              {tok}
+                              {displayEvent(tok)}
                             </span>
                           );
                         })}

@@ -459,7 +459,7 @@ export default function EntryZone() {
               : ". Cached now, so the next scan of this segment today will load instantly."}
             {" "}
             Powered by the full PRIME TREND theory: DTF is anchored off WTF&apos;s own currently
-            LIVE TZ BUY 2 / REAR 2 / REAR RE-ENTER 2 reference, which keeps climbing for as long as
+            LIVE TZ BUY 2 / REAR 2 reference, which keeps climbing for as long as
             that WTF tier stays alive. BAR and BAR ENTRY are DTF&apos;s own ladder off that anchor;
             PBAR and PBAR ENTRY are the separate, WTF-BAR-triggered racing track — both can be live
             at once. Activation price is a one-time snapshot of that tier&apos;s own price, taken

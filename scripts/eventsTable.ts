@@ -57,8 +57,12 @@ function baseLabel(ev: string): string {
 // event name (and fold "DTF X" down to plain "X" -- same underlying
 // event, just PRIME TREND's own exitType naming vs. the checkpoint
 // ladder's).
+// User's naming rule: there is no separate "REAR RE-ENTER" event. A
+// re-activation above the REAR reference high after REAR SL is shown as
+// REAR again (REAR RE-ENTER 2 -> REAR 2, REAR RE-ENTER SL -> REAR SL).
+// The engine keeps its own internal tier names; only the shown name changes.
 function bareLabel(ev: string): string {
-  return ev.split("(")[0].trim().replace(/\bDTF /g, "");
+  return ev.split("(")[0].trim().replace(/\bDTF /g, "").replace(/\bREAR RE-ENTER\b/g, "REAR");
 }
 
 function dedupeBare(arr: string[]): string[] {

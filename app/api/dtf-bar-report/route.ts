@@ -29,8 +29,9 @@ const EVENT_MATCHERS: Record<string, (e: string) => boolean> = {
   "TZ BUY": (e) => e === "TZ BUY",
   BAR1: (e) => e.startsWith("BAR1("),
   BAR2: (e) => e.startsWith("BAR2("),
-  REAR: (e) => e === "REAR",
-  "REAR RE-ENTER": (e) => e === "REAR RE-ENTER",
+  // User's naming rule: a re-activation after REAR SL (the engine's own
+  // "REAR RE-ENTER") is REAR again, so the REAR filter matches both.
+  REAR: (e) => e === "REAR" || e === "REAR RE-ENTER",
 };
 
 function todayISO(): string {

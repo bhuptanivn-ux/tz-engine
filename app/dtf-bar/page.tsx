@@ -132,6 +132,14 @@ function eventKind(token: string): string {
   return (idx === -1 ? token : token.slice(0, idx)).trim();
 }
 
+// User's naming rule: there is no separate "REAR RE-ENTER" event. A
+// re-activation above the REAR reference high after REAR SL is shown as
+// REAR again. Only the shown name changes; colors still key on the
+// engine's own token.
+function displayEvent(s: string): string {
+  return s.replace(/\bREAR RE-ENTER\b/g, "REAR");
+}
+
 function isHhOrLlKind(kind: string): boolean {
   return /\s(HH|LL)$/.test(kind);
 }
@@ -170,7 +178,7 @@ export default function DtfBar() {
     const set = new Set<string>();
     for (const v of events.values()) {
       for (const tok of splitEventTokens(v)) {
-        const kind = eventKind(tok);
+        const kind = displayEvent(eventKind(tok));
         if (!isHhOrLlKind(kind)) set.add(kind);
       }
     }
@@ -180,7 +188,7 @@ export default function DtfBar() {
   const filteredRows = useMemo(() => {
     if (eventFilter.size === 0) return rows;
     return rows.filter((r) =>
-      splitEventTokens(events.get(r.date) || "").some((tok) => eventFilter.has(eventKind(tok)))
+      splitEventTokens(events.get(r.date) || "").some((tok) => eventFilter.has(displayEvent(eventKind(tok))))
     );
   }, [rows, events, eventFilter]);
 
@@ -408,7 +416,7 @@ export default function DtfBar() {
     const header = "Date,Open,High,Low,Close,Event";
     const body = filteredRows
       .map((r) =>
-        [r.date, r.open, r.high, r.low, r.close, csvEscape(events.get(r.date) || "")].join(",")
+        [r.date, r.open, r.high, r.low, r.close, csvEscape(displayEvent(events.get(r.date) || ""))].join(",")
       )
       .join("\n");
     const blob = new Blob([`${header}\n${body}`], { type: "text/csv;charset=utf-8;" });
@@ -643,7 +651,7 @@ export default function DtfBar() {
           </div>
           <p className="muted event-disclaimer">
             The Event column runs the separate DTF BAR engine (TZ GREEN → mandatory RED1 → RED2 →
-            TZ BUY → RED1 → RED2 → BAR1 → BAR2 → TZ BUY SL 2 → REAR → REAR RE-ENTER) — see
+            TZ BUY → RED1 → RED2 → BAR1 → BAR2 → TZ BUY SL 2 → REAR → REAR SL → REAR) — see
             DTF_THEORIES_RULEBOOK.md. This is a first pass, NOT yet verified against real market
             data, and single-lineage only (no concurrent sibling cycles). Still a technical-analysis
             heuristic, not investment advice. The first row never shows an event: each day is only
@@ -735,7 +743,7 @@ export default function DtfBar() {
                             : plainEventBadgeStyle(kind);
                           return (
                             <span key={i} className="event-badge" style={style}>
-                              {tok}
+                              {displayEvent(tok)}
                             </span>
                           );
                         })}

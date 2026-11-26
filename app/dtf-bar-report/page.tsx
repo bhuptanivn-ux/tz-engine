@@ -10,7 +10,7 @@ interface DtfBarReportMatch {
   date: string;
 }
 
-const EVENTS = ["TZ BUY", "BAR1", "BAR2", "REAR", "REAR RE-ENTER"];
+const EVENTS = ["TZ BUY", "BAR1", "BAR2", "REAR"];
 
 const FIRST_YEAR = 2010;
 function availableYears(): number[] {
