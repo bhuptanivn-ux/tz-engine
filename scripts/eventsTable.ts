@@ -201,7 +201,7 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
       // mechanism exists to let back through. Confirmed real-data
       // (ICICIBANK.NS, letter C): REAR(C) 2010-04-05 / REAR SL(C)
       // 2010-04-12 must not be dropped here.
-      if (!ev.startsWith("REAR")) {
+      if (!ev.startsWith("REAR") && !ev.startsWith("RED(")) {
         const concluded = ctt.letterLineageConcludedWindows.some(
           (c) => c.letter === letter && date >= c.sinceDate && (c.untilDate === null || date < c.untilDate)
         );

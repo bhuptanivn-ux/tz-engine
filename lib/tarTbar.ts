@@ -3370,18 +3370,13 @@ export function computeTarTbar(
         if (other.bornDate > ev.date) continue; // other not yet spawned as of this event
         if (dtfWeekStart !== null && other.bornDate === dtfWeekStart && other.bornDate !== ev.date) continue; // same WTF week, different (earlier) day -- not yet senior-over-junior
         if (other.diedAt !== null && other.diedAt <= ev.date) continue; // already dead on its own terms
-        // Per the user's own direct correction: termination requires the
-        // JUNIOR to ALSO escalate on this EXACT SAME DATE as the senior's
-        // event, with the senior's tier that day >= the junior's tier
-        // that day -- not "the senior's event, on ANY date, exceeds the
-        // junior's own running/historical tier snapshot." A junior that
-        // is not escalating today is not terminated today, no matter how
-        // far the senior has climbed -- it only ratchets, never taking
-        // over, until it legitimately re-leads. "Senior Escalation cannot
-        // come midway if Junior is already active."
+        // Per the user's own rule: a senior escalating ABOVE the level the
+        // junior has reached terminates it on any date (ICICIBANK.NS:
+        // TZ BUY(C) 14/07/2003 terminates TZ GREEN(D) 12/05/2003); a
+        // junior already at or above the senior's new level is only
+        // terminated when both escalate on the SAME day.
         const otherToday = other.tierDates.find((td) => td.date === ev.date);
-        if (otherToday === undefined) continue;
-        if (otherToday.tier <= ev.tier) {
+        if (other.tier < ev.tier || (otherToday !== undefined && otherToday.tier <= ev.tier)) {
           terminated.add(other);
           wtfJuniorTerminations.push({ letter: other.letter, bornDate: other.bornDate, terminatedAt: ev.date });
         }
@@ -3430,9 +3425,10 @@ export function computeTarTbar(
   {
     const wtfDates = wtfDays.map((d) => d.date);
     const rearOrRestartPattern = (letter: string) => new RegExp(`^REAR(?: RE-ENTER)?(?: 2)?(?: SL)?\\(${letter}\\)$|^TZ BUY 2\\(${letter}\\)$`);
+    const reengagementTrace = runWtfTrace(wtfDays, undefined, undefined, dtfDays);
     function firstReengagementAfter(letter: string, fromExclusive: string): string | null {
       const pattern = rearOrRestartPattern(letter);
-      for (const entry of wtfTrace) {
+      for (const entry of reengagementTrace) {
         if (entry.day.date <= fromExclusive) continue;
         if (entry.events.some((e) => pattern.test(e))) return entry.day.date;
       }

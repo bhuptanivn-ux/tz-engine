@@ -1490,9 +1490,29 @@ export function runWtfTrace(
       // comments. Confirmed real-data (ICICIBANK.NS): without this, a
       // fresh TZ BUY(D) forming 2012-09-10 wrongly inherited the
       // unrelated 2010-2011 D's own PRIME TREND history.
+      const pauseDates = new Map<string, string[]>();
+      for (const { day, events } of trace) {
+        for (const e of events) {
+          const m = /^BAR SL2\(([^)]+)\)$/.exec(e);
+          if (!m) continue;
+          const letter = m[1].split(".")[0];
+          const r = postBarSl2Race(dtfDays, trace, { family: "TZ BUY 2", letter, formationDate: wtfDays[0].date, endDate: day.date, endEvent: e, endPrice: day.l });
+          if (r !== null && r.raceTriggeredDate !== null) {
+            const list = pauseDates.get(letter) ?? [];
+            list.push(r.raceTriggeredDate);
+            pauseDates.set(letter, list);
+          }
+        }
+      }
       activeAt = (letter, date, bornDate) => {
         const ivs = (intervals.get(letter) ?? []).filter((iv) => iv.sinceDate >= bornDate);
-        return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
+        const pauses = pauseDates.get(letter) ?? [];
+        return ivs.some(
+          (iv) =>
+            date >= iv.sinceDate &&
+            (iv.untilDate === null || date < iv.untilDate) &&
+            !pauses.some((p) => p >= iv.sinceDate && p <= date)
+        );
       };
       // "Has PRIME TREND ever activated for this letter strictly before
       // this date" -- see TZEngine's own constructor comment. Any

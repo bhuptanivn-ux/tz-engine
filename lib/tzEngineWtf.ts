@@ -233,6 +233,7 @@ export class ParentCycle {
   // a spawn attempt on 2003-07-28 (no RED since) must NOT fire, even
   // though `redEver` has been permanently true since 2003-03-03.
   redSinceEscalation = false;
+  primeTrendWasActive = false;
 
   // Real-data bug (ICICIBANK.NS hypothetical, confirmed): once this
   // branch's own TZ GREEN HH climb first coincides, on the same candle,
@@ -735,6 +736,9 @@ export class TZEngine {
       }
       const buyWasNone = pc.buy === null;
       const allEvents = this.evalParent(pc, prev, cur, anyLiveBuy);
+      if (allEvents.some((e) => /^(TZ BUY|TZ BUY 2|REAR|REAR 2|REAR RE-ENTER|REAR RE-ENTER 2)\(/.test(e))) {
+        pc.redSinceEscalation = false;
+      }
       perBranchEvents.set(pid, allEvents);
 
       if (allEvents.some((e) => e.startsWith("TZ GREEN SL("))) {
@@ -893,7 +897,12 @@ export class TZEngine {
     // terms), never on a case requiring it to override a CURRENTLY
     // active PRIME TREND -- that override was always the bug, never the
     // point of any of those fixes.
-    const eligibleAnchor = tip !== null && tip.redSinceEscalation && tipLacksPrimeTrend;
+    // Door open: a RED candle since the tip's last escalation, or the tip
+    // escalated but has nothing live any more (e.g. REAR SL) -- per the
+    // user's own rule, "no junior or senior cycle active, next green is
+    // the start of a new junior cycle."
+    const tipNothingLive = tip !== null && tip.redEver && tip.buy !== null && !this.buyCurrentlyLive(tip);
+    const eligibleAnchor = tip !== null && (tip.redSinceEscalation || tipNothingLive) && tipLacksPrimeTrend;
     const canSpawn = eligibleAnchor || tip === null;
     let newBranchId: number | null = null;
     if (canSpawn && cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h) {
@@ -1148,11 +1157,23 @@ export class TZEngine {
       return ev;
     }
 
+    const redCandle = cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l;
     if (!pc.redEver) {
-      if (cur.h <= prev.h && cur.l < prev.l && prev.l - cur.l >= THRESH - EPS && cur.c <= prev.l) {
+      if (redCandle) {
         pc.redEver = true;
         pc.redSinceEscalation = true;
         pc.refHighAtRed = pc.refHigh;
+        ev.push(`RED(${label})`);
+      }
+    } else {
+      // Per the user's own rule: the moment this cycle's PRIME TREND
+      // pauses/deactivates, the door to a new junior is open at once --
+      // no RED candle needed, and none recorded.
+      const primeTrendNow = this.barEntryActiveAt !== undefined && this.barEntryActiveAt(label, cur.date, pc.bornDate);
+      if (pc.primeTrendWasActive && !primeTrendNow) pc.redSinceEscalation = true;
+      pc.primeTrendWasActive = primeTrendNow;
+      if (redCandle && !pc.redSinceEscalation && !primeTrendNow) {
+        pc.redSinceEscalation = true;
         ev.push(`RED(${label})`);
       }
     }
