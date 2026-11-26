@@ -1335,7 +1335,7 @@ function computeSeniorEscalationGate(
   dtfRows: OhlcRow[],
   trace: WtfTraceEntry[]
 ): (letter: string, date: string, bornDate: string) => boolean {
-  type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; tierDates: { tier: number; date: string }[] };
+  type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; tierDates: { tier: number; date: string; endDate?: string | null }[] };
   const spans: Span[] = [];
   const spansByLetter = new Map<string, Span[]>();
   for (const entry of trace) {
@@ -1371,22 +1371,22 @@ function computeSeniorEscalationGate(
   for (const inst of computeStage1Checkpoints(wtfRows, dtfRows, trace)) {
     const owner = (spansByLetter.get(inst.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === inst.formationDate));
     if (owner === undefined) continue;
-    for (const c of inst.checkpoints) {
-      if (c.label === "TZ BUY") owner.tierDates.push({ tier: 5, date: c.date });
-    }
+    inst.checkpoints.forEach((c, i) => {
+      if (c.label === "TZ BUY") owner.tierDates.push({ tier: 5, date: c.date, endDate: stage1TzBuyEndDate(inst.checkpoints, i) });
+    });
   }
   for (const r of computePrimeTrend(wtfRows, dtfRows, undefined, trace)) {
     if (r.family !== "TZ BUY 2" || r.side !== "BAR ENTRY" || r.level !== 0) continue;
     const owner = (spansByLetter.get(r.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === r.wtfFormationDate));
     if (owner === undefined) continue;
-    owner.tierDates.push({ tier: 6, date: r.entryDate });
+    owner.tierDates.push({ tier: 6, date: r.entryDate, endDate: r.exitType !== "still open" ? r.exitDate : null });
   }
   for (const s of spans) s.tierDates.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   const terminated = new Set<Span>();
   const terminations: { letter: string; bornDate: string; terminatedAt: string }[] = [];
-  const allTierEvents: { span: Span; tier: number; date: string }[] = [];
-  for (const s of spans) for (const td of s.tierDates) allTierEvents.push({ span: s, tier: td.tier, date: td.date });
+  const allTierEvents: { span: Span; tier: number; date: string; endDate: string | null }[] = [];
+  for (const s of spans) for (const td of s.tierDates) allTierEvents.push({ span: s, tier: td.tier, date: td.date, endDate: td.endDate ?? null });
   allTierEvents.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : a.tier - b.tier));
 
   const wtfDatesForWeekCheck = wtfRows.map((r) => r.date);
@@ -1399,18 +1399,8 @@ function computeSeniorEscalationGate(
       if (other === ev.span || terminated.has(other)) continue;
       if (other.bornDate <= ev.span.bornDate) continue;
       if (other.bornDate > ev.date) continue;
-      if (dtfWeekStart !== null && other.bornDate === dtfWeekStart && other.bornDate !== ev.date) continue;
       if (other.diedAt !== null && other.diedAt <= ev.date) continue;
-      // Per the user's own direct correction (same rule as
-      // tarTbar.ts's own wtfJuniorTerminations): termination requires
-      // the JUNIOR to ALSO escalate on this EXACT SAME DATE as the
-      // senior's event, tier for tier -- not "the senior's event, on
-      // ANY date, exceeds the junior's own running/historical tier
-      // snapshot." A junior not escalating today stays untouched today,
-      // however far the senior has climbed -- it only ratchets.
-      const otherToday = other.tierDates.find((td) => td.date === ev.date);
-      if (otherToday === undefined) continue;
-      if (otherToday.tier <= ev.tier) {
+      if (juniorEndedBySenior(ev, other, dtfWeekStart, wtfDatesForWeekCheck)) {
         terminated.add(other);
         terminations.push({ letter: other.letter, bornDate: other.bornDate, terminatedAt: ev.date });
       }
@@ -1419,6 +1409,49 @@ function computeSeniorEscalationGate(
 
   return (letter: string, date: string, bornDate: string): boolean =>
     terminations.some((t) => t.letter === letter && t.bornDate === bornDate && date >= t.terminatedAt);
+}
+
+/** End date of the DTF TZ BUY at checkpoints[i]: its own "TZ BUY SL"
+ * (the next one before any later re-confirmation), or null if still open. */
+export function stage1TzBuyEndDate(checkpoints: { label: string; date: string }[], i: number): string | null {
+  for (let j = i + 1; j < checkpoints.length; j++) {
+    if (checkpoints[j].label === "TZ BUY") return null;
+    if (checkpoints[j].label === "TZ BUY SL") return checkpoints[j].date;
+  }
+  return null;
+}
+
+/** Senior-over-junior termination rule, shared by the engine's gate
+ * (computeSeniorEscalationGate) and the display's termination record
+ * (tarTbar.ts's wtfJuniorTerminations), so both always agree.
+ *
+ * Per the user's own rules:
+ * - "If a Junior TZ GREEN cycle confirms and senior cycle trades with an
+ *   escalated event then Junior should terminate on the same day/week.
+ *   Junior cycle's TZ GREEN SL should not be awaited." A senior event
+ *   ABOVE the level the junior has reached ends it at once, on any date.
+ *   A junior already at or above the senior's new level ends only when
+ *   both escalate on the SAME day.
+ * - "Code should count by the end of the week" / "Same week BAR ENTRY SL
+ *   triggers then JUNIOR CAN OCCUR": a senior DTF escalation (DTF TZ BUY
+ *   = tier 5, DTF BAR ENTRY = tier 6) inside the junior's own birth week
+ *   ends the junior only if it is still standing at that week's close --
+ *   one that is SL'd within the same week does not.
+ * Confirmed real-data (ICICIBANK.NS): D's DTF TZ BUY 04/12/2012 ends TZ
+ * GREEN(E) 26/11/2012. */
+export function juniorEndedBySenior(
+  ev: { tier: number; date: string; endDate: string | null },
+  other: { bornDate: string; tier: number; tierDates: { tier: number; date: string }[] },
+  dtfWeekStart: string | null,
+  wtfDates: string[]
+): boolean {
+  if (ev.tier >= 5 && dtfWeekStart !== null && other.bornDate === dtfWeekStart) {
+    const nextWeek = wtfDates.find((d) => d > dtfWeekStart);
+    const standingAtWeekEnd = ev.endDate === null || nextWeek === undefined || ev.endDate >= nextWeek;
+    return standingAtWeekEnd && other.tier < ev.tier;
+  }
+  const otherToday = other.tierDates.find((td) => td.date === ev.date);
+  return other.tier < ev.tier || (otherToday !== undefined && otherToday.tier <= ev.tier);
 }
 
 /** Branch LETTERS get recycled -- once a branch dies (whether via an
@@ -1469,6 +1502,19 @@ export function runWtfTrace(
     let everActiveBefore: GateFn | undefined;
     let sar2ConfirmedBefore: GateFn | undefined;
     let seniorEscalatedAt: GateFn | undefined;
+    let activeInWeek: GateFn | undefined;
+    const dtfDatesByWeek = new Map<string, string[]>();
+    {
+      let wi = 0;
+      for (const dd of dtfDays) {
+        while (wi + 1 < wtfDays.length && wtfDays[wi + 1].date <= dd.date) wi++;
+        if (dd.date < wtfDays[0].date) continue;
+        const wk = wtfDays[wi].date;
+        const arr = dtfDatesByWeek.get(wk) ?? [];
+        arr.push(dd.date);
+        dtfDatesByWeek.set(wk, arr);
+      }
+    }
     const MAX_ROUNDS = 6;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const intervals = barEntryActiveIntervals(wtfRowsForGate, dtfRowsForGate, trace);
@@ -1524,14 +1570,23 @@ export function runWtfTrace(
         return ivs.some((iv) => iv.sinceDate < date);
       };
       seniorEscalatedAt = computeSeniorEscalationGate(wtfRowsForGate, dtfRowsForGate, trace);
-      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt));
+      // "Count by the end of the week": PRIME TREND state at this weekly
+      // candle's close (its last daily date) -- a BAR ENTRY that
+      // confirms AND gets SL'd inside the same week leaves the week
+      // closing with no PRIME TREND, so a junior can still form.
+      const roundActiveAt = activeAt;
+      activeInWeek = (letter, weekDate, bornDate) => {
+        const days = dtfDatesByWeek.get(weekDate) ?? [weekDate];
+        return roundActiveAt(letter, days[days.length - 1], bornDate);
+      };
+      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt, activeInWeek));
       const stable = wtfTraceEventsEqual(trace, nextTrace);
       trace = nextTrace;
       if (stable) break;
     }
     return runWtfTraceCore(
       wtfDays,
-      new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt),
+      new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt, activeInWeek),
       barSl2LogOut,
       hiddenEventLogOut
     );

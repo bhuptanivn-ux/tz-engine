@@ -117,7 +117,7 @@
 // there).
 
 import { THRESH, EPS, branchLabel, type Day, type HiddenEventLogEntry } from "./tzEngineWtf";
-import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, computeStage1Checkpoints, barEntryActiveIntervals, containingWeekStart, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
+import { runWtfTrace, postBarSl2Race, reinterpretPostBarSl2Spawn, computePrimeTrend, computeStage1Checkpoints, barEntryActiveIntervals, containingWeekStart, stage1TzBuyEndDate, juniorEndedBySenior, type OhlcRow, type WtfInstance, type PostBarSl2Checkpoint, type WtfTraceEntry } from "./primeTrend";
 
 function bar1Shape(prev: Day, cur: Day): boolean {
   return cur.l >= prev.l && cur.h > prev.h && cur.h - prev.h >= THRESH - EPS && cur.c >= prev.h;
@@ -2471,7 +2471,7 @@ export function computeTarTbar(
   invalidSarEntryActiveWindowsBarSl2: { letter: string; barSl2Date: string; sinceDate: string; untilDate: string | null }[];
   // Which RED2 governs each BAR-theory window -- see this field's own
   // comment at its computation site below.
-  windowGoverningRed2: { wtfLabel: string; red2Date: string | null }[];
+  windowGoverningRed2: { wtfLabel: string; formationDate: string; red2Date: string | null }[];
   // Which BAR SL2 governs each BAR-theory window -- see this field's own
   // comment at its computation site below.
   windowGoverningBarSl2: { wtfLabel: string; barSl2Date: string | null }[];
@@ -3139,7 +3139,9 @@ export function computeTarTbar(
     }
   }
   for (const list of red2DatesByLetter.values()) list.sort();
-  const windowGoverningRed2: { wtfLabel: string; red2Date: string | null }[] = [];
+  // Carries the window's own formationDate: a wtfLabel (e.g. "C.3") is
+  // recycled across decades, so label alone does not identify a window.
+  const windowGoverningRed2: { wtfLabel: string; formationDate: string; red2Date: string | null }[] = [];
   for (const w of windows) {
     const letter = w.wtfLabel.split(".")[0];
     const dates = red2DatesByLetter.get(letter) ?? [];
@@ -3148,7 +3150,7 @@ export function computeTarTbar(
       if (d < w.formationDate) governing = d;
       else break;
     }
-    windowGoverningRed2.push({ wtfLabel: w.wtfLabel, red2Date: governing });
+    windowGoverningRed2.push({ wtfLabel: w.wtfLabel, formationDate: w.formationDate, red2Date: governing });
   }
 
   // Which BAR SL2 governs each BAR-theory window -- the mirror of
@@ -3267,7 +3269,7 @@ export function computeTarTbar(
     // plain trace, only the race-aware one shows it), so matching
     // formationDate/letter against it here would silently miss spans.
     const raceAwareTrace = runWtfTrace(wtfDays, undefined, undefined, dtfDays);
-    type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; greenSlDate: string | null; tierDates: { tier: number; date: string }[] };
+    type Span = { letter: string; bornDate: string; tier: number; diedAt: string | null; greenSlDate: string | null; tierDates: { tier: number; date: string; endDate?: string | null }[] };
     const spans: Span[] = [];
     const spansByLetter = new Map<string, Span[]>();
     for (const entry of raceAwareTrace) {
@@ -3339,9 +3341,9 @@ export function computeTarTbar(
     for (const inst of computeStage1Checkpoints(wtfRows, dtfRows)) {
       const owner = (spansByLetter.get(inst.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === inst.formationDate));
       if (owner === undefined) continue;
-      for (const c of inst.checkpoints) {
-        if (c.label === "TZ BUY") owner.tierDates.push({ tier: 5, date: c.date });
-      }
+      inst.checkpoints.forEach((c, i) => {
+        if (c.label === "TZ BUY") owner.tierDates.push({ tier: 5, date: c.date, endDate: stage1TzBuyEndDate(inst.checkpoints, i) });
+      });
     }
     // DTF BAR ENTRY (tier 6) -- same exact-formationDate match, from
     // computePrimeTrend's own TZ BUY 2 family, level-0 "BAR ENTRY" rows.
@@ -3349,13 +3351,13 @@ export function computeTarTbar(
       if (r.family !== "TZ BUY 2" || r.side !== "BAR ENTRY" || r.level !== 0) continue;
       const owner = (spansByLetter.get(r.letter) ?? []).find((s) => s.tierDates.some((td) => td.tier === 4 && td.date === r.wtfFormationDate));
       if (owner === undefined) continue;
-      owner.tierDates.push({ tier: 6, date: r.entryDate });
+      owner.tierDates.push({ tier: 6, date: r.entryDate, endDate: r.exitType !== "still open" ? r.exitDate : null });
     }
     for (const s of spans) s.tierDates.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
     const terminated = new Set<Span>();
-    const allTierEvents: { span: Span; tier: number; date: string }[] = [];
-    for (const s of spans) for (const td of s.tierDates) allTierEvents.push({ span: s, tier: td.tier, date: td.date });
+    const allTierEvents: { span: Span; tier: number; date: string; endDate: string | null }[] = [];
+    for (const s of spans) for (const td of s.tierDates) allTierEvents.push({ span: s, tier: td.tier, date: td.date, endDate: td.endDate ?? null });
     allTierEvents.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : a.tier - b.tier));
 
     const wtfDatesForWeekCheck = wtfDays.map((d) => d.date);
@@ -3368,15 +3370,15 @@ export function computeTarTbar(
         if (other === ev.span || terminated.has(other)) continue;
         if (other.bornDate <= ev.span.bornDate) continue; // only senior-over-junior
         if (other.bornDate > ev.date) continue; // other not yet spawned as of this event
-        if (dtfWeekStart !== null && other.bornDate === dtfWeekStart && other.bornDate !== ev.date) continue; // same WTF week, different (earlier) day -- not yet senior-over-junior
         if (other.diedAt !== null && other.diedAt <= ev.date) continue; // already dead on its own terms
-        // Per the user's own rule: a senior escalating ABOVE the level the
-        // junior has reached terminates it on any date (ICICIBANK.NS:
+        // Shared rule with the engine's own gate (primeTrend.ts's
+        // juniorEndedBySenior): a senior escalating ABOVE the level the
+        // junior has reached ends it at once on any date (ICICIBANK.NS:
         // TZ BUY(C) 14/07/2003 terminates TZ GREEN(D) 12/05/2003); a
-        // junior already at or above the senior's new level is only
-        // terminated when both escalate on the SAME day.
-        const otherToday = other.tierDates.find((td) => td.date === ev.date);
-        if (other.tier < ev.tier || (otherToday !== undefined && otherToday.tier <= ev.tier)) {
+        // junior at or above the senior's new level ends only on the SAME
+        // day; a senior DTF escalation in the junior's own birth week
+        // counts only if still standing at that week's close.
+        if (juniorEndedBySenior(ev, other, dtfWeekStart, wtfDatesForWeekCheck)) {
           terminated.add(other);
           wtfJuniorTerminations.push({ letter: other.letter, bornDate: other.bornDate, terminatedAt: ev.date });
         }

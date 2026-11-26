@@ -426,7 +426,16 @@ export class TZEngine {
     // previous round's trace, same fixed-point bootstrap convention as
     // barEntryActiveAt); every other caller leaves it undefined, in
     // which case this trigger can never fire.
-    private seniorEscalatedAt?: (letter: string, date: string, bornDate: string) => boolean
+    private seniorEscalatedAt?: (letter: string, date: string, bornDate: string) => boolean,
+    // Per the user's own rule: "Code should count by the end of the
+    // week." Spawn eligibility asks whether the tip's PRIME TREND is
+    // active at this weekly candle's close, not on the week's start
+    // date. Confirmed real-data (ICICIBANK.NS):
+    // D's BAR ENTRY 02/01/2013 (Wednesday) falls inside the weekly
+    // candle of 31/12/2012, so no TZ GREEN(E) may form that week. Only
+    // runWtfTrace (DTF-aware) supplies it; otherwise barEntryActiveAt on
+    // the week's own date is used, as before.
+    private primeTrendActiveInWeek?: (letter: string, weekDate: string, bornDate: string) => boolean
   ) {}
 
   private nextSeq(): number {
@@ -847,7 +856,9 @@ export class TZEngine {
     // immediately by the senior-precedence rule, not by spawn
     // eligibility ever having been closed.
     const tipLacksPrimeTrend =
-      tip !== null && this.barEntryActiveAt !== undefined && !this.barEntryActiveAt(branchLabel(tip.id), cur.date, tip.bornDate);
+      tip !== null &&
+      this.barEntryActiveAt !== undefined &&
+      !(this.primeTrendActiveInWeek ?? this.barEntryActiveAt)(branchLabel(tip.id), cur.date, tip.bornDate);
     // Real-data bug (ICICIBANK.NS, 2011-2014): "dormant" only ever clears
     // when the dormant branch produces its own fresh milestone -- but once
     // that branch's own PRIME TREND is confirmed dead, the full reset

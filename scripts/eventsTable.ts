@@ -150,6 +150,31 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
     return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
   }
 
+  // Per letter, the dates of its own escalations (TZ BUY / TZ BUY 2 /
+  // REAR family) and of its INVALID RED1s, from the same WTF trace.
+  const escalationDatesByLetter = new Map<string, string[]>();
+  const invalidRed1DatesByLetter = new Map<string, string[]>();
+  for (const entry of wtfTrace) {
+    for (const ev of entry.events) {
+      const esc = /^(?:TZ BUY|TZ BUY 2|REAR|REAR 2|REAR RE-ENTER|REAR RE-ENTER 2)\(([^)]+)\)$/.exec(ev);
+      const inv = /^INVALID RED1\(([^)]+)\)$/.exec(ev);
+      const m = esc ?? inv;
+      if (!m) continue;
+      const map = esc ? escalationDatesByLetter : invalidRed1DatesByLetter;
+      const letter = m[1].split(".")[0];
+      const arr = map.get(letter) ?? [];
+      arr.push(entry.day.date);
+      map.set(letter, arr);
+    }
+  }
+  function followsInvalidRed1(letter: string, bornDate: string, date: string): boolean {
+    let lastEscalation = bornDate;
+    for (const d of escalationDatesByLetter.get(letter) ?? []) {
+      if (d >= bornDate && d < date && d > lastEscalation) lastEscalation = d;
+    }
+    return (invalidRed1DatesByLetter.get(letter) ?? []).some((d) => d > lastEscalation && d < date);
+  }
+
   for (const [date, evs] of Array.from(wtfEvents.entries())) {
     // Per the user's own rule: "Do not write as RED1. Keep it RED ...
     // RED1-RED2 is used once PRIME TREND is active for BAR THEORY" --
@@ -160,13 +185,20 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
     // RED1 has no equivalent in the ordinary RED vocabulary (RED, once
     // it fires, is never "invalidated" -- redEver is a one-time,
     // permanent flag), so it stays hidden in that case.
-    const relabeled = evs.map((ev) => {
-      if (!ev.startsWith("RED1(")) return ev;
+    //
+    // Per the user's own rule: one RED per escalation. Before PRIME
+    // TREND, a RED1 that follows an INVALID RED1 (since this letter's
+    // own last escalation) stays hidden instead of showing as a second
+    // RED. Confirmed real-data (ICICIBANK.NS, letter D): RED 08/10/2012,
+    // INVALID RED1 22/10/2012, RED1 12/11/2012 -> hidden.
+    const relabeled = evs.flatMap((ev) => {
+      if (!ev.startsWith("RED1(")) return [ev];
       const letter = letterOf(ev);
-      if (!letter) return ev;
+      if (!letter) return [ev];
       const bornDate = ownerBornDate(letter, date);
-      if (bornDate === null || primeTrendActive(letter, date, bornDate)) return ev;
-      return `RED(${letter})`;
+      if (bornDate === null || primeTrendActive(letter, date, bornDate)) return [ev];
+      if (followsInvalidRed1(letter, bornDate, date)) return [];
+      return [`RED(${letter})`];
     });
     const kept = relabeled.filter((ev) => {
       const letter = letterOf(ev);
@@ -334,10 +366,23 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
   // never by letter alone -- a letter can have several sequential RED2
   // cycles, and one cycle's own active INVALID SAR ENTRY must only mute
   // the ONE BAR-theory window that formed after THAT RED2.
-  const red2DateByWtfLabel = new Map<string, string | null>();
-  for (const w of ctt.windowGoverningRed2) red2DateByWtfLabel.set(w.wtfLabel, w.red2Date);
+  // Keyed by window, not by label alone: a wtfLabel (e.g. "C.3") is
+  // recycled across decades, and a later window under the same label
+  // must not overwrite an earlier one's governing RED2. Confirmed
+  // real-data (ICICIBANK.NS): a 2022 "C.3" window overwrote the 2006
+  // C.3 window's RED2, which wrongly lifted 2006's INVALID SAR ENTRY
+  // suppression of TAR/TAR ENTRY. A row belongs to the latest window
+  // with its label formed on or before the row's date.
+  function governingRed2For(wtfLabel: string, date: string): string | null | undefined {
+    let found: { formationDate: string; red2Date: string | null } | undefined;
+    for (const w of ctt.windowGoverningRed2) {
+      if (w.wtfLabel !== wtfLabel || w.formationDate > date) continue;
+      if (found === undefined || w.formationDate >= found.formationDate) found = w;
+    }
+    return found?.red2Date;
+  }
   function barTheorySuppressedByInvalidSar(wtfLabel: string, date: string): boolean {
-    const red2Date = red2DateByWtfLabel.get(wtfLabel);
+    const red2Date = governingRed2For(wtfLabel, date);
     if (red2Date === null || red2Date === undefined) return false;
     const letter = wtfLabel.split(".")[0];
     return ctt.invalidSarEntryActiveWindows.some(
