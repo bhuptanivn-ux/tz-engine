@@ -572,6 +572,13 @@ export class TZEngine {
     return !(buy.tzBuy2 !== null && buy.tzBuy2.slActive);
   }
 
+  private newerJuniorHasLiveTzBuy2(pc: ParentCycle): boolean {
+    for (const [pid, other] of this.branches) {
+      if (pid !== pc.id && other.active && other.seq > pc.seq && (this.preTodayTzBuy2Active.get(pid) ?? false)) return true;
+    }
+    return false;
+  }
+
   private milestoneBlocked(pc: ParentCycle): boolean {
     for (const [pid, other] of this.branches) {
       if (pid !== pc.id && other.seq > pc.seq && (this.preTodayLiveBuy.get(pid) ?? false)) {
@@ -1189,7 +1196,15 @@ export class TZEngine {
       }
     }
 
-    if (pc.redEver && pc.buy === null && !anyLiveBuy) {
+    // Per the user's own rule: a dormant senior wakes up only if its own
+    // next event is the same level or higher than every active junior's.
+    // A newer cycle holding a live TZ BUY 2 is above a senior's first TZ
+    // BUY, so the senior stays dormant and only ratchets -- regardless of
+    // that junior's earlier PRIME TREND failure (which anyLiveBuy's own
+    // barTheoryAllowed exemption ignores). Confirmed real-data
+    // (ICICIBANK.NS): D's TZ BUY 2 05/05/2014 is live on 12/05/2014, so no
+    // TZ BUY(A) that day.
+    if (pc.redEver && pc.buy === null && !anyLiveBuy && !this.newerJuniorHasLiveTzBuy2(pc)) {
       const refHigh = Math.max(pc.refHigh, pc.refHighAtRed);
       if (cur.l >= prev.l && cur.h > refHigh && cur.h - refHigh >= THRESH - EPS && cur.c >= refHigh) {
         pc.buy = new Buy(cur.h, cur.l);
