@@ -764,11 +764,19 @@ export class TZEngine {
         continue;
       }
       const buyWasNone = pc.buy === null;
-      if (pc.redEver && this.dtfDoorAtWeekEnd !== undefined) {
-        const door = this.dtfDoorAtWeekEnd(branchLabel(pc.id), cur.date, pc.bornDate);
-        if (door !== undefined) pc.redSinceEscalation = door;
-      }
+      // A DTF escalation this week closes the door BEFORE the week's own
+      // RED check (so a RED candle that week reopens it, and shows); a DTF
+      // SL this week opens it only AFTER that check, so a RED candle in the
+      // same week is still the one that opens the door and is shown.
+      // Confirmed real-data (ICICIBANK.NS, letter E): RED 07/08/2017 shows,
+      // with E's DTF TZ BUY SL 09/08/2017 in the same week.
+      const dtfDoorThisWeek =
+        pc.redEver && this.dtfDoorAtWeekEnd !== undefined
+          ? this.dtfDoorAtWeekEnd(branchLabel(pc.id), cur.date, pc.bornDate)
+          : undefined;
+      if (dtfDoorThisWeek === false) pc.redSinceEscalation = false;
       const allEvents = this.evalParent(pc, prev, cur, anyLiveBuy);
+      if (dtfDoorThisWeek === true) pc.redSinceEscalation = true;
       if (allEvents.some((e) => /^(TZ BUY|TZ BUY 2|REAR|REAR 2|REAR RE-ENTER|REAR RE-ENTER 2)\(/.test(e))) {
         pc.redSinceEscalation = false;
       }

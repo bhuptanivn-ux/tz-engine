@@ -150,55 +150,24 @@ export function buildEventsTable(dailyCsv: string, weeklyCsv: string, withLetter
     return ivs.some((iv) => date >= iv.sinceDate && (iv.untilDate === null || date < iv.untilDate));
   }
 
-  // Per letter, the dates of its own escalations (TZ BUY / TZ BUY 2 /
-  // REAR family) and of its INVALID RED1s, from the same WTF trace.
-  const escalationDatesByLetter = new Map<string, string[]>();
-  const invalidRed1DatesByLetter = new Map<string, string[]>();
-  for (const entry of wtfTrace) {
-    for (const ev of entry.events) {
-      const esc = /^(?:TZ BUY|TZ BUY 2|REAR|REAR 2|REAR RE-ENTER|REAR RE-ENTER 2)\(([^)]+)\)$/.exec(ev);
-      const inv = /^INVALID RED1\(([^)]+)\)$/.exec(ev);
-      const m = esc ?? inv;
-      if (!m) continue;
-      const map = esc ? escalationDatesByLetter : invalidRed1DatesByLetter;
-      const letter = m[1].split(".")[0];
-      const arr = map.get(letter) ?? [];
-      arr.push(entry.day.date);
-      map.set(letter, arr);
-    }
-  }
-  function followsInvalidRed1(letter: string, bornDate: string, date: string): boolean {
-    let lastEscalation = bornDate;
-    for (const d of escalationDatesByLetter.get(letter) ?? []) {
-      if (d >= bornDate && d < date && d > lastEscalation) lastEscalation = d;
-    }
-    return (invalidRed1DatesByLetter.get(letter) ?? []).some((d) => d > lastEscalation && d < date);
-  }
-
   for (const [date, evs] of Array.from(wtfEvents.entries())) {
-    // Per the user's own rule: "Do not write as RED1. Keep it RED ...
-    // RED1-RED2 is used once PRIME TREND is active for BAR THEORY" --
-    // before PRIME TREND (BAR ENTRY) activates, a RED1-shaped pullback
-    // is conceptually the ordinary top-level RED (the base TZ GREEN ->
-    // RED -> TZ BUY cycle's own marker, licensing spawn eligibility),
-    // not BAR THEORY's own RED1 -- relabel rather than hide. INVALID
-    // RED1 has no equivalent in the ordinary RED vocabulary (RED, once
-    // it fires, is never "invalidated" -- redEver is a one-time,
-    // permanent flag), so it stays hidden in that case.
-    //
-    // Per the user's own rule: one RED per escalation. Before PRIME
-    // TREND, a RED1 that follows an INVALID RED1 (since this letter's
-    // own last escalation) stays hidden instead of showing as a second
-    // RED. Confirmed real-data (ICICIBANK.NS, letter D): RED 08/10/2012,
-    // INVALID RED1 22/10/2012, RED1 12/11/2012 -> hidden.
-    const relabeled = evs.flatMap((ev) => {
-      if (!ev.startsWith("RED1(")) return [ev];
+    // Per the user's own rules: "RED1-RED2 is used once PRIME TREND is
+    // active for BAR THEORY", and one RED per escalation -- a RED shows
+    // only when it is the RED that opens the door to a new junior. Before
+    // PRIME TREND (BAR ENTRY) activates, a RED1 is therefore hidden: a
+    // RED1 candle has the same shape as the engine's own RED candle, so
+    // whenever it would open the door the engine's RED already fires (and
+    // shows) that same week; otherwise the door is already open (an
+    // earlier RED, a DTF SL or a PRIME TREND pause) and no second RED is
+    // shown. Confirmed real-data (ICICIBANK.NS): RED1(D) 12/11/2012 after
+    // RED(D) 08/10/2012; RED1(E) 27/11/2017 after E's DTF TZ BUY SL
+    // 20/11/2017 -- both hidden.
+    const relabeled = evs.filter((ev) => {
+      if (!ev.startsWith("RED1(")) return true;
       const letter = letterOf(ev);
-      if (!letter) return [ev];
+      if (!letter) return true;
       const bornDate = ownerBornDate(letter, date);
-      if (bornDate === null || primeTrendActive(letter, date, bornDate)) return [ev];
-      if (followsInvalidRed1(letter, bornDate, date)) return [];
-      return [`RED(${letter})`];
+      return bornDate === null || primeTrendActive(letter, date, bornDate);
     });
     const kept = relabeled.filter((ev) => {
       const letter = letterOf(ev);
