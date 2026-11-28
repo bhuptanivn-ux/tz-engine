@@ -1434,7 +1434,15 @@ export class TZEngine {
         pc.redSinceEscalation = false;
         ev.push(`TZ BUY(${branchLbl})`);
         reactivatedToday = true;
-      } else if (!this.milestoneBlocked(pc) && cur.h > ref && cur.h - ref >= ANY) {
+      } else if (cur.h > ref && cur.h - ref >= ANY) {
+        // Per the user's own rule: a dormant cycle's waiting price
+        // ratchets on EVERY higher high, whether or not a newer junior
+        // is blocking it -- being blocked only stops it waking up (the
+        // milestoneBlocked check on the reactivation above), never stops
+        // the ratchet. Same as REAR's own re-entry ratchet. Confirmed
+        // real-data (ICICIBANK.NS, letter D 2012): blocked by E from
+        // 11/2018, D's level froze at 365.70 while the high reached
+        // 552.20, so a stale TZ BUY(D) fired on 24/08/2020.
         buy.reentryThreshold = cur.h;
         ev.push(`INVALID TZ BUY HH(${branchLbl})`);
       }
