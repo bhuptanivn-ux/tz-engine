@@ -1503,6 +1503,7 @@ export function runWtfTrace(
     let sar2ConfirmedBefore: GateFn | undefined;
     let seniorEscalatedAt: GateFn | undefined;
     let activeInWeek: GateFn | undefined;
+    let dtfDoor: ((letter: string, weekDate: string, bornDate: string) => boolean | undefined) | undefined;
     const dtfDatesByWeek = new Map<string, string[]>();
     {
       let wi = 0;
@@ -1579,14 +1580,47 @@ export function runWtfTrace(
         const days = dtfDatesByWeek.get(weekDate) ?? [weekDate];
         return roundActiveAt(letter, days[days.length - 1], bornDate);
       };
-      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt, activeInWeek));
+      // DTF escalations (close the door to a new junior) and their SLs
+      // (reopen it), per letter -- see TZEngine's dtfDoorAtWeekEnd.
+      const doorEvents = new Map<string, { date: string; formationDate: string; open: boolean }[]>();
+      const addDoor = (letter: string, date: string, formationDate: string, open: boolean) => {
+        const list = doorEvents.get(letter) ?? [];
+        list.push({ date, formationDate, open });
+        doorEvents.set(letter, list);
+      };
+      for (const inst of computeStage1Checkpoints(wtfRowsForGate, dtfRowsForGate, trace)) {
+        for (const c of inst.checkpoints) {
+          if (c.label === "TZ BUY") addDoor(inst.letter, c.date, inst.formationDate, false);
+          else if (c.label === "TZ BUY SL") addDoor(inst.letter, c.date, inst.formationDate, true);
+        }
+      }
+      for (const r of computePrimeTrend(wtfRowsForGate, dtfRowsForGate, undefined, trace)) {
+        if (r.family !== "TZ BUY 2" || r.side !== "BAR ENTRY" || r.level !== 0) continue;
+        addDoor(r.letter, r.entryDate, r.wtfFormationDate, false);
+        if (r.exitType !== "still open") addDoor(r.letter, r.exitDate, r.wtfFormationDate, true);
+      }
+      dtfDoor = (letter, weekDate, bornDate) => {
+        const days = dtfDatesByWeek.get(weekDate);
+        if (days === undefined) return undefined;
+        const first = days[0];
+        const last = days[days.length - 1];
+        let pick: { date: string; open: boolean } | undefined;
+        for (const e of doorEvents.get(letter) ?? []) {
+          if (e.formationDate < bornDate || e.date < first || e.date > last) continue;
+          // Latest event of the week wins; on the same day an SL counts
+          // after the escalation it ends.
+          if (pick === undefined || e.date > pick.date || (e.date === pick.date && e.open)) pick = e;
+        }
+        return pick?.open;
+      };
+      const nextTrace = runWtfTraceCore(wtfDays, new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt, activeInWeek, dtfDoor));
       const stable = wtfTraceEventsEqual(trace, nextTrace);
       trace = nextTrace;
       if (stable) break;
     }
     return runWtfTraceCore(
       wtfDays,
-      new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt, activeInWeek),
+      new TZEngine(true, activeAt, everActiveBefore, sar2ConfirmedBefore, seniorEscalatedAt, activeInWeek, dtfDoor),
       barSl2LogOut,
       hiddenEventLogOut
     );

@@ -435,7 +435,20 @@ export class TZEngine {
     // candle of 31/12/2012, so no TZ GREEN(E) may form that week. Only
     // runWtfTrace (DTF-aware) supplies it; otherwise barEntryActiveAt on
     // the week's own date is used, as before.
-    private primeTrendActiveInWeek?: (letter: string, weekDate: string, bornDate: string) => boolean
+    private primeTrendActiveInWeek?: (letter: string, weekDate: string, bornDate: string) => boolean,
+    // Per the user's own rule: a DTF escalation (DTF TZ BUY, DTF BAR
+    // ENTRY) is an escalation too -- it closes the door to a new junior,
+    // the same as a weekly TZ BUY / TZ BUY 2 / REAR. The door reopens on a
+    // RED candle after it, on that DTF event's own SL (the race starts
+    // again), or on a PRIME TREND pause/deactivation. Counted by the
+    // close of the weekly candle the DTF event falls in: returns false
+    // when the last such DTF event of this week is an escalation (door
+    // closed), true when it is an SL (door open), undefined when this
+    // week has none. Confirmed real-data (ICICIBANK.NS): D's DTF TZ BUY
+    // 31/10/2014 is still live at that week's close and no RED follows,
+    // so no TZ GREEN may form on 03/11/2014. Only runWtfTrace (DTF-aware)
+    // supplies it.
+    private dtfDoorAtWeekEnd?: (letter: string, weekDate: string, bornDate: string) => boolean | undefined
   ) {}
 
   private nextSeq(): number {
@@ -751,6 +764,10 @@ export class TZEngine {
         continue;
       }
       const buyWasNone = pc.buy === null;
+      if (pc.redEver && this.dtfDoorAtWeekEnd !== undefined) {
+        const door = this.dtfDoorAtWeekEnd(branchLabel(pc.id), cur.date, pc.bornDate);
+        if (door !== undefined) pc.redSinceEscalation = door;
+      }
       const allEvents = this.evalParent(pc, prev, cur, anyLiveBuy);
       if (allEvents.some((e) => /^(TZ BUY|TZ BUY 2|REAR|REAR 2|REAR RE-ENTER|REAR RE-ENTER 2)\(/.test(e))) {
         pc.redSinceEscalation = false;
