@@ -1346,6 +1346,22 @@ export class TZEngine {
       if (ll) ev.push(`TZ BUY LL(${branchLbl})`);
 
       if (isSl) {
+        // Per the user's own rule: when the same candle also breaks a live
+        // TZ BUY 2's own SL, show both -- "TZ BUY 2 SL, TZ BUY SL".
+        // Display only: TZ BUY SL still governs the state below (the cycle
+        // resumes from TZ BUY, the last SL'd event). Confirmed real-data
+        // (ICICIBANK.NS, letter D): 11/01/2016 breaks TZ BUY 2's 220.95 and
+        // TZ BUY's 218.62 together.
+        const b2Now = buy.tzBuy2;
+        if (
+          b2Now !== null &&
+          !b2Now.slActive &&
+          cur.l < b2Now.refLow &&
+          b2Now.refLow - cur.l >= THRESH - EPS &&
+          cur.c <= b2Now.refLow + EPS
+        ) {
+          ev.push(`TZ BUY 2 SL(${branchLbl})`);
+        }
         ev.push(`TZ BUY SL(${branchLbl})`);
         buy.reentryThreshold = this.currentTopRef(buy);
         buy.active = false;
@@ -1675,13 +1691,14 @@ export class TZEngine {
       ev = ev.filter((e) => !e.startsWith("TZ BUY 2 HH("));
     }
 
+    // TZ BUY SL is deliberately NOT in this set: per the user's own rule,
+    // a same-candle TZ BUY 2 SL is shown alongside TZ BUY SL, not dropped.
     const slLabels = new Set<string>();
     for (const e of ev) {
       if (
         e.startsWith("BAR SL(") ||
         e.startsWith("REAR SL(") ||
-        e.startsWith("REAR RE-ENTER SL(") ||
-        e.startsWith("TZ BUY SL(")
+        e.startsWith("REAR RE-ENTER SL(")
       ) {
         slLabels.add(labelOf(e));
       }
